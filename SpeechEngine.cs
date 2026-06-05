@@ -1,4 +1,5 @@
 using System.Security;
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
 
 using Microsoft.CognitiveServices.Speech;
@@ -6,10 +7,16 @@ using Microsoft.CognitiveServices.Speech.Audio;
 
 namespace Talktastic;
 
-internal static class SpeechEngine
+internal static partial class SpeechEngine
 {
 	public static async Task<string> SynthesizeAsync(SynthesisRequest request, CancellationToken cancellationToken = default)
 	{
+		// Piper voices bypass the normal voice resolution
+		if (PiperEngine.IsPiperVoice(request.VoiceQuery))
+		{
+			return await SynthesizePiperAsync(request, cancellationToken).ConfigureAwait(false);
+		}
+
 		var voice = await VoiceEnumerator.ResolveVoiceAsync(request.VoiceQuery, cancellationToken).ConfigureAwait(false);
 
 		if (voice.VoiceType == VoiceType.Legacy)
@@ -79,6 +86,65 @@ internal static class SpeechEngine
 
 		throw new InvalidOperationException($"Unsupported output file extension for '{request.OutputPath}'. Use .wav, .mp3, or .ogg.");
 	}
+
+	private static async Task<string> SynthesizePiperAsync(SynthesisRequest request, CancellationToken cancellationToken)
+	{
+		var voiceQuery = request.VoiceQuery!;
+		var modelPath = await PiperEngine.EnsureVoiceModelAsync(voiceQuery, cancellationToken).ConfigureAwait(false);
+
+		// Derive display name from the resolved model file (not the URL placeholder)
+		var modelName = Path.GetFileNameWithoutExtension(modelPath);
+		var displayName = PiperEngine.GetDisplayName(modelName);
+
+		var text = request.TreatInputAsSsml
+			? StripSsmlTags(request.Text)
+			: request.Text;
+
+		var wavBytes = await PiperEngine.SynthesizeToWavAsync(text, modelPath, cancellationToken).ConfigureAwait(false);
+
+		// Piper outputs 22050 Hz 16-bit mono WAV -- use Raw22Khz for downstream format hints
+		var piperFormat = SpeechSynthesisOutputFormat.Raw22050Hz16BitMonoPcm;
+		var meta = new AudioMetadata(displayName, request.Text);
+
+		if (request.OutputPath is null)
+		{
+			await AudioOutput.PlayToDeviceAsync(wavBytes, request.DeviceQuery).ConfigureAwait(false);
+			return $"Spoke with {displayName}.";
+		}
+
+		AudioOutput.EnsureDirectoryExists(request.OutputPath);
+
+		if (HasExtension(request.OutputPath, ".wav"))
+		{
+			await File.WriteAllBytesAsync(request.OutputPath, wavBytes, cancellationToken).ConfigureAwait(false);
+			return $"Wrote WAV file '{request.OutputPath}' with {displayName}.";
+		}
+
+		if (HasExtension(request.OutputPath, ".mp3"))
+		{
+			await AudioOutput.WriteMp3Async(wavBytes, piperFormat, request.OutputPath, meta, cancellationToken).ConfigureAwait(false);
+			return $"Wrote MP3 file '{request.OutputPath}' with {displayName}.";
+		}
+
+		if (HasExtension(request.OutputPath, ".ogg"))
+		{
+			await AudioOutput.WriteOggOpusAsync(wavBytes, piperFormat, request.OutputPath, meta, cancellationToken).ConfigureAwait(false);
+			return $"Wrote OGG file '{request.OutputPath}' with {displayName}.";
+		}
+
+		throw new InvalidOperationException($"Unsupported output file extension for '{request.OutputPath}'. Use .wav, .mp3, or .ogg.");
+	}
+
+	/// <summary>
+	/// Strips SSML tags to plain text (Piper doesn't support SSML).
+	/// </summary>
+	private static string StripSsmlTags(string ssml)
+	{
+		return StripTagsRegex().Replace(ssml, "").Trim();
+	}
+
+	[GeneratedRegex(@"<[^>]+>")]
+	private static partial Regex StripTagsRegex();
 
 	private static async Task<byte[]> ReadStreamAsync(Windows.Media.SpeechSynthesis.SpeechSynthesisStream stream)
 	{
