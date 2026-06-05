@@ -67,6 +67,11 @@ var helpSsmlOption = new Option<bool>("--help-ssml")
 	Description = "Show SSML usage examples",
 };
 
+var installVoicesOption = new Option<bool>("--install-voices")
+{
+	Description = "Open Windows voice installation settings",
+};
+
 var quietOption = new Option<bool>("--quiet", "-q")
 {
 	Description = "Suppress stdout output (errors still go to stderr)",
@@ -90,6 +95,7 @@ var rootCommand = new RootCommand($"Talktastic v{version} - standalone Windows T
 	formatOption,
 	ssmlOption,
 	helpSsmlOption,
+	installVoicesOption,
 	quietOption,
 	superQuietOption,
 };
@@ -114,7 +120,8 @@ rootCommand.SetAction
 				var rate = parseResult.GetValue(rateOption);
 				var format = parseResult.GetRequiredValue(formatOption);
 				var ssml = parseResult.GetValue(ssmlOption);
-				var quiet = parseResult.GetValue(quietOption);
+					var installVoices = parseResult.GetValue(installVoicesOption);
+					var quiet = parseResult.GetValue(quietOption);
 				var superQuiet = parseResult.GetValue(superQuietOption);
 
 				if (superQuiet)
@@ -132,6 +139,22 @@ rootCommand.SetAction
 					await Console.Error.WriteLineAsync($"Unknown audio format '{format}'.").ConfigureAwait(false);
 					return 1;
 				}
+
+					if (installVoices)
+					{
+						await Console.Out.WriteLineAsync
+						(
+							"Opening Windows voice settings... Click \"Add natural voices\" to install new voices."
+						).ConfigureAwait(false);
+						System.Diagnostics.Process.Start
+						(
+							new System.Diagnostics.ProcessStartInfo("ms-settings:easeofaccess-narrator")
+							{
+								UseShellExecute = true,
+							}
+						);
+						return 0;
+					}
 
 				if (listAll || listVoices || listDevices)
 				{
