@@ -144,15 +144,9 @@ rootCommand.SetAction
 					{
 						await Console.Out.WriteLineAsync
 						(
-							"Opening Windows voice settings... Click \"Add natural voices\" to install new voices."
+							"Opening voice installer..."
 						).ConfigureAwait(false);
-						System.Diagnostics.Process.Start
-						(
-							new System.Diagnostics.ProcessStartInfo("ms-settings:easeofaccess-narrator")
-							{
-								UseShellExecute = true,
-							}
-						);
+						VoiceInstaller.OpenAddVoiceDialog();
 						return 0;
 					}
 
