@@ -32,7 +32,7 @@ $root = $PSScriptRoot
 
 $rid = 'win-x64'
 $distDir = Join-Path $root 'dist'
-$stampPath = Join-Path $distDir '.publish-stamp'
+$stampPath = Join-Path $root '.publish-stamp'
 $exePath = Join-Path $distDir 'say.exe'
 $project = Join-Path $root 'Talktastic.csproj'
 $publishDir = Join-Path $root "bin\Release\net10.0-windows10.0.19041.0\$rid\publish"

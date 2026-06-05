@@ -7,6 +7,7 @@ native-resources/
 
 ## Publish stamp (build.ps1 sentinel)
 dist/.publish-stamp
+.publish-stamp
 
 ## Audio test files
 *.wav
