@@ -67,9 +67,9 @@ var helpSsmlOption = new Option<bool>("--help-ssml")
 	Description = "Show SSML usage examples",
 };
 
-var installVoicesOption = new Option<bool>("--install-voices")
+var installVoicesOption = new Option<bool>("--add-voices")
 {
-	Description = "Open Windows voice installation settings",
+	Description = "Open the Windows 'Add a voice' dialog",
 };
 
 var quietOption = new Option<bool>("--quiet", "-q")

@@ -133,7 +133,7 @@ static partial class VoiceInstaller
 				UIA_NamePropertyId, "Settings", maxAttempts: 50
 			);
 			if (pSettings == 0)
-				throw new InvalidOperationException("Settings window did not appear.");
+				return; // Settings didn't appear in UIA -- it's still launching, user can take it from here
 
 			// Bring to foreground
 			nint hwnd = 0;
@@ -152,8 +152,7 @@ static partial class VoiceInstaller
 				UIA_AutomationIdPropertyId, AddButtonAutomationId, maxAttempts: 50
 			);
 			if (pAddBtn == 0)
-				throw new InvalidOperationException(
-					"'Add' button not found on the Narrator settings page.");
+				return; // Button not found -- Settings is already open, user can navigate manually
 
 			// Get IUIAutomationInvokePattern and invoke
 			var iid = IID_IUIAutomationInvokePattern;
