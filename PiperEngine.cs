@@ -695,6 +695,7 @@ static partial class PiperEngine
 	(
 		string text,
 		string modelPath,
+		double? lengthScale,
 		CancellationToken cancellationToken
 	)
 	{
@@ -706,10 +707,14 @@ static partial class PiperEngine
 
 		try
 		{
+			var args = $"--model \"{modelPath}\" --output_file \"{outFile}\" --espeak_data \"{espeakData}\" --quiet";
+			if (lengthScale is not null)
+				args += $" --length_scale {lengthScale.Value:F3}";
+
 			var psi = new ProcessStartInfo
 			{
 				FileName = piperExe,
-				Arguments = $"--model \"{modelPath}\" --output_file \"{outFile}\" --espeak_data \"{espeakData}\" --quiet",
+				Arguments = args,
 				RedirectStandardInput = true,
 				RedirectStandardOutput = true,
 				RedirectStandardError = true,

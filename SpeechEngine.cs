@@ -100,7 +100,8 @@ internal static partial class SpeechEngine
 			? StripSsmlTags(request.Text)
 			: request.Text;
 
-		var wavBytes = await PiperEngine.SynthesizeToWavAsync(text, modelPath, cancellationToken).ConfigureAwait(false);
+		var lengthScale = RateToPiperLengthScale(request.Rate);
+		var wavBytes = await PiperEngine.SynthesizeToWavAsync(text, modelPath, lengthScale, cancellationToken).ConfigureAwait(false);
 
 		// Piper outputs 22050 Hz 16-bit mono WAV -- use Raw22Khz for downstream format hints
 		var piperFormat = SpeechSynthesisOutputFormat.Raw22050Hz16BitMonoPcm;
@@ -356,6 +357,43 @@ internal static partial class SpeechEngine
 		return double.TryParse(rate, out var numericRate)
 			? $"{numericRate:+0;-0;0}%"
 			: rate;
+	}
+
+	/// <summary>
+	/// Converts a rate string (e.g. "fast", "+50%", "50", "slow") to piper's --length_scale.
+	/// Piper: 1.0 = normal, lower = faster, higher = slower.
+	/// </summary>
+	private static double? RateToPiperLengthScale(string? rate)
+	{
+		if (string.IsNullOrWhiteSpace(rate))
+			return null;
+
+		// Named rates
+		var scale = rate.ToUpperInvariant() switch
+		{
+			"X-SLOW" => 2.0,
+			"SLOW" => 1.5,
+			"MEDIUM" => 1.0,
+			"DEFAULT" => 1.0,
+			"FAST" => 0.7,
+			"X-FAST" => 0.5,
+			_ => (double?)null,
+		};
+
+		if (scale is not null)
+			return scale;
+
+		// Percentage: "+50%" means 50% faster → length_scale = 1 / 1.5 = 0.667
+		var cleaned = rate.TrimEnd('%');
+		if (double.TryParse(cleaned, out var pct))
+		{
+			// pct=50 means 50% faster, pct=-25 means 25% slower
+			var factor = 1.0 + (pct / 100.0);
+			if (factor <= 0.1) factor = 0.1; // clamp
+			return 1.0 / factor;
+		}
+
+		return null;
 	}
 
 	private static bool HasExtension(string path, string extension)
