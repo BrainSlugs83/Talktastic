@@ -48,9 +48,10 @@ internal static partial class SpeechEngine
 			synth.Voice = winrtVoice;
 		}
 
-		var hasProsody = !string.IsNullOrWhiteSpace(request.Rate) || !string.IsNullOrWhiteSpace(request.Pitch);
+		var hasProsody = !string.IsNullOrWhiteSpace(request.Rate);
 
-		// Use SSML when explicitly requested OR when rate/pitch prosody is needed
+		// Use SSML when explicitly requested OR when rate prosody is needed
+		// (pitch is applied via WAV header rewrite -- legacy voices ignore <prosody pitch>)
 		var useSsml = request.TreatInputAsSsml || hasProsody;
 
 		Windows.Media.SpeechSynthesis.SpeechSynthesisStream stream;
@@ -58,7 +59,7 @@ internal static partial class SpeechEngine
 		{
 			var ssml = request.TreatInputAsSsml
 				? EnsureSsmlWrapped(request.Text)
-				: BuildLegacySsml(request.Text, request.Rate, request.Pitch);
+				: BuildLegacySsml(request.Text, request.Rate, null);
 			stream = await synth.SynthesizeSsmlToStreamAsync(ssml);
 		}
 		else
@@ -67,6 +68,13 @@ internal static partial class SpeechEngine
 		}
 
 		var audioBytes = await ReadStreamAsync(stream).ConfigureAwait(false);
+
+		// Legacy voices ignore SSML pitch, so apply via WAV header rewrite
+		var pitchShift = PitchToPiperShift(request.Pitch);
+		if (pitchShift is not null)
+		{
+			ApplyWavPitch(audioBytes, pitchShift.Value);
+		}
 
 		var meta = new AudioMetadata(voice.Name, request.Text);
 
@@ -128,7 +136,7 @@ internal static partial class SpeechEngine
 		// Apply pitch by rewriting the WAV header sample rate
 		if (pitchShift is not null)
 		{
-			ApplyPiperPitch(wavBytes, pitchShift.Value);
+			ApplyWavPitch(wavBytes, pitchShift.Value);
 		}
 
 		// Piper outputs 22050 Hz 16-bit mono WAV -- use Raw22Khz for downstream format hints
@@ -519,7 +527,7 @@ internal static partial class SpeechEngine
 	/// pitchShift is fractional: 0.10 = 10% higher, -0.15 = 15% lower.
 	/// Clamps to ±50% to avoid garbled audio.
 	/// </summary>
-	private static void ApplyPiperPitch(byte[] wav, double pitchShift)
+	private static void ApplyWavPitch(byte[] wav, double pitchShift)
 	{
 		if (wav.Length < 44)
 			return;
