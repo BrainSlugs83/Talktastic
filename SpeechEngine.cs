@@ -41,7 +41,7 @@ internal static class SpeechEngine
 			synth.Voice = winrtVoice;
 		}
 
-		var text = request.Text;
+		var text = request.TreatInputAsSsml ? EnsureSsmlWrapped(request.Text) : request.Text;
 		var stream = request.TreatInputAsSsml
 			? await synth.SynthesizeSsmlToStreamAsync(text)
 			: await synth.SynthesizeTextToStreamAsync(text);
@@ -260,6 +260,8 @@ internal static class SpeechEngine
 
 	private static string ApplyRateToSsml(string ssml, string? rate)
 	{
+		ssml = EnsureSsmlWrapped(ssml);
+
 		if (string.IsNullOrWhiteSpace(rate))
 		{
 			return ssml;
@@ -293,6 +295,21 @@ internal static class SpeechEngine
 	private static bool HasExtension(string path, string extension)
 	{
 		return string.Equals(Path.GetExtension(path), extension, StringComparison.OrdinalIgnoreCase);
+	}
+
+	/// <summary>
+	/// If the input doesn't start with a &lt;speak&gt; element, wrap it in one.
+	/// </summary>
+	private static string EnsureSsmlWrapped(string ssml)
+	{
+		var trimmed = ssml.AsSpan().TrimStart();
+		if (trimmed.StartsWith("<speak", StringComparison.OrdinalIgnoreCase))
+			return ssml;
+
+		return
+			$"""
+			<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US">{ssml}</speak>
+			""";
 	}
 }
 

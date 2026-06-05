@@ -155,44 +155,40 @@ rootCommand.SetAction
 SSML (Speech Synthesis Markup Language) lets you control how text is spoken.
 Pass --ssml to treat the input as SSML instead of plain text.
 
-Basic template:
-  <speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US">
-    Your text here.
-  </speak>
+The <speak> wrapper is added automatically if missing, so you can use
+bare SSML fragments directly.
 
 Pauses:
-  Taking a break <break time="500ms"/> and continuing.
-  A longer pause <break time="2s"/> between sentences.
+  say --ssml "Taking a break <break time='500ms'/> and continuing."
+  say --ssml "A longer pause <break time='2s'/> between sentences."
 
 Speed, pitch, and volume (prosody):
-  <prosody rate="slow">This is spoken slowly.</prosody>
-  <prosody rate="fast" pitch="high">Fast and high-pitched.</prosody>
-  <prosody volume="soft">This is quieter.</prosody>
-  <prosody rate="+20%">Twenty percent faster than normal.</prosody>
+  say --ssml "<prosody rate='slow'>This is spoken slowly.</prosody>"
+  say --ssml "<prosody rate='fast' pitch='high'>Fast and high-pitched.</prosody>"
+  say --ssml "<prosody volume='soft'>This is quieter.</prosody>"
+  say --ssml "<prosody rate='+20%'>Twenty percent faster than normal.</prosody>"
 
 Emphasis:
-  This is <emphasis level="strong">very important</emphasis>.
+  say --ssml "This is <emphasis level='strong'>very important</emphasis>."
 
-Phonemes (pronunciation):
-  <phoneme alphabet="ipa" ph="tɒmˈɑːtoʊ">tomato</phoneme>
+Phonemes (pronunciation override):
+  say --ssml "<phoneme alphabet='ipa' ph='tɒmɑːtoʊ'>tomato</phoneme>"
 
-Say-as (interpretation):
-  <say-as interpret-as="characters">SSML</say-as>
-  <say-as interpret-as="date" format="mdy">3/14/2026</say-as>
-  <say-as interpret-as="telephone">+1-555-0199</say-as>
+Say-as (interpretation hints):
+  say --ssml "<say-as interpret-as='characters'>SSML</say-as>"
+  say --ssml "<say-as interpret-as='date' format='mdy'>3/14/2026</say-as>"
+  say --ssml "<say-as interpret-as='telephone'>+1-555-0199</say-as>"
 
-Sub (substitution):
-  <sub alias="World Wide Web Consortium">W3C</sub>
+Substitution:
+  say --ssml "<sub alias='World Wide Web Consortium'>W3C</sub>"
 
-Example usage:
+Full SSML documents with <speak> are also accepted:
   say --ssml "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis'
-    xml:lang='en-US'><prosody rate='slow'>Hello.</prosody>
-    <break time='1s'/> Goodbye.</speak>"
+    xml:lang='en-US'><prosody rate='slow'>Hello.</prosody></speak>"
 
 Notes:
-  - The <speak> root element is required.
-  - Neural voices support most SSML tags; legacy voices have limited support.
-  - The --rate option wraps your SSML in a <prosody> tag automatically.
+  - Neural voices support all tags above; legacy voices have limited support.
+  - The --rate option can be combined with --ssml to wrap everything in <prosody>.
 """
 							).ConfigureAwait(false);
 							return 0;
