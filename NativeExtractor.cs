@@ -1,41 +1,84 @@
+using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.IO.Compression;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
-using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace Talktastic;
 
+[Flags]
+internal enum DllGroup
+{
+	None = 0,
+	SpeechSdk = 1,
+	Lame = 2,
+}
+
 internal static class NativeExtractor
 {
 	private const string ResourcePrefix = "Talktastic.Native.";
 	private const string ManifestResourceName = ResourcePrefix + "manifest.json";
-	private static readonly object SyncRoot = new();
-	private static readonly string ExtractDirectory = Path.Combine
+
+	private static readonly string AppDataDir = Path.Combine
 	(
 		Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
 		"Talktastic",
 		"native"
 	);
-	private static bool _initialized;
 
-	public static void EnsureExtracted()
+	private static readonly string TempDir = Path.Combine(Path.GetTempPath(), "Talktastic");
+
+	private static readonly Dictionary<DllGroup, string[]> GroupDllNames = new()
 	{
-		if (_initialized)
+		[DllGroup.SpeechSdk] =
+		[
+			"Microsoft.CognitiveServices.Speech.core.dll",
+			"Microsoft.CognitiveServices.Speech.extension.audio.sys.dll",
+			"Microsoft.CognitiveServices.Speech.extension.embedded.tts.dll",
+			"Microsoft.CognitiveServices.Speech.extension.onnxruntime.dll",
+		],
+		[DllGroup.Lame] =
+		[
+			"libmp3lame.dll",
+		],
+	};
+
+	private static readonly object SyncRoot = new();
+	private static readonly HashSet<string> ConfiguredDirs = new(StringComparer.OrdinalIgnoreCase);
+	private static readonly ConcurrentBag<string> CwdExtractions = new();
+	private static DllGroup _resolvedGroups = DllGroup.None;
+	private static NativePayloadManifestEntry[]? _cachedManifest;
+	private static bool _staleCleaned;
+
+	/// <summary>
+	/// Ensures that all native DLLs in the requested groups are available and loadable.
+	/// Only resolves DLLs for the specified groups; others are ignored entirely.
+	/// </summary>
+	public static void EnsureAvailable(DllGroup groups)
+	{
+		var needed = groups & ~_resolvedGroups;
+		if (needed == DllGroup.None)
 		{
 			return;
 		}
 
 		lock (SyncRoot)
 		{
-			if (_initialized)
+			needed = groups & ~_resolvedGroups;
+			if (needed == DllGroup.None)
 			{
 				return;
 			}
 
-			var mutex = new Mutex(false, @"Local\Talktastic.NativeSpeechSdk");
+			var manifest = GetManifest();
+			var neededNames = GetDllNames(needed);
+			var entries = manifest.Where(e => neededNames.Contains(e.Name)).ToArray();
+			var assembly = typeof(NativeExtractor).Assembly;
+
+			using var mutex = new Mutex(false, @"Local\Talktastic.NativeDlls");
 			var mutexAcquired = false;
 
 			try
@@ -51,25 +94,31 @@ internal static class NativeExtractor
 
 				if (!mutexAcquired)
 				{
-					throw new InvalidOperationException("Timed out waiting for the native Speech SDK extraction lock.");
+					throw new InvalidOperationException("Timed out waiting for native DLL extraction lock.");
 				}
 
-				Directory.CreateDirectory(ExtractDirectory);
+				var resolved = new ConcurrentBag<ResolvedDll>();
+				var cwd = Path.GetFullPath(Directory.GetCurrentDirectory());
 
-				var assembly = typeof(NativeExtractor).Assembly;
-
-				foreach (var entry in LoadManifest(assembly))
-				{
-					var targetPath = Path.Combine(ExtractDirectory, entry.Name);
-
-					if (!IsValid(targetPath, entry))
+				Parallel.ForEach
+				(
+					entries,
+					entry =>
 					{
-						ExtractResource(assembly, entry, targetPath);
+						var result = FindOrExtract(assembly, entry, cwd);
+						resolved.Add(result);
 					}
+				);
+
+				ConfigureSearchPaths(resolved);
+
+				if (!_staleCleaned)
+				{
+					CleanStaleFiles(manifest);
+					_staleCleaned = true;
 				}
 
-				ConfigureSearchPath();
-				_initialized = true;
+				_resolvedGroups |= needed;
 			}
 			finally
 			{
@@ -77,19 +126,124 @@ internal static class NativeExtractor
 				{
 					mutex.ReleaseMutex();
 				}
-
-				mutex.Dispose();
 			}
 		}
 	}
 
-	private static NativePayloadManifestEntry[] LoadManifest(Assembly assembly)
+	/// <summary>
+	/// Deletes any DLLs we extracted to the current working directory this session.
+	/// Best-effort; silently ignores files that are locked or already removed.
+	/// </summary>
+	public static void CleanupCwdExtractions()
 	{
-		using var stream = assembly.GetManifestResourceStream(ManifestResourceName)
-			?? throw new InvalidOperationException($"Embedded resource '{ManifestResourceName}' was not found.");
+		while (CwdExtractions.TryTake(out var path))
+		{
+			try
+			{
+				File.Delete(path);
+			}
+			catch (IOException)
+			{
+				// DLL may still be loaded -- nothing we can do
+			}
+			catch (UnauthorizedAccessException)
+			{
+				// Best effort
+			}
+		}
+	}
 
-		return JsonSerializer.Deserialize(stream, NativeExtractorJsonContext.Default.NativePayloadManifestEntryArray)
-			?? throw new InvalidOperationException("Embedded native payload manifest could not be deserialized.");
+	private static HashSet<string> GetDllNames(DllGroup groups)
+	{
+		var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+		foreach (var flag in Enum.GetValues<DllGroup>())
+		{
+			if (flag != DllGroup.None && groups.HasFlag(flag) && GroupDllNames.TryGetValue(flag, out var dlls))
+			{
+				foreach (var dll in dlls)
+				{
+					names.Add(dll);
+				}
+			}
+		}
+
+		return names;
+	}
+
+	private static NativePayloadManifestEntry[] GetManifest()
+	{
+		if (_cachedManifest is not null)
+		{
+			return _cachedManifest;
+		}
+
+		var assembly = typeof(NativeExtractor).Assembly;
+
+		using var stream = assembly.GetManifestResourceStream(ManifestResourceName)
+			?? throw new InvalidOperationException($"Embedded resource '{ManifestResourceName}' not found.");
+
+		_cachedManifest = JsonSerializer.Deserialize
+		(
+			stream,
+			NativeExtractorJsonContext.Default.NativePayloadManifestEntryArray
+		) ?? throw new InvalidOperationException("Native payload manifest could not be deserialized.");
+
+		return _cachedManifest;
+	}
+
+	private static ResolvedDll FindOrExtract(Assembly assembly, NativePayloadManifestEntry entry, string cwd)
+	{
+		string[] searchDirs = [AppDataDir, TempDir, cwd];
+
+		// Search for an existing valid copy
+		foreach (var dir in searchDirs)
+		{
+			var path = Path.Combine(dir, entry.Name);
+
+			if (IsValid(path, entry))
+			{
+				return new ResolvedDll(entry.Name, path);
+			}
+		}
+
+		// Extract to the first writable location
+		foreach (var dir in searchDirs)
+		{
+			try
+			{
+				Directory.CreateDirectory(dir);
+				var path = Path.Combine(dir, entry.Name);
+				ExtractResource(assembly, entry, path);
+
+				if (IsCwd(dir, cwd))
+				{
+					CwdExtractions.Add(Path.GetFullPath(path));
+				}
+
+				return new ResolvedDll(entry.Name, path);
+			}
+			catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+			{
+				// Try next location
+			}
+		}
+
+		throw new InvalidOperationException
+		(
+			$"Failed to extract native DLL '{entry.Name}' to any location " +
+			$"({AppDataDir}, {TempDir}, {cwd})."
+		);
+	}
+
+	private static bool IsCwd(string dir, string cwd)
+	{
+		return string.Equals
+		(
+			Path.GetFullPath(dir),
+			cwd,
+			StringComparison.OrdinalIgnoreCase
+		);
 	}
 
 	private static bool IsValid(string targetPath, NativePayloadManifestEntry entry)
@@ -109,16 +263,12 @@ internal static class NativeExtractor
 		return string.Equals(ComputeMd5(targetPath), entry.Md5, StringComparison.OrdinalIgnoreCase);
 	}
 
-	private static void ExtractResource
-	(
-		Assembly assembly,
-		NativePayloadManifestEntry entry,
-		string targetPath
-	)
+	private static void ExtractResource(Assembly assembly, NativePayloadManifestEntry entry, string targetPath)
 	{
 		var resourceName = ResourcePrefix + entry.Name + ".gz";
+
 		using var compressedStream = assembly.GetManifestResourceStream(resourceName)
-			?? throw new InvalidOperationException($"Embedded resource '{resourceName}' was not found.");
+			?? throw new InvalidOperationException($"Embedded resource '{resourceName}' not found.");
 
 		var tempPath = targetPath + ".tmp";
 
@@ -152,26 +302,107 @@ internal static class NativeExtractor
 		}
 	}
 
-	private static void ConfigureSearchPath()
+	/// <summary>
+	/// Removes DLLs from the dedicated LOCALAPPDATA directory that are no longer
+	/// in the embedded manifest. Only operates on our own directory -- never
+	/// touches %TEMP% or CWD.
+	/// </summary>
+	private static void CleanStaleFiles(NativePayloadManifestEntry[] manifest)
 	{
-		if (!SetDllDirectory(ExtractDirectory))
+		if (!Directory.Exists(AppDataDir))
 		{
-			throw new InvalidOperationException
+			return;
+		}
+
+		var allManifestNames = new HashSet<string>
+		(
+			manifest.Select(static e => e.Name),
+			StringComparer.OrdinalIgnoreCase
+		);
+
+		try
+		{
+			foreach (var file in Directory.EnumerateFiles(AppDataDir, "*.dll"))
+			{
+				var fileName = Path.GetFileName(file);
+
+				if (!allManifestNames.Contains(fileName))
+				{
+					try
+					{
+						File.Delete(file);
+					}
+					catch (IOException)
+					{
+						// Locked by another process
+					}
+					catch (UnauthorizedAccessException)
+					{
+						// Best effort
+					}
+				}
+			}
+		}
+		catch (IOException)
+		{
+			// Directory enumeration failed -- best effort
+		}
+		catch (UnauthorizedAccessException)
+		{
+			// Best effort
+		}
+	}
+
+	private static void ConfigureSearchPaths(IEnumerable<ResolvedDll> resolved)
+	{
+		var newDirs = resolved
+			.Select(static r => Path.GetDirectoryName(Path.GetFullPath(r.Path))!)
+			.Distinct(StringComparer.OrdinalIgnoreCase)
+			.Where(d => !ConfiguredDirs.Contains(d))
+			.ToArray();
+
+		if (newDirs.Length == 0)
+		{
+			return;
+		}
+
+		// SetDllDirectory for the first directory (highest priority in DLL search order)
+		if (ConfiguredDirs.Count == 0)
+		{
+			if (!SetDllDirectory(newDirs[0]))
+			{
+				throw new InvalidOperationException
+				(
+					$"Failed to set native DLL directory '{newDirs[0]}'. " +
+					$"Win32 error {Marshal.GetLastWin32Error()}."
+				);
+			}
+		}
+
+		// Add all new directories to PATH
+		var path = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+		var pathEntries = new HashSet<string>
+		(
+			path.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+			StringComparer.OrdinalIgnoreCase
+		);
+
+		var additions = newDirs.Where(d => !pathEntries.Contains(d)).ToArray();
+
+		if (additions.Length > 0)
+		{
+			var prefix = string.Join(';', additions);
+
+			Environment.SetEnvironmentVariable
 			(
-				$"Failed to register native DLL directory '{ExtractDirectory}'. Win32 error {Marshal.GetLastWin32Error()}."
+				"PATH",
+				string.IsNullOrEmpty(path) ? prefix : $"{prefix};{path}"
 			);
 		}
 
-		var path = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
-		var pathEntries = path.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-		if (!pathEntries.Contains(ExtractDirectory, StringComparer.OrdinalIgnoreCase))
+		foreach (var dir in newDirs)
 		{
-			var updatedPath = string.IsNullOrEmpty(path)
-				? ExtractDirectory
-				: $"{ExtractDirectory};{path}";
-
-			Environment.SetEnvironmentVariable("PATH", updatedPath);
+			ConfiguredDirs.Add(dir);
 		}
 	}
 
@@ -179,7 +410,7 @@ internal static class NativeExtractor
 	(
 		"Security",
 		"CA5351:Do Not Use Broken Cryptographic Algorithms",
-		Justification = "MD5 is required here for non-security file identity checks against the embedded manifest."
+		Justification = "MD5 is used for non-security file identity checks against the embedded manifest."
 	)]
 	private static string ComputeMd5(string path)
 	{
@@ -191,6 +422,8 @@ internal static class NativeExtractor
 	[DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
 	private static extern bool SetDllDirectory(string lpPathName);
 }
+
+internal sealed record ResolvedDll(string Name, string Path);
 
 internal sealed record NativePayloadManifestEntry
 (

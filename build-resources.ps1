@@ -13,9 +13,6 @@ param
 	[string]$OnnxRuntimePackageDirectory,
 
 	[Parameter(Mandatory = $true)]
-	[string]$TelemetryPackageDirectory,
-
-	[Parameter(Mandatory = $true)]
 	[string]$LamePackageDirectory,
 
 	[string]$RuntimeIdentifier = 'win-x64'
@@ -105,28 +102,12 @@ $nativeDlls = @(
 		SourcePath = Join-Path $BasePackageDirectory "runtimes\$RuntimeIdentifier\native\Microsoft.CognitiveServices.Speech.extension.audio.sys.dll"
 	}
 	@{
-		Name = 'Microsoft.CognitiveServices.Speech.extension.codec.dll'
-		SourcePath = Join-Path $BasePackageDirectory "runtimes\$RuntimeIdentifier\native\Microsoft.CognitiveServices.Speech.extension.codec.dll"
-	}
-	@{
 		Name = 'Microsoft.CognitiveServices.Speech.extension.embedded.tts.dll'
 		SourcePath = Join-Path $EmbeddedTtsPackageDirectory "runtimes\$RuntimeIdentifier\native\Microsoft.CognitiveServices.Speech.extension.embedded.tts.dll"
 	}
 	@{
-		Name = 'Microsoft.CognitiveServices.Speech.extension.kws.dll'
-		SourcePath = Join-Path $BasePackageDirectory "runtimes\$RuntimeIdentifier\native\Microsoft.CognitiveServices.Speech.extension.kws.dll"
-	}
-	@{
-		Name = 'Microsoft.CognitiveServices.Speech.extension.kws.ort.dll'
-		SourcePath = Join-Path $BasePackageDirectory "runtimes\$RuntimeIdentifier\native\Microsoft.CognitiveServices.Speech.extension.kws.ort.dll"
-	}
-	@{
 		Name = 'Microsoft.CognitiveServices.Speech.extension.onnxruntime.dll'
 		SourcePath = Join-Path $OnnxRuntimePackageDirectory "runtimes\$RuntimeIdentifier\native\Microsoft.CognitiveServices.Speech.extension.onnxruntime.dll"
-	}
-	@{
-		Name = 'Microsoft.CognitiveServices.Speech.extension.telemetry.dll'
-		SourcePath = Join-Path $TelemetryPackageDirectory "runtimes\$RuntimeIdentifier\native\Microsoft.CognitiveServices.Speech.extension.telemetry.dll"
 	}
 	@{
 		# NAudio.Lame ships the DLL as build/libmp3lame.64.dll; we embed it as libmp3lame.dll

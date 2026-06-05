@@ -5,7 +5,7 @@
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <AssemblyName>say</AssemblyName>
     <RootNamespace>Talktastic</RootNamespace>
-    <Version>0.1.1</Version>
+    <Version>0.2.0</Version>
     <Product>Talktastic</Product>
     <Description>Standalone Windows TTS CLI</Description>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -32,7 +32,6 @@
     <PackageReference Include="Microsoft.CognitiveServices.Speech" Version="1.50.0" GeneratePathProperty="true" />
     <PackageReference Include="Microsoft.CognitiveServices.Speech.Extension.Embedded.TTS" Version="1.50.0" GeneratePathProperty="true" />
     <PackageReference Include="Microsoft.CognitiveServices.Speech.Extension.ONNX.Runtime" Version="1.50.0" GeneratePathProperty="true" />
-    <PackageReference Include="Microsoft.CognitiveServices.Speech.Extension.Telemetry" Version="1.50.0" GeneratePathProperty="true" />
     <PackageReference Include="NAudio.Lame" Version="2.1.0" GeneratePathProperty="true" ExcludeAssets="all" />
     <PackageReference Include="System.CommandLine" Version="3.0.0-preview.4.26230.115" />
   </ItemGroup>
@@ -40,16 +39,12 @@
   <ItemGroup>
     <EmbeddedSpeechNativePublishFile Include="Microsoft.CognitiveServices.Speech.core.dll" />
     <EmbeddedSpeechNativePublishFile Include="Microsoft.CognitiveServices.Speech.extension.audio.sys.dll" />
-    <EmbeddedSpeechNativePublishFile Include="Microsoft.CognitiveServices.Speech.extension.codec.dll" />
     <EmbeddedSpeechNativePublishFile Include="Microsoft.CognitiveServices.Speech.extension.embedded.tts.dll" />
-    <EmbeddedSpeechNativePublishFile Include="Microsoft.CognitiveServices.Speech.extension.kws.dll" />
-    <EmbeddedSpeechNativePublishFile Include="Microsoft.CognitiveServices.Speech.extension.kws.ort.dll" />
     <EmbeddedSpeechNativePublishFile Include="Microsoft.CognitiveServices.Speech.extension.onnxruntime.dll" />
-    <EmbeddedSpeechNativePublishFile Include="Microsoft.CognitiveServices.Speech.extension.telemetry.dll" />
   </ItemGroup>
 
   <Target Name="PrepareNativeResources" BeforeTargets="PrepareResourceNames" Condition="'$(DesignTimeBuild)' != 'true'">
-    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\build-resources.ps1&quot; -OutputDirectory &quot;$(SpeechNativeResourceDirectory)&quot; -BasePackageDirectory &quot;$(PkgMicrosoft_CognitiveServices_Speech)&quot; -EmbeddedTtsPackageDirectory &quot;$(PkgMicrosoft_CognitiveServices_Speech_Extension_Embedded_TTS)&quot; -OnnxRuntimePackageDirectory &quot;$(PkgMicrosoft_CognitiveServices_Speech_Extension_ONNX_Runtime)&quot; -TelemetryPackageDirectory &quot;$(PkgMicrosoft_CognitiveServices_Speech_Extension_Telemetry)&quot; -LamePackageDirectory &quot;$(PkgNAudio_Lame)&quot; -RuntimeIdentifier &quot;$(SpeechNativeRuntimeIdentifier)&quot;" />
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\build-resources.ps1&quot; -OutputDirectory &quot;$(SpeechNativeResourceDirectory)&quot; -BasePackageDirectory &quot;$(PkgMicrosoft_CognitiveServices_Speech)&quot; -EmbeddedTtsPackageDirectory &quot;$(PkgMicrosoft_CognitiveServices_Speech_Extension_Embedded_TTS)&quot; -OnnxRuntimePackageDirectory &quot;$(PkgMicrosoft_CognitiveServices_Speech_Extension_ONNX_Runtime)&quot; -LamePackageDirectory &quot;$(PkgNAudio_Lame)&quot; -RuntimeIdentifier &quot;$(SpeechNativeRuntimeIdentifier)&quot;" />
     <ItemGroup>
       <GeneratedNativeResource Remove="$(SpeechNativeResourceDirectory)\*.dll.gz" />
       <GeneratedNativeResource Include="$(SpeechNativeResourceDirectory)\*.dll.gz" />

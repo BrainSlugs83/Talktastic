@@ -34,18 +34,42 @@ internal static class VoiceEnumerator
 
 	public static async Task<InstalledVoice> ResolveVoiceAsync(string? query, CancellationToken cancellationToken = default)
 	{
-		var voices = await GetVoicesAsync(cancellationToken).ConfigureAwait(false);
-		if (voices.Count == 0)
-		{
-			throw new InvalidOperationException("No voices found.");
-		}
-
 		if (string.IsNullOrWhiteSpace(query))
 		{
+			// Default voice needs full enumeration (neural preferred)
+			var voices = await GetVoicesAsync(cancellationToken).ConfigureAwait(false);
+
+			if (voices.Count == 0)
+			{
+				throw new InvalidOperationException("No voices found.");
+			}
+
 			return ResolveDefaultVoice(voices);
 		}
 
-		// Exact match
+		// Try legacy voices first -- no native DLLs needed
+		var legacyVoices = GetLegacyVoices();
+		var legacyMatch = FindMatch(legacyVoices, query);
+
+		if (legacyMatch is not null)
+		{
+			return legacyMatch;
+		}
+
+		// No legacy match -- load Speech SDK DLLs and try neural voices
+		var neuralVoices = await GetNeuralVoicesAsync(cancellationToken).ConfigureAwait(false);
+		var neuralMatch = FindMatch(neuralVoices, query);
+
+		if (neuralMatch is not null)
+		{
+			return neuralMatch;
+		}
+
+		throw new InvalidOperationException($"No voice matched '{query}'.");
+	}
+
+	private static InstalledVoice? FindMatch(InstalledVoice[] voices, string query)
+	{
 		var exactMatch = voices.FirstOrDefault
 		(
 			v =>
@@ -59,7 +83,6 @@ internal static class VoiceEnumerator
 			return exactMatch;
 		}
 
-		// Substring match -- favor neural over legacy
 		var partialMatches = voices
 			.Where
 			(
@@ -68,17 +91,10 @@ internal static class VoiceEnumerator
 					ContainsIgnoreCase(v.ShortName, query) ||
 					ContainsIgnoreCase(v.LocalName, query)
 			)
-			.OrderBy(static v => v.VoiceType) // Neural first
-			.ThenBy(static v => v.Name, StringComparer.OrdinalIgnoreCase)
+			.OrderBy(static v => v.Name, StringComparer.OrdinalIgnoreCase)
 			.ToArray();
 
-		if (partialMatches.Length == 0)
-		{
-			throw new InvalidOperationException($"No voice matched '{query}'.");
-		}
-
-		// If there's at least one match, take the first (neural preferred)
-		return partialMatches[0];
+		return partialMatches.Length > 0 ? partialMatches[0] : null;
 	}
 
 	private static InstalledVoice ResolveDefaultVoice(IReadOnlyList<InstalledVoice> voices)
@@ -204,6 +220,8 @@ internal static class VoiceEnumerator
 		{
 			return [];
 		}
+
+		NativeExtractor.EnsureAvailable(DllGroup.SpeechSdk);
 
 		var config = EmbeddedSpeechConfig.FromPaths([.. voicePaths]);
 		using var synthesizer = new SpeechSdk.SpeechSynthesizer(config, audioConfig: null);

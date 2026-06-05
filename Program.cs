@@ -6,8 +6,6 @@ using System.Xml;
 
 using Talktastic;
 
-NativeExtractor.EnsureExtracted();
-
 var version = Assembly.GetEntryAssembly()
 	?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
 	?.InformationalVersion ?? "0.0.0";
@@ -224,7 +222,15 @@ rootCommand.SetAction
 var parserConfiguration = new ParserConfiguration();
 var invocationConfiguration = new InvocationConfiguration();
 var rootParseResult = rootCommand.Parse(args, parserConfiguration);
-return await rootParseResult.InvokeAsync(invocationConfiguration, CancellationToken.None).ConfigureAwait(false);
+
+try
+{
+	return await rootParseResult.InvokeAsync(invocationConfiguration, CancellationToken.None).ConfigureAwait(false);
+}
+finally
+{
+	NativeExtractor.CleanupCwdExtractions();
+}
 
 static async Task<string?> ReadInputTextAsync(string? text, CancellationToken cancellationToken)
 {

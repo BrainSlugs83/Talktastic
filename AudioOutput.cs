@@ -237,6 +237,8 @@ internal static partial class LameEncoder
 
 	public static byte[] EncodePcmToMp3(byte[] pcmData, int sampleRate, int channels)
 	{
+		NativeExtractor.EnsureAvailable(DllGroup.Lame);
+
 		var gfp = Init();
 		if (gfp == 0)
 		{
