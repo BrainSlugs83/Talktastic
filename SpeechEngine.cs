@@ -24,7 +24,8 @@ internal static class SpeechEngine
 			null => await SpeakToDeviceAsync(request, voice, license).ConfigureAwait(false),
 			var path when HasExtension(path, ".wav") => await WriteWaveAsync(path, request, voice, license).ConfigureAwait(false),
 			var path when HasExtension(path, ".mp3") => await WriteMp3Async(path, request, voice, license).ConfigureAwait(false),
-			var path => throw new InvalidOperationException($"Unsupported output file extension for '{path}'."),
+			var path when HasExtension(path, ".ogg") => await WriteOggAsync(path, request, voice, license).ConfigureAwait(false),
+			var path => throw new InvalidOperationException($"Unsupported output file extension for '{path}'. Use .wav, .mp3, or .ogg."),
 		};
 	}
 
@@ -47,6 +48,8 @@ internal static class SpeechEngine
 
 		var audioBytes = await ReadStreamAsync(stream).ConfigureAwait(false);
 
+		var meta = new AudioMetadata(voice.Name, request.Text);
+
 		if (request.OutputPath is null)
 		{
 			await AudioOutput.PlayToDeviceAsync(audioBytes, request.DeviceQuery).ConfigureAwait(false);
@@ -63,11 +66,18 @@ internal static class SpeechEngine
 		if (HasExtension(request.OutputPath, ".mp3"))
 		{
 			AudioOutput.EnsureDirectoryExists(request.OutputPath);
-			await AudioOutput.WriteMp3Async(audioBytes, request.OutputFormat, request.OutputPath).ConfigureAwait(false);
+			await AudioOutput.WriteMp3Async(audioBytes, request.OutputFormat, request.OutputPath, meta).ConfigureAwait(false);
 			return $"Wrote MP3 file '{request.OutputPath}' with {voice.Name} (legacy).";
 		}
 
-		throw new InvalidOperationException($"Unsupported output file extension for '{request.OutputPath}'.");
+		if (HasExtension(request.OutputPath, ".ogg"))
+		{
+			AudioOutput.EnsureDirectoryExists(request.OutputPath);
+			await AudioOutput.WriteOggOpusAsync(audioBytes, request.OutputFormat, request.OutputPath, meta).ConfigureAwait(false);
+			return $"Wrote OGG file '{request.OutputPath}' with {voice.Name} (legacy).";
+		}
+
+		throw new InvalidOperationException($"Unsupported output file extension for '{request.OutputPath}'. Use .wav, .mp3, or .ogg.");
 	}
 
 	private static async Task<byte[]> ReadStreamAsync(Windows.Media.SpeechSynthesis.SpeechSynthesisStream stream)
@@ -153,8 +163,30 @@ internal static class SpeechEngine
 		var result = await SpeakAsync(synthesizer, request, voice).ConfigureAwait(false);
 		EnsureSuccess(result);
 
-		await AudioOutput.WriteMp3Async(result.AudioData, request.OutputFormat, outputPath).ConfigureAwait(false);
+		var meta = new AudioMetadata(voice.Name, request.Text);
+		await AudioOutput.WriteMp3Async(result.AudioData, request.OutputFormat, outputPath, meta).ConfigureAwait(false);
 		return $"Wrote MP3 file '{outputPath}' with {voice.Name}.";
+	}
+
+	private static async Task<string> WriteOggAsync
+	(
+		string outputPath,
+		SynthesisRequest request,
+		InstalledVoice voice,
+		string license
+	)
+	{
+		using var stream = AudioOutputStream.CreatePullStream();
+		using var audioConfig = AudioConfig.FromStreamOutput(stream);
+		var config = CreateConfig(request, voice, license);
+		using var synthesizer = new SpeechSynthesizer(config, audioConfig);
+
+		var result = await SpeakAsync(synthesizer, request, voice).ConfigureAwait(false);
+		EnsureSuccess(result);
+
+		var meta = new AudioMetadata(voice.Name, request.Text);
+		await AudioOutput.WriteOggOpusAsync(result.AudioData, request.OutputFormat, outputPath, meta).ConfigureAwait(false);
+		return $"Wrote OGG file '{outputPath}' with {voice.Name}.";
 	}
 
 	private static EmbeddedSpeechConfig CreateConfig

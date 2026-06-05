@@ -5,6 +5,9 @@ using Microsoft.CognitiveServices.Speech.Audio;
 using Windows.Devices.Enumeration;
 using Windows.Media.Devices;
 
+using ConcentusApplication = Concentus.Enums.OpusApplication;
+using OpusCodecFactory = Concentus.OpusCodecFactory;
+
 namespace Talktastic;
 
 internal static class AudioOutput
@@ -60,6 +63,7 @@ internal static class AudioOutput
 		byte[] audioBytes,
 		SpeechSynthesisOutputFormat outputFormat,
 		string outputPath,
+		AudioMetadata? metadata = null,
 		CancellationToken cancellationToken = default
 	)
 	{
@@ -69,7 +73,43 @@ internal static class AudioOutput
 		var pcmBytes = formatInfo.HasRiffHeader ? StripWaveHeader(audioBytes) : audioBytes;
 		var mp3Bytes = LameEncoder.EncodePcmToMp3(pcmBytes, formatInfo.SampleRate, 1);
 
-		await File.WriteAllBytesAsync(outputPath, mp3Bytes, cancellationToken).ConfigureAwait(false);
+		using var output = File.Create(outputPath);
+
+		if (metadata is not null)
+		{
+			var id3 = Id3Writer.CreateTag(metadata);
+			await output.WriteAsync(id3, cancellationToken).ConfigureAwait(false);
+		}
+
+		await output.WriteAsync(mp3Bytes, cancellationToken).ConfigureAwait(false);
+	}
+
+	public static async Task WriteOggOpusAsync
+	(
+		byte[] audioBytes,
+		SpeechSynthesisOutputFormat outputFormat,
+		string outputPath,
+		AudioMetadata? metadata = null,
+		CancellationToken cancellationToken = default
+	)
+	{
+		var formatInfo = GetFormatInfo(outputFormat);
+		EnsureDirectoryExists(outputPath);
+
+		var pcmBytes = formatInfo.HasRiffHeader ? StripWaveHeader(audioBytes) : audioBytes;
+
+		await Task.Run
+		(
+			() => OggOpusEncoder.EncodeToFile
+			(
+				pcmBytes,
+				formatInfo.SampleRate,
+				1,
+				outputPath,
+				metadata
+			),
+			cancellationToken
+		).ConfigureAwait(false);
 	}
 
 	public static byte[] ReadAllBytes(PullAudioOutputStream stream)
@@ -156,7 +196,7 @@ internal static class AudioOutput
 			SpeechSynthesisOutputFormat.Raw48Khz16BitMonoPcm => new PcmFormatInfo(48000, false),
 			_ => throw new InvalidOperationException
 			(
-				$"MP3 output only supports 16-bit mono PCM synthesis formats. Got {outputFormat}."
+				$"Encoded output only supports 16-bit mono PCM synthesis formats. Got {outputFormat}."
 			),
 		};
 	}
@@ -294,5 +334,124 @@ internal static partial class LameEncoder
 		{
 			_ = Close(gfp);
 		}
+	}
+}
+
+internal sealed record AudioMetadata(string VoiceName, string SpokenText);
+
+/// <summary>
+/// Pure managed Opus encoder using Concentus. No native DLLs needed.
+/// </summary>
+internal static class OggOpusEncoder
+{
+	public static void EncodeToFile
+	(
+			byte[] pcmBytes,
+			int sampleRate,
+			int channels,
+			string outputPath,
+			AudioMetadata? metadata
+	)
+	{
+			using var encoder = OpusCodecFactory.CreateEncoder(48000, channels, ConcentusApplication.OPUS_APPLICATION_VOIP);
+			encoder.Bitrate = 64000;
+
+			Concentus.Oggfile.OpusTags? tags = null;
+
+			if (metadata is not null)
+			{
+				tags = new Concentus.Oggfile.OpusTags
+				{
+					Comment = "Talktastic",
+				};
+				tags.Fields["ARTIST"] = metadata.VoiceName;
+				tags.Fields["TITLE"] = Truncate(metadata.SpokenText, 256);
+				tags.Fields["ENCODER"] = "Talktastic";
+			}
+
+			// Convert byte[] PCM16 to short[]
+			var sampleCount = pcmBytes.Length / 2;
+			var samples = new short[sampleCount];
+
+			for (var i = 0; i < sampleCount; i++)
+			{
+				samples[i] = BitConverter.ToInt16(pcmBytes, i * 2);
+			}
+
+			using var fileStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write);
+			var oggStream = new Concentus.Oggfile.OpusOggWriteStream(encoder, fileStream, tags, inputSampleRate: sampleRate);
+			oggStream.WriteSamples(samples, 0, sampleCount);
+			oggStream.Finish();
+	}
+
+	private static string Truncate(string value, int maxLength)
+	{
+			return value.Length <= maxLength ? value : value[..maxLength] + "...";
+	}
+}
+
+/// <summary>
+/// Minimal ID3v2.3 tag writer for MP3 metadata. No external dependencies.
+/// </summary>
+internal static class Id3Writer
+{
+	public static byte[] CreateTag(AudioMetadata metadata)
+	{
+			using var ms = new MemoryStream();
+			using var writer = new BinaryWriter(ms);
+
+			// Placeholder for ID3v2.3 header (10 bytes)
+			var headerPos = ms.Position;
+			writer.Write(new byte[10]);
+
+			WriteTextFrame(writer, "TPE1", metadata.VoiceName);
+			WriteTextFrame(writer, "TIT2", Truncate(metadata.SpokenText, 256));
+			WriteTextFrame(writer, "TSSE", "Talktastic");
+
+			var totalSize = (int)(ms.Position - headerPos - 10);
+
+			// Go back and write the real header
+			ms.Position = headerPos;
+			writer.Write("ID3"u8);
+			writer.Write((byte)3); // Version 2.3
+			writer.Write((byte)0); // Revision
+			writer.Write((byte)0); // Flags
+			WriteSyncsafeInt(writer, totalSize);
+
+			return ms.ToArray();
+	}
+
+	private static void WriteTextFrame(BinaryWriter writer, string frameId, string text)
+	{
+			var textBytes = System.Text.Encoding.UTF8.GetBytes(text);
+			var frameSize = 1 + textBytes.Length; // 1 byte for encoding
+
+			// Frame header: 4-char ID + 4-byte size (big-endian) + 2-byte flags
+			writer.Write(System.Text.Encoding.ASCII.GetBytes(frameId));
+			WriteBigEndianInt(writer, frameSize);
+			writer.Write((short)0); // Flags
+			writer.Write((byte)3); // UTF-8 encoding
+			writer.Write(textBytes);
+	}
+
+	private static void WriteSyncsafeInt(BinaryWriter writer, int value)
+	{
+			writer.Write((byte)((value >> 21) & 0x7F));
+			writer.Write((byte)((value >> 14) & 0x7F));
+			writer.Write((byte)((value >> 7) & 0x7F));
+			writer.Write((byte)(value & 0x7F));
+	}
+
+	private static void WriteBigEndianInt(BinaryWriter writer, int value)
+	{
+			writer.Write((byte)((value >> 24) & 0xFF));
+			writer.Write((byte)((value >> 16) & 0xFF));
+			writer.Write((byte)((value >> 8) & 0xFF));
+			writer.Write((byte)(value & 0xFF));
+	}
+
+	private static string Truncate(string value, int maxLength)
+	{
+			return value.Length <= maxLength ? value : value[..maxLength] + "...";
 	}
 }

@@ -5,7 +5,7 @@
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <AssemblyName>say</AssemblyName>
     <RootNamespace>Talktastic</RootNamespace>
-    <Version>0.2.0</Version>
+    <Version>0.3.0</Version>
     <Product>Talktastic</Product>
     <Description>Standalone Windows TTS CLI</Description>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -29,6 +29,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Concentus" Version="2.2.2" />
+    <PackageReference Include="Concentus.Oggfile" Version="1.0.7" />
     <PackageReference Include="Microsoft.CognitiveServices.Speech" Version="1.50.0" GeneratePathProperty="true" />
     <PackageReference Include="Microsoft.CognitiveServices.Speech.Extension.Embedded.TTS" Version="1.50.0" GeneratePathProperty="true" />
     <PackageReference Include="Microsoft.CognitiveServices.Speech.Extension.ONNX.Runtime" Version="1.50.0" GeneratePathProperty="true" />
@@ -67,17 +69,7 @@
 
   <Target Name="ExcludeEmbeddedSpeechNativeFilesFromPublish" BeforeTargets="ComputeFilesToPublish">
     <ItemGroup>
-      <EmbeddedSpeechNativePublishCandidate
-        Include="@(ResolvedFileToPublish)"
-        Condition="
-          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.core.dll' Or
-          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.audio.sys.dll' Or
-          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.codec.dll' Or
-          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.embedded.tts.dll' Or
-          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.kws.dll' Or
-          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.kws.ort.dll' Or
-          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.onnxruntime.dll' Or
-          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.telemetry.dll'" />
+      <EmbeddedSpeechNativePublishCandidate Include="@(ResolvedFileToPublish)" Condition="&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.core.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.audio.sys.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.codec.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.embedded.tts.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.kws.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.kws.ort.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.onnxruntime.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.telemetry.dll'" />
       <ResolvedFileToPublish Remove="@(EmbeddedSpeechNativePublishCandidate)" />
     </ItemGroup>
   </Target>
