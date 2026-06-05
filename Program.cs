@@ -126,12 +126,7 @@ rootCommand.SetAction
 
 				if (superQuiet)
 				{
-					Console.SetOut(TextWriter.Null);
 					Console.SetError(TextWriter.Null);
-				}
-				else if (quiet)
-				{
-					Console.SetOut(TextWriter.Null);
 				}
 
 				if (!Enum.TryParse(format, ignoreCase: true, out SpeechSynthesisOutputFormat outputFormat))
@@ -191,6 +186,12 @@ rootCommand.SetAction
 			{
 				new HelpAction().Invoke(parseResult);
 				return 0;
+			}
+
+			// Suppress stdout after help/list checks so -q doesn't hide help text
+			if (quiet || superQuiet)
+			{
+				Console.SetOut(TextWriter.Null);
 			}
 
 			var request = new SynthesisRequest
