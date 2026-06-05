@@ -1,0 +1,26 @@
+## Build output
+bin/
+obj/
+
+## Native resources (generated at build time from NuGet packages)
+native-resources/
+
+## Publish stamp (build.ps1 sentinel)
+dist/.publish-stamp
+
+## Audio test files
+*.wav
+*.mp3
+
+## User-specific
+*.user
+*.suo
+.vs/
+
+## NuGet
+packages/
+
+## OS
+Thumbs.db
+Desktop.ini
+.DS_Store
