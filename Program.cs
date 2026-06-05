@@ -52,6 +52,11 @@ var rateOption = new Option<string>("--rate", "-r")
 	Description = "Speaking rate adjustment",
 };
 
+var pitchOption = new Option<string>("--pitch", "-p")
+{
+	Description = "Pitch adjustment (e.g. high, low, +10%, -5st)",
+};
+
 var formatOption = new Option<string>("--format", "-f")
 {
 	DefaultValueFactory = static _ => SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm.ToString(),
@@ -93,6 +98,7 @@ var rootCommand = new RootCommand($"Talktastic v{version} - standalone Windows T
 	listVoicesOption,
 	listDevicesOption,
 	rateOption,
+	pitchOption,
 	formatOption,
 	ssmlOption,
 	helpSsmlOption,
@@ -119,6 +125,7 @@ rootCommand.SetAction
 				var listVoices = parseResult.GetValue(listVoicesOption);
 				var listDevices = parseResult.GetValue(listDevicesOption);
 				var rate = parseResult.GetValue(rateOption);
+				var pitch = parseResult.GetValue(pitchOption);
 				var format = parseResult.GetRequiredValue(formatOption);
 				var ssml = parseResult.GetValue(ssmlOption);
 					var helpSsml = parseResult.GetValue(helpSsmlOption);
@@ -134,6 +141,15 @@ rootCommand.SetAction
 				if (!Enum.TryParse(format, ignoreCase: true, out SpeechSynthesisOutputFormat outputFormat))
 				{
 					await Console.Error.WriteLineAsync($"Unknown audio format '{format}'.").ConfigureAwait(false);
+					return 1;
+				}
+
+				if (ssml && (!string.IsNullOrWhiteSpace(rate) || !string.IsNullOrWhiteSpace(pitch)))
+				{
+					await Console.Error.WriteLineAsync
+					(
+						"--ssml cannot be combined with --rate or --pitch. Use <prosody> in your SSML instead."
+					).ConfigureAwait(false);
 					return 1;
 				}
 
@@ -250,9 +266,10 @@ Notes:
 				OutputPath: output,
 				DeviceQuery: device,
 				Rate: rate,
-				OutputFormat: outputFormat,
-				TreatInputAsSsml: ssml
-			);
+					Pitch: pitch,
+					OutputFormat: outputFormat,
+					TreatInputAsSsml: ssml
+				);
 
 			var summary = await SpeechEngine.SynthesizeAsync(request, cancellationToken).ConfigureAwait(false);
 			await Console.Out.WriteLineAsync(summary).ConfigureAwait(false);

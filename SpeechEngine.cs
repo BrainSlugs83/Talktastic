@@ -48,10 +48,23 @@ internal static partial class SpeechEngine
 			synth.Voice = winrtVoice;
 		}
 
-		var text = request.TreatInputAsSsml ? EnsureSsmlWrapped(request.Text) : request.Text;
-		var stream = request.TreatInputAsSsml
-			? await synth.SynthesizeSsmlToStreamAsync(text)
-			: await synth.SynthesizeTextToStreamAsync(text);
+		var hasProsody = !string.IsNullOrWhiteSpace(request.Rate) || !string.IsNullOrWhiteSpace(request.Pitch);
+
+		// Use SSML when explicitly requested OR when rate/pitch prosody is needed
+		var useSsml = request.TreatInputAsSsml || hasProsody;
+
+		Windows.Media.SpeechSynthesis.SpeechSynthesisStream stream;
+		if (useSsml)
+		{
+			var ssml = request.TreatInputAsSsml
+				? EnsureSsmlWrapped(request.Text)
+				: BuildLegacySsml(request.Text, request.Rate, request.Pitch);
+			stream = await synth.SynthesizeSsmlToStreamAsync(ssml);
+		}
+		else
+		{
+			stream = await synth.SynthesizeTextToStreamAsync(request.Text);
+		}
 
 		var audioBytes = await ReadStreamAsync(stream).ConfigureAwait(false);
 
@@ -101,7 +114,22 @@ internal static partial class SpeechEngine
 			: request.Text;
 
 		var lengthScale = RateToPiperLengthScale(request.Rate);
+		var pitchShift = PitchToPiperShift(request.Pitch);
+
+		// Pitch shifting changes playback speed, so compensate length_scale
+		if (pitchShift is not null)
+		{
+			var compensation = 1.0 + pitchShift.Value;
+			lengthScale = (lengthScale ?? 1.0) * compensation;
+		}
+
 		var wavBytes = await PiperEngine.SynthesizeToWavAsync(text, modelPath, lengthScale, cancellationToken).ConfigureAwait(false);
+
+		// Apply pitch by rewriting the WAV header sample rate
+		if (pitchShift is not null)
+		{
+			ApplyPiperPitch(wavBytes, pitchShift.Value);
+		}
 
 		// Piper outputs 22050 Hz 16-bit mono WAV -- use Raw22Khz for downstream format hints
 		var piperFormat = SpeechSynthesisOutputFormat.Raw22050Hz16BitMonoPcm;
@@ -278,16 +306,17 @@ internal static partial class SpeechEngine
 	{
 		if (request.TreatInputAsSsml)
 		{
-			var ssml = ApplyRateToSsml(request.Text, request.Rate);
+			var ssml = EnsureSsmlWrapped(request.Text);
 			return await synthesizer.SpeakSsmlAsync(ssml).ConfigureAwait(false);
 		}
 
-		if (string.IsNullOrWhiteSpace(request.Rate))
+		var hasProsody = !string.IsNullOrWhiteSpace(request.Rate) || !string.IsNullOrWhiteSpace(request.Pitch);
+		if (!hasProsody)
 		{
 			return await synthesizer.SpeakTextAsync(request.Text).ConfigureAwait(false);
 		}
 
-		var ssmlText = BuildSsml(request.Text, voice, request.Rate);
+		var ssmlText = BuildSsml(request.Text, voice, request.Rate, request.Pitch);
 		return await synthesizer.SpeakSsmlAsync(ssmlText).ConfigureAwait(false);
 	}
 
@@ -310,41 +339,45 @@ internal static partial class SpeechEngine
 		throw new InvalidOperationException($"Speech synthesis failed: {result.Reason}.");
 	}
 
-	private static string BuildSsml(string text, InstalledVoice voice, string? rate)
+	private static string BuildSsml(string text, InstalledVoice voice, string? rate, string? pitch)
 	{
 		var escapedText = SecurityElement.Escape(text) ?? string.Empty;
-		var normalizedRate = NormalizeRate(rate);
+		var attrs = BuildProsodyAttributes(rate, pitch);
 
 		return
 			$"""
 			<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="{voice.Locale}">
 				<voice name="{voice.Name}">
-					<prosody rate="{normalizedRate}">{escapedText}</prosody>
+					<prosody{attrs}>{escapedText}</prosody>
 				</voice>
 			</speak>
 			""";
 	}
 
-	private static string ApplyRateToSsml(string ssml, string? rate)
+	/// <summary>
+	/// Builds SSML for legacy voices (no voice element needed -- voice is set on the synthesizer).
+	/// </summary>
+	private static string BuildLegacySsml(string text, string? rate, string? pitch)
 	{
-		ssml = EnsureSsmlWrapped(ssml);
+		var escapedText = SecurityElement.Escape(text) ?? string.Empty;
+		var attrs = BuildProsodyAttributes(rate, pitch);
 
-		if (string.IsNullOrWhiteSpace(rate))
-		{
-			return ssml;
-		}
+		return
+			$"""
+			<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US">
+				<prosody{attrs}>{escapedText}</prosody>
+			</speak>
+			""";
+	}
 
-		var document = XDocument.Parse(ssml, LoadOptions.PreserveWhitespace);
-		var root = document.Root;
-		if (root is null || !string.Equals(root.Name.LocalName, "speak", StringComparison.Ordinal))
-		{
-			throw new InvalidOperationException("SSML input must have a <speak> root element.");
-		}
-
-		var namespaceName = root.Name.Namespace;
-		var nodes = root.Nodes().ToArray();
-		root.ReplaceNodes(new XElement(namespaceName + "prosody", new XAttribute("rate", NormalizeRate(rate)), nodes));
-		return document.ToString(SaveOptions.DisableFormatting);
+	private static string BuildProsodyAttributes(string? rate, string? pitch)
+	{
+		var attrs = "";
+		if (!string.IsNullOrWhiteSpace(rate))
+			attrs += $" rate=\"{NormalizeRate(rate)}\"";
+		if (!string.IsNullOrWhiteSpace(pitch))
+			attrs += $" pitch=\"{NormalizePitch(pitch)}\"";
+		return attrs;
 	}
 
 	private static string NormalizeRate(string? rate)
@@ -396,6 +429,112 @@ internal static partial class SpeechEngine
 		return null;
 	}
 
+	/// <summary>
+	/// Normalizes a pitch string for SSML prosody (neural + legacy voices).
+	/// Named: x-low, low, medium, high, x-high. Numeric treated as percentage.
+	/// </summary>
+	private static string NormalizePitch(string? pitch)
+	{
+		if (string.IsNullOrWhiteSpace(pitch))
+			return "0%";
+
+		// Named values pass through directly
+		var upper = pitch.ToUpperInvariant();
+		if (upper is "X-LOW" or "LOW" or "MEDIUM" or "DEFAULT" or "HIGH" or "X-HIGH")
+			return upper switch
+			{
+				"X-LOW" => "x-low",
+				"X-HIGH" => "x-high",
+				_ => pitch,
+			};
+
+		// Already has unit (%, st, Hz) -- pass through
+		if (pitch.EndsWith('%') || pitch.EndsWith("st", StringComparison.OrdinalIgnoreCase)
+			|| pitch.EndsWith("Hz", StringComparison.OrdinalIgnoreCase))
+			return pitch;
+
+		// Bare number → percentage
+		return double.TryParse(pitch, out var numericPitch)
+			? $"{numericPitch:+0;-0;0}%"
+			: pitch;
+	}
+
+	/// <summary>
+	/// Converts a pitch string to a fractional shift for Piper WAV header rewriting.
+	/// Returns null if no pitch adjustment requested.
+	/// E.g. "high" → +0.15, "+20%" → +0.20, "-10%" → -0.10
+	/// </summary>
+	private static double? PitchToPiperShift(string? pitch)
+	{
+		if (string.IsNullOrWhiteSpace(pitch))
+			return null;
+
+		// Named pitches → fractional shift
+		var shift = pitch.ToUpperInvariant() switch
+		{
+			"X-LOW" => -0.30,
+			"LOW" => -0.15,
+			"MEDIUM" or "DEFAULT" => 0.0,
+			"HIGH" => 0.15,
+			"X-HIGH" => 0.30,
+			_ => (double?)null,
+		};
+
+		if (shift is not null)
+			return shift == 0.0 ? null : shift;
+
+		// Strip semitone suffix (treat as approx percentage)
+		var cleaned = pitch;
+		if (cleaned.EndsWith("st", StringComparison.OrdinalIgnoreCase))
+		{
+			cleaned = cleaned[..^2];
+			if (double.TryParse(cleaned, out var semitones))
+			{
+				// 1 semitone ≈ 5.946% frequency change
+				return Math.Pow(2.0, semitones / 12.0) - 1.0;
+			}
+		}
+
+		// Strip Hz suffix (treat as relative Hz; assume base 220 Hz for rough mapping)
+		if (cleaned.EndsWith("Hz", StringComparison.OrdinalIgnoreCase))
+		{
+			cleaned = cleaned[..^2];
+			if (double.TryParse(cleaned, out var hz))
+				return hz / 220.0;
+		}
+
+		// Percentage
+		cleaned = pitch.TrimEnd('%');
+		if (double.TryParse(cleaned, out var pct))
+		{
+			var result = pct / 100.0;
+			return Math.Abs(result) < 0.001 ? null : result;
+		}
+
+		return null;
+	}
+
+	/// <summary>
+	/// Rewrites the WAV header sample rate (and byte rate) to shift pitch.
+	/// pitchShift is fractional: 0.10 = 10% higher, -0.15 = 15% lower.
+	/// Clamps to ±50% to avoid garbled audio.
+	/// </summary>
+	private static void ApplyPiperPitch(byte[] wav, double pitchShift)
+	{
+		if (wav.Length < 44)
+			return;
+
+		var factor = 1.0 + Math.Clamp(pitchShift, -0.50, 0.50);
+		var originalRate = BitConverter.ToUInt32(wav, 24);
+		var blockAlign = BitConverter.ToUInt16(wav, 32);
+
+		var newRate = (uint)(originalRate * factor);
+		var newByteRate = newRate * blockAlign;
+
+		BitConverter.TryWriteBytes(wav.AsSpan(24), newRate);
+		BitConverter.TryWriteBytes(wav.AsSpan(28), newByteRate);
+	}
+
 	private static bool HasExtension(string path, string extension)
 	{
 		return string.Equals(Path.GetExtension(path), extension, StringComparison.OrdinalIgnoreCase);
@@ -424,6 +563,7 @@ internal sealed record SynthesisRequest
 	string? OutputPath,
 	string? DeviceQuery,
 	string? Rate,
+	string? Pitch,
 	SpeechSynthesisOutputFormat OutputFormat,
 	bool TreatInputAsSsml
 );
