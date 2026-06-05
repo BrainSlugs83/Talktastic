@@ -6,6 +6,7 @@
     <AssemblyName>say</AssemblyName>
     <RootNamespace>Talktastic</RootNamespace>
     <Version>0.3.0</Version>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <Product>Talktastic</Product>
     <Description>Standalone Windows TTS CLI</Description>
     <ImplicitUsings>enable</ImplicitUsings>

@@ -6,9 +6,10 @@ using System.Xml;
 
 using Talktastic;
 
-var version = Assembly.GetEntryAssembly()
+var fullVersion = Assembly.GetEntryAssembly()
 	?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
 	?.InformationalVersion ?? "0.0.0";
+var version = fullVersion.Split('+')[0];
 
 var textArgument = new Argument<string?>("text")
 {
@@ -120,6 +121,7 @@ rootCommand.SetAction
 				var rate = parseResult.GetValue(rateOption);
 				var format = parseResult.GetRequiredValue(formatOption);
 				var ssml = parseResult.GetValue(ssmlOption);
+					var helpSsml = parseResult.GetValue(helpSsmlOption);
 					var installVoices = parseResult.GetValue(installVoicesOption);
 					var quiet = parseResult.GetValue(quietOption);
 				var superQuiet = parseResult.GetValue(superQuietOption);
@@ -144,6 +146,57 @@ rootCommand.SetAction
 						VoiceInstaller.OpenAddVoiceDialog();
 						return 0;
 					}
+
+						if (helpSsml)
+						{
+							await Console.Out.WriteLineAsync
+							(
+"""
+SSML (Speech Synthesis Markup Language) lets you control how text is spoken.
+Pass --ssml to treat the input as SSML instead of plain text.
+
+Basic template:
+  <speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US">
+    Your text here.
+  </speak>
+
+Pauses:
+  Taking a break <break time="500ms"/> and continuing.
+  A longer pause <break time="2s"/> between sentences.
+
+Speed, pitch, and volume (prosody):
+  <prosody rate="slow">This is spoken slowly.</prosody>
+  <prosody rate="fast" pitch="high">Fast and high-pitched.</prosody>
+  <prosody volume="soft">This is quieter.</prosody>
+  <prosody rate="+20%">Twenty percent faster than normal.</prosody>
+
+Emphasis:
+  This is <emphasis level="strong">very important</emphasis>.
+
+Phonemes (pronunciation):
+  <phoneme alphabet="ipa" ph="tɒmˈɑːtoʊ">tomato</phoneme>
+
+Say-as (interpretation):
+  <say-as interpret-as="characters">SSML</say-as>
+  <say-as interpret-as="date" format="mdy">3/14/2026</say-as>
+  <say-as interpret-as="telephone">+1-555-0199</say-as>
+
+Sub (substitution):
+  <sub alias="World Wide Web Consortium">W3C</sub>
+
+Example usage:
+  say --ssml "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis'
+    xml:lang='en-US'><prosody rate='slow'>Hello.</prosody>
+    <break time='1s'/> Goodbye.</speak>"
+
+Notes:
+  - The <speak> root element is required.
+  - Neural voices support most SSML tags; legacy voices have limited support.
+  - The --rate option wraps your SSML in a <prosody> tag automatically.
+"""
+							).ConfigureAwait(false);
+							return 0;
+						}
 
 				if (listAll || listVoices || listDevices)
 				{
