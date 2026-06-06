@@ -428,43 +428,54 @@ static partial class RvcEngine
 
 		NativeExtractor.EnsureAvailable(DllGroup.OnnxRuntime);
 
-		using var vecSession = CreateSession(vecPath);
-		using var rmvpeSession = CreateSession(rmvpePath);
+		// Load all 3 ORT sessions in parallel -- they're independent
+		InferenceSession? vecSession = null;
+		InferenceSession? rmvpeSession = null;
+		InferenceSession? rvcSession = null;
+		int targetSampleRate = 0;
 
-		int targetSampleRate;
-		InferenceSession rvcSession;
+		var vecTask = Task.Run(() => vecSession = CreateSession(vecPath), ct);
+		var rmvpeTask = Task.Run(() => rmvpeSession = CreateSession(rmvpePath), ct);
+		var rvcTask = Task.Run
+		(
+			() =>
+			{
+				if (IsPthFile(rvcModelPath))
+				{
+					(rvcSession, targetSampleRate) = CreatePthSession(rvcModelPath);
+				}
+				else
+				{
+					rvcSession = CreateSession(rvcModelPath);
+					targetSampleRate = GetTargetSampleRate(rvcSession);
+				}
+			},
+			ct
+		);
 
-		if (IsPthFile(rvcModelPath))
-		{
-			(rvcSession, targetSampleRate) = CreatePthSession(rvcModelPath);
-		}
-		else
-		{
-#pragma warning disable CA2000 // Disposed in finally block below
-			rvcSession = CreateSession(rvcModelPath);
-#pragma warning restore CA2000
-			targetSampleRate = GetTargetSampleRate(rvcSession);
-		}
+		// Also start FAISS loading in parallel
+		FaissIndex.Index? faissIndex = null;
+		var indexPath = FindCompanionIndex(rvcModelPath);
+		var faissTask = indexPath is not null
+			? Task.Run(() => faissIndex = FaissIndex.Load(indexPath), ct)
+			: Task.CompletedTask;
+
+		await Task.WhenAll(vecTask, rmvpeTask, rvcTask, faissTask).ConfigureAwait(false);
 
 		try
 		{
-			// Load companion FAISS index for feature retrieval (if available)
-			FaissIndex.Index? faissIndex = null;
-			var indexPath = FindCompanionIndex(rvcModelPath);
-			if (indexPath is not null)
+			if (faissIndex is not null)
 			{
-				faissIndex = FaissIndex.Load(indexPath);
 				await Console.Error.WriteLineAsync
 				(
 					$"Using index: {Path.GetFileName(indexPath)} "
 					+ $"({faissIndex.Count} vectors, dim={faissIndex.Dimension})"
 				).ConfigureAwait(false);
 			}
-
 			var segmentSlices = ComputeSegmentSlices(inferenceAudio, optTs, ct);
 			var f0Task = Task.Run
 			(
-				() => ExtractF0(rmvpeSession, inferenceAudio, pitchShiftSemitones, ct),
+				() => ExtractF0(rmvpeSession!, inferenceAudio, pitchShiftSemitones, ct),
 				ct
 			);
 
@@ -473,7 +484,7 @@ static partial class RvcEngine
 				(
 					slice => Task.Run
 					(
-						() => ExtractSegmentFeatures(vecSession, slice.Audio, faissIndex),
+						() => ExtractSegmentFeatures(vecSession!, slice.Audio, faissIndex),
 						ct
 					)
 				)
@@ -495,7 +506,7 @@ static partial class RvcEngine
 				(
 					RunRvcInference
 					(
-						rvcSession,
+						rvcSession!,
 						segmentFeatures[i],
 						pitch[pitchStart..pitchEnd],
 						pitchf[pitchStart..pitchEnd],
@@ -511,7 +522,9 @@ static partial class RvcEngine
 		}
 		finally
 		{
-			rvcSession.Dispose();
+			rvcSession?.Dispose();
+			vecSession?.Dispose();
+			rmvpeSession?.Dispose();
 		}
 	}
 
@@ -525,6 +538,27 @@ static partial class RvcEngine
 		string pthPath
 	)
 	{
+		// Check for cached patched ONNX alongside the .pth file
+		var cachedOnnxPath = Path.ChangeExtension(pthPath, ".cached.onnx");
+		var cachedMetaPath = Path.ChangeExtension(pthPath, ".cached.meta");
+
+		if (File.Exists(cachedOnnxPath) && File.Exists(cachedMetaPath))
+		{
+			var pthLastWrite = File.GetLastWriteTimeUtc(pthPath);
+			var cacheLastWrite = File.GetLastWriteTimeUtc(cachedOnnxPath);
+
+			if (cacheLastWrite >= pthLastWrite)
+			{
+				var metaText = File.ReadAllText(cachedMetaPath).Trim();
+				if (int.TryParse(metaText, out var cachedSr))
+				{
+					using var opts = CreateSessionOptions();
+					var cachedSession = new InferenceSession(cachedOnnxPath, opts);
+					return (cachedSession, cachedSr);
+				}
+			}
+		}
+
 		var pthModel = PthLoader.Load(pthPath);
 		var srKey = pthModel.SampleRateLabel.TrimEnd('k', 'K') + "k";
 
@@ -547,8 +581,18 @@ static partial class RvcEngine
 		var offsets = OnnxPatcher.FindInitializerOffsets(skeletonBytes);
 		OnnxPatcher.PatchWeights(skeletonBytes, offsets, pthModel.Weights, nameMap);
 
-		using var options = new SessionOptions();
-		options.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
+		// Cache the patched ONNX to disk for next time
+		try
+		{
+			File.WriteAllBytes(cachedOnnxPath, skeletonBytes);
+			File.WriteAllText(cachedMetaPath, pthModel.TargetSampleRate.ToString(CultureInfo.InvariantCulture));
+		}
+		catch (IOException)
+		{
+			// Best-effort caching -- don't fail if we can't write
+		}
+
+		using var options = CreateSessionOptions();
 
 		var session = new InferenceSession(skeletonBytes, options);
 		return (session, pthModel.TargetSampleRate);
@@ -685,10 +729,16 @@ static partial class RvcEngine
 			: [];
 	}
 
+	private static SessionOptions CreateSessionOptions()
+	{
+		var options = new SessionOptions();
+		options.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
+		return options;
+	}
+
 	private static InferenceSession CreateSession(string modelPath)
 	{
-		using var options = new SessionOptions();
-		options.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
+		using var options = CreateSessionOptions();
 		return new InferenceSession(modelPath, options);
 	}
 
