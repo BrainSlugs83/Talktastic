@@ -27,6 +27,9 @@
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <StripSymbols>true</StripSymbols>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <NativeDebug>false</NativeDebug>
   </PropertyGroup>
 
   <ItemGroup>
@@ -107,6 +110,12 @@
 
   <Target Name="CleanNativeResources" AfterTargets="Clean">
     <RemoveDir Directories="$(SpeechNativeResourceDirectory)" />
+  </Target>
+
+  <!-- NativeAOT always generates a PDB even with DebugType=none; remove it post-link -->
+  <Target Name="RemoveNativeAotPdb" AfterTargets="LinkNative" Condition="'$(PublishAot)' == 'true'">
+    <Delete Files="$(NativeOutputPath)$(TargetName).pdb" />
+    <Delete Files="$(PublishDir)$(TargetName).pdb" />
   </Target>
 
 </Project>
