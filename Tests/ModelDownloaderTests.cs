@@ -1,3 +1,5 @@
+using System.IO.Compression;
+
 namespace Talktastic.Tests;
 
 public sealed class ModelDownloaderTests : IDisposable
@@ -348,6 +350,192 @@ public sealed class ModelDownloaderTests : IDisposable
 	public void IsZipUrl_ReturnsFalse_ForNonZipUrls(string url)
 	{
 		Assert.False(ModelDownloader.IsZipUrl(url));
+	}
+
+	// ── Zip extraction tests ──────────────────────────────────────────
+
+	private string CreateTestZip(string zipName, params (string Path, byte[] Data)[] entries)
+	{
+		var zipPath = Path.Combine(_artifactRoot, zipName);
+		using var archive = ZipFile.Open(zipPath, ZipArchiveMode.Create);
+		foreach (var (entryPath, data) in entries)
+		{
+			var entry = archive.CreateEntry(entryPath);
+			using var stream = entry.Open();
+			stream.Write(data);
+		}
+
+		return zipPath;
+	}
+
+	[Fact]
+	public async Task ExtractZip_FindsPthInSubdirectory()
+	{
+		var zipPath = CreateTestZip
+		(
+			"test.zip",
+			("subdir/weights/model.pth", new byte[64])
+		);
+		var destDir = Path.Combine(_artifactRoot, "extract1");
+
+		var (modelPath, modelName) = await ModelDownloader.ExtractZipAsync
+		(
+			zipPath, destDir, "TestModel"
+		);
+
+		Assert.True(File.Exists(modelPath), $"Model not found at {modelPath}");
+		Assert.EndsWith(".pth", modelPath, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public async Task ExtractZip_NoModelFile_Throws()
+	{
+		var zipPath = CreateTestZip
+		(
+			"empty.zip",
+			("readme.txt", "hello"u8.ToArray())
+		);
+		var destDir = Path.Combine(_artifactRoot, "extract2");
+
+		await Assert.ThrowsAsync<InvalidOperationException>
+		(
+			() => ModelDownloader.ExtractZipAsync(zipPath, destDir, "NoModel")
+		);
+	}
+
+	[Fact]
+	public async Task ExtractZip_IndexInSameDir_Preserved()
+	{
+		// Index alongside .pth in same directory → should be extracted together
+		var zipPath = CreateTestZip
+		(
+			"same_dir.zip",
+			("weights/model.pth", new byte[64]),
+			("weights/added_IVF_v2.index", new byte[128])
+		);
+		var destDir = Path.Combine(_artifactRoot, "extract3");
+
+		var (modelPath, _) = await ModelDownloader.ExtractZipAsync
+		(
+			zipPath, destDir, "SameDir"
+		);
+		var modelDir = Path.GetDirectoryName(modelPath)!;
+
+		var indexFiles = Directory.GetFiles(modelDir, "*.index");
+		Assert.Single(indexFiles);
+	}
+
+	[Fact]
+	public async Task ExtractZip_IndexInSiblingDir_StillExtracted()
+	{
+		// This is the Hank Hill bug: .pth is in weights/, .index is in logs/
+		var zipPath = CreateTestZip
+		(
+			"sibling.zip",
+			("HankHillv2/weights/model.pth", new byte[64]),
+			("HankHillv2/logs/HankHillv2/model.index", new byte[256])
+		);
+		var destDir = Path.Combine(_artifactRoot, "extract4");
+
+		var (modelPath, _) = await ModelDownloader.ExtractZipAsync
+		(
+			zipPath, destDir, "Hank Hill"
+		);
+		var modelDir = Path.GetDirectoryName(modelPath)!;
+
+		// The index should be in the same output directory as the model
+		var indexFiles = Directory.GetFiles(modelDir, "*.index");
+		Assert.True
+		(
+			indexFiles.Length > 0,
+			$"No .index files found in {modelDir}. "
+			+ $"Contents: [{string.Join(", ", Directory.GetFiles(modelDir).Select(Path.GetFileName))}]"
+		);
+	}
+
+	[Fact]
+	public async Task ExtractZip_MultipleIndexFiles_AllExtracted()
+	{
+		// Some zips have both a small trained_IVF and a large model.index
+		var zipPath = CreateTestZip
+		(
+			"multi_idx.zip",
+			("voice/weights/model.pth", new byte[64]),
+			("voice/logs/voice/model.index", new byte[1024]),
+			("extra_files/voice/logs/voice/trained_IVF.index", new byte[128])
+		);
+		var destDir = Path.Combine(_artifactRoot, "extract5");
+
+		var (modelPath, _) = await ModelDownloader.ExtractZipAsync
+		(
+			zipPath, destDir, "MultiIdx"
+		);
+		var modelDir = Path.GetDirectoryName(modelPath)!;
+
+		var indexFiles = Directory.GetFiles(modelDir, "*.index");
+		// Both index files should be present
+		Assert.Equal(2, indexFiles.Length);
+	}
+
+	[Fact]
+	public async Task ExtractZip_UsesHintNameForGenericModel()
+	{
+		var zipPath = CreateTestZip
+		(
+			"generic.zip",
+			("subdir/model.pth", new byte[64])
+		);
+		var destDir = Path.Combine(_artifactRoot, "extract6");
+
+		var (_, modelName) = await ModelDownloader.ExtractZipAsync
+		(
+			zipPath, destDir, "BetterName"
+		);
+
+		// "model" is a generic name, so it should use the hint
+		Assert.Equal("BetterName", modelName);
+	}
+
+	[Fact]
+	public async Task ExtractZip_MultiplePthFiles_AllExtracted()
+	{
+		var zipPath = CreateTestZip
+		(
+			"multi_pth.zip",
+			("voices/main/model.pth", new byte[64]),
+			("voices/backup/model_v2.pth", new byte[96])
+		);
+		var destDir = Path.Combine(_artifactRoot, "extract7");
+
+		var (modelPath, _) = await ModelDownloader.ExtractZipAsync
+		(
+			zipPath, destDir, "MultiPth"
+		);
+		var modelDir = Path.GetDirectoryName(modelPath)!;
+
+		var pthFiles = Directory.GetFiles(modelDir, "*.pth");
+		Assert.Equal(2, pthFiles.Length);
+	}
+
+	[Fact]
+	public async Task ExtractZip_JsonMetadata_AlsoExtracted()
+	{
+		var zipPath = CreateTestZip
+		(
+			"with_json.zip",
+			("model/weights/model.pth", new byte[64]),
+			("model/metadata.json", "{}"u8.ToArray())
+		);
+		var destDir = Path.Combine(_artifactRoot, "extract8");
+
+		var (modelPath, _) = await ModelDownloader.ExtractZipAsync
+		(
+			zipPath, destDir, "WithJson"
+		);
+		var modelDir = Path.GetDirectoryName(modelPath)!;
+
+		var jsonFiles = Directory.GetFiles(modelDir, "*.json");
+		Assert.True(jsonFiles.Length > 0, "metadata.json should be extracted");
 	}
 
 	private string GetRegistryPath()

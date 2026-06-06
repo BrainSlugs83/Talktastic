@@ -138,6 +138,25 @@ static partial class ModelDownloader
 			var sourceDir = Path.GetDirectoryName(modelFile)!;
 			Directory.Move(sourceDir, modelDir);
 
+			// Rescue any .pth, .index, and .json files from elsewhere
+			// in the zip tree. Many RVC zips scatter files across sibling
+			// directories (e.g. weights/ vs logs/). Copy everything
+			// worth keeping -- models may be taken down later.
+			if (Directory.Exists(tempExtract))
+			{
+				foreach (var pattern in new[] { "*.pth", "*.index", "*.json" })
+				{
+					foreach (var file in Directory.GetFiles(tempExtract, pattern, SearchOption.AllDirectories))
+					{
+						var destFile = Path.Combine(modelDir, Path.GetFileName(file));
+						if (!File.Exists(destFile))
+						{
+							File.Copy(file, destFile);
+						}
+					}
+				}
+			}
+
 			// Find the model file in its new home
 			var ext = Path.GetExtension(modelFile);
 			var finalPath = Directory.GetFiles(modelDir, $"*{ext}", SearchOption.TopDirectoryOnly)

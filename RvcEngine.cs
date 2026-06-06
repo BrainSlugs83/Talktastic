@@ -101,11 +101,11 @@ static partial class RvcEngine
 	}
 
 	/// <summary>
-	/// Lists downloaded RVC models as (name, extension, sizeMB) tuples.
+	/// Lists downloaded RVC models as (name, extension, sizeMB, hasIndex) tuples.
 	/// </summary>
-	public static List<(string Name, string Extension, int SizeMb)> GetCachedModels()
+	public static List<(string Name, string Extension, int SizeMb, bool HasIndex)> GetCachedModels()
 	{
-		var results = new List<(string, string, int)>();
+		var results = new List<(string, string, int, bool)>();
 		foreach (var basePath in SearchBases)
 		{
 			var voicesDir = Path.Combine(basePath, RvcDirName, VoicesSubDir);
@@ -114,7 +114,8 @@ static partial class RvcEngine
 			{
 				var ext = Path.GetExtension(modelPath);
 				var sizeMb = (int)(new FileInfo(modelPath).Length / 1024 / 1024);
-				results.Add((name, ext[1..], sizeMb));
+				var hasIndex = FindCompanionIndex(modelPath) is not null;
+				results.Add((name, ext[1..], sizeMb, hasIndex));
 			}
 
 			if (Directory.Exists(voicesDir))
@@ -474,7 +475,7 @@ static partial class RvcEngine
 		return path.EndsWith(".pth", StringComparison.OrdinalIgnoreCase);
 	}
 
-	private static (InferenceSession Session, int TargetSampleRate) CreatePthSession
+	internal static (InferenceSession Session, int TargetSampleRate) CreatePthSession
 	(
 		string pthPath
 	)
@@ -508,7 +509,7 @@ static partial class RvcEngine
 		return (session, pthModel.TargetSampleRate);
 	}
 
-	private static byte[] LoadEmbeddedSkeleton(string srKey)
+	internal static byte[] LoadEmbeddedSkeleton(string srKey)
 	{
 		var resourceName = $"Talktastic.Rvc.skeleton_v2_{srKey}.onnx.gz";
 		using var stream = typeof(RvcEngine).Assembly.GetManifestResourceStream(resourceName)
@@ -527,7 +528,7 @@ static partial class RvcEngine
 		return ms.ToArray();
 	}
 
-	private static SkeletonManifest LoadEmbeddedManifest(string srKey)
+	internal static SkeletonManifest LoadEmbeddedManifest(string srKey)
 	{
 		var resourceName = $"Talktastic.Rvc.skeleton_v2_{srKey}_manifest.json.gz";
 		using var stream = typeof(RvcEngine).Assembly.GetManifestResourceStream(resourceName)
