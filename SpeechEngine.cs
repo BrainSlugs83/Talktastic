@@ -95,7 +95,7 @@ internal static partial class SpeechEngine
 			$"Applying RVC voice conversion ({rvcDisplayName})..."
 		).ConfigureAwait(false);
 
-		wavBytes = await RvcEngine.ConvertAsync(wavBytes, rvcModelPath, cancellationToken).ConfigureAwait(false);
+		wavBytes = await RvcEngine.ConvertAsync(wavBytes, rvcModelPath, request.RvcPitchShift, cancellationToken).ConfigureAwait(false);
 
 		var displayName = $"{sourceVoiceName} → {rvcDisplayName}";
 
@@ -731,6 +731,7 @@ internal sealed record SynthesisRequest
 	string? Rate,
 	string? Pitch,
 	string? RvcModel,
+	float RvcPitchShift,
 	SpeechSynthesisOutputFormat OutputFormat,
 	bool TreatInputAsSsml
 );

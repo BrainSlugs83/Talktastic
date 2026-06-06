@@ -62,6 +62,12 @@ var rvcOption = new Option<string>("--rvc")
 	Description = "Apply RVC voice conversion (URL or local .onnx path)",
 };
 
+var rvcPitchOption = new Option<float>("--rvc-pitch")
+{
+	DefaultValueFactory = static _ => 0f,
+	Description = "RVC pitch shift in semitones (e.g. +12 = octave up, -12 = octave down)",
+};
+
 var formatOption = new Option<string>("--format", "-f")
 {
 	DefaultValueFactory = static _ => SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm.ToString(),
@@ -105,6 +111,7 @@ var rootCommand = new RootCommand($"Talktastic v{version} - standalone Windows T
 	rateOption,
 	pitchOption,
 	rvcOption,
+	rvcPitchOption,
 	formatOption,
 	ssmlOption,
 	helpSsmlOption,
@@ -133,6 +140,7 @@ rootCommand.SetAction
 				var rate = parseResult.GetValue(rateOption);
 				var pitch = parseResult.GetValue(pitchOption);
 				var rvc = parseResult.GetValue(rvcOption);
+				var rvcPitch = parseResult.GetRequiredValue(rvcPitchOption);
 				var format = parseResult.GetRequiredValue(formatOption);
 				var ssml = parseResult.GetValue(ssmlOption);
 					var helpSsml = parseResult.GetValue(helpSsmlOption);
@@ -275,6 +283,7 @@ Notes:
 				Rate: rate,
 					Pitch: pitch,
 					RvcModel: rvc,
+					RvcPitchShift: rvcPitch,
 					OutputFormat: outputFormat,
 					TreatInputAsSsml: ssml
 				);

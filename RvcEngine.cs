@@ -188,6 +188,7 @@ static partial class RvcEngine
 	(
 		byte[] wavBytes,
 		string rvcModelPath,
+		float pitchShiftSemitones,
 		CancellationToken ct
 	)
 	{
@@ -213,7 +214,7 @@ static partial class RvcEngine
 		using var rvcSession = CreateSession(rvcModelPath);
 
 		var targetSampleRate = GetTargetSampleRate(rvcSession);
-		var (pitchf, pitch) = ExtractF0(rmvpeSession, inferenceAudio, ct);
+		var (pitchf, pitch) = ExtractF0(rmvpeSession, inferenceAudio, pitchShiftSemitones, ct);
 		var convertedSegments = InferSegments
 		(
 			rvcSession,
@@ -412,6 +413,7 @@ static partial class RvcEngine
 	(
 		InferenceSession rmvpeSession,
 		float[] audioPad,
+		float pitchShiftSemitones,
 		CancellationToken ct
 	)
 	{
@@ -422,6 +424,17 @@ static partial class RvcEngine
 		var hidden = RunRmvpeHidden(rmvpeSession, mel);
 		var cents = DecodeLocalAverageCents(hidden, RmvpeThreshold);
 		var pitchf = DecodeF0(cents);
+
+		// Apply pitch shift (in semitones) before quantization
+		if (pitchShiftSemitones != 0.0f)
+		{
+			var scale = MathF.Pow(2.0f, pitchShiftSemitones / 12.0f);
+			for (var i = 0; i < pitchf.Length; i++)
+			{
+				pitchf[i] *= scale;
+			}
+		}
+
 		var pitch = QuantizePitch(pitchf);
 
 		var pLen = audioPad.Length / Window;
@@ -899,6 +912,10 @@ static partial class RvcEngine
 		return combined;
 	}
 
+	/// <summary>
+	/// Prevents clipping by scaling down if peak exceeds targetPeak.
+	/// Does NOT scale up — matches Python RVC behavior where quiet signals are left as-is.
+	/// </summary>
 	private static float[] NormalizePeak(float[] samples, float targetPeak)
 	{
 		var max = 0.0f;
@@ -911,7 +928,7 @@ static partial class RvcEngine
 			}
 		}
 
-		if (max == 0.0f || MathF.Abs(max - targetPeak) < 1e-6f)
+		if (max <= targetPeak)
 		{
 			return samples;
 		}
