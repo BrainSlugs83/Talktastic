@@ -65,6 +65,26 @@ static partial class RvcEngine
 	}
 
 	/// <summary>
+	/// Returns a display name for a resolved RVC model path.
+	/// Uses the parent folder name if the model lives in a subdirectory,
+	/// otherwise falls back to the filename without extension.
+	/// </summary>
+	public static string GetDisplayName(string modelPath)
+	{
+		var parentDir = Path.GetDirectoryName(modelPath);
+		var voicesDir = FindVoicesDir();
+
+		// If the model is inside a subdirectory of the voices dir, use the folder name
+		if (parentDir is not null && voicesDir is not null
+			&& !string.Equals(Path.GetFullPath(parentDir), Path.GetFullPath(voicesDir), StringComparison.OrdinalIgnoreCase))
+		{
+			return Path.GetFileName(parentDir);
+		}
+
+		return Path.GetFileNameWithoutExtension(modelPath);
+	}
+
+	/// <summary>
 	/// Enumerates all cached RVC models as (displayName, modelFilePath) pairs.
 	/// Searches subdirectories first, then legacy flat files.
 	/// </summary>
@@ -127,7 +147,7 @@ static partial class RvcEngine
 		return results;
 	}
 
-	public static async Task<string> ResolveRvcModelAsync
+	public static async Task<(string Path, string DisplayName)> ResolveRvcModelAsync
 	(
 		string rvcQuery,
 		CancellationToken ct
@@ -142,10 +162,11 @@ static partial class RvcEngine
 
 			if (fullPath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
 			{
-				return await ExtractLocalZipAsync(fullPath, ct).ConfigureAwait(false);
+				var extracted = await ExtractLocalZipAsync(fullPath, ct).ConfigureAwait(false);
+				return (extracted, GetDisplayName(extracted));
 			}
 
-			return fullPath;
+			return (fullPath, GetDisplayName(fullPath));
 		}
 
 		if (LooksLikeLocalPath(rvcQuery))
@@ -167,7 +188,7 @@ static partial class RvcEngine
 				var cachedPath = FindCachedModelExact(voicesDir, cachedModelName);
 				if (cachedPath is not null)
 				{
-					return cachedPath;
+					return (cachedPath, cachedModelName);
 				}
 			}
 
@@ -240,13 +261,13 @@ static partial class RvcEngine
 			).ConfigureAwait(false);
 
 			ModelDownloader.WriteRegistry(registryPath, rvcQuery, modelName);
-			return downloadPath;
+				return (downloadPath, modelName);
 		}
 
 		var namedModel = FindCachedModel(voicesDir, rvcQuery);
 		if (namedModel is not null)
 		{
-			return namedModel;
+				return (namedModel, GetDisplayName(namedModel));
 		}
 
 		var registryNames = ReadRegistryLines(registryPath)
@@ -267,7 +288,7 @@ static partial class RvcEngine
 			var resolvedPath = FindCachedModel(voicesDir, bestRegistryMatch);
 			if (resolvedPath is not null)
 			{
-				return resolvedPath;
+				return (resolvedPath, bestRegistryMatch);
 			}
 		}
 

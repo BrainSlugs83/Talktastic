@@ -40,8 +40,7 @@ internal static partial class SpeechEngine
 	)
 	{
 		// Resolve the RVC model (download if needed)
-		var rvcModelPath = await RvcEngine.ResolveRvcModelAsync(request.RvcModel!, cancellationToken).ConfigureAwait(false);
-		var rvcDisplayName = Path.GetFileNameWithoutExtension(rvcModelPath);
+		var (rvcModelPath, rvcDisplayName) = await RvcEngine.ResolveRvcModelAsync(request.RvcModel!, cancellationToken).ConfigureAwait(false);
 
 		// Step 1: Produce WAV bytes from the source TTS engine (unified resolution)
 		var voice = await VoiceEnumerator.ResolveVoiceAsync(request.VoiceQuery, cancellationToken).ConfigureAwait(false);

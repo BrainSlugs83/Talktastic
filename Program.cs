@@ -204,7 +204,7 @@ rootCommand.SetAction
 				&& string.IsNullOrWhiteSpace(text)
 			)
 			{
-				var modelPath = await RvcEngine.ResolveRvcModelAsync(rvc, cancellationToken).ConfigureAwait(false);
+				var (modelPath, _) = await RvcEngine.ResolveRvcModelAsync(rvc, cancellationToken).ConfigureAwait(false);
 				await Console.Error.WriteLineAsync
 				(
 					$"Cached: {modelPath}"
