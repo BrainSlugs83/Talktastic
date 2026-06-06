@@ -1,3 +1,4 @@
+#pragma warning disable CA1502 // TODO: Refactor top-level CLI handler to reduce complexity
 using Microsoft.CognitiveServices.Speech;
 using System.CommandLine;
 using System.CommandLine.Help;

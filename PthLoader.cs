@@ -594,6 +594,7 @@ internal sealed class PthLoader
 		private byte[] _buffer = [];
 		private int _index;
 
+		#pragma warning disable CA1502 // TODO: Refactor binary parser to reduce complexity
 		public object Parse(Stream stream)
 		{
 			ArgumentNullException.ThrowIfNull(stream);
@@ -802,6 +803,7 @@ internal sealed class PthLoader
 
 			throw new InvalidDataException("Pickle stream ended without STOP.");
 		}
+		#pragma warning restore CA1502
 
 		private object? Peek()
 		{
