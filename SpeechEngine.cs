@@ -76,9 +76,10 @@ internal static partial class SpeechEngine
 		}
 
 		// Step 2: Apply RVC voice conversion
+		var accel = RvcEngine.DisableGpu ? "CPU" : "DirectML";
 		await Console.Error.WriteLineAsync
 		(
-			$"Applying RVC voice conversion ({rvcDisplayName})..."
+			$"Applying RVC voice conversion with {accel} ({rvcDisplayName})..."
 		).ConfigureAwait(false);
 
 		wavBytes = await RvcEngine.ConvertAsync(wavBytes, rvcModelPath, request.RvcPitchShift, cancellationToken).ConfigureAwait(false);

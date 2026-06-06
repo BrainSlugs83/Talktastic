@@ -759,7 +759,6 @@ static partial class RvcEngine
 	}
 
 	private static bool _dmlAvailable = true;
-	private static bool _dmlLogged;
 	private static readonly object _dmlLock = new();
 
 	// Set via --no-gpu flag or TALKTASTIC_NO_GPU=1 env var
@@ -779,14 +778,6 @@ static partial class RvcEngine
 			try
 			{
 				options.AppendExecutionProvider_DML(0);
-				lock (_dmlLock)
-				{
-					if (!_dmlLogged)
-					{
-						_dmlLogged = true;
-						Console.Error.WriteLine("Using DirectML GPU acceleration.");
-					}
-				}
 			}
 			catch (Exception ex) when
 			(
