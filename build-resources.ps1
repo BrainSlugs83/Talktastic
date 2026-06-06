@@ -21,6 +21,9 @@ param
 	[Parameter(Mandatory = $true)]
 	[string]$DmlOnnxRuntimePackageDirectory,
 
+	[Parameter(Mandatory = $true)]
+	[string]$DirectMlPackageDirectory,
+
 	[string]$RuntimeIdentifier = 'win-x64'
 )
 
@@ -128,6 +131,10 @@ $nativeDlls = @(
 	@{
 		Name = 'onnxruntime_providers_shared.dll'
 		SourcePath = Join-Path $DmlOnnxRuntimePackageDirectory "runtimes\$RuntimeIdentifier\native\onnxruntime_providers_shared.dll"
+	}
+	@{
+		Name = 'DirectML.dll'
+		SourcePath = Join-Path $DirectMlPackageDirectory 'bin\x64-win\DirectML.dll'
 	}
 	@{
 		Name = 'sherpa-onnx-c-api.dll'

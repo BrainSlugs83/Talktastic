@@ -63,10 +63,16 @@ if ($LASTEXITCODE -ne 0)
 New-Item -ItemType Directory -Path $distDir -Force | Out-Null
 Copy-Item (Join-Path $publishDir 'say.exe') $exePath -Force
 
-# Copy any native companion DLLs (e.g. onnxruntime.dll)
-Get-ChildItem $publishDir -Filter '*.dll' | ForEach-Object {
-	Copy-Item $_.FullName (Join-Path $distDir $_.Name) -Force
-}
+# Copy any native companion DLLs (e.g. onnxruntime.dll), skip DirectML (system-provided)
+Get-ChildItem $publishDir -Filter '*.dll' |
+	Where-Object { $_.Name -notlike 'DirectML*' } |
+	ForEach-Object {
+		Copy-Item $_.FullName (Join-Path $distDir $_.Name) -Force
+	}
+
+# Clean any stale DirectML DLLs from dist
+Get-ChildItem $distDir -Filter 'DirectML*' -ErrorAction SilentlyContinue |
+	Remove-Item -Force
 
 # Touch the sentinel so subsequent builds can short-circuit.
 [IO.File]::WriteAllText($stampPath, '')

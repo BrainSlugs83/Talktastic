@@ -208,6 +208,7 @@ rootCommand.SetAction
 			if (perf)
 			{
 				RvcEngine.ShowPerf = true;
+				NativeExtractor.ShowPerf = true;
 			}
 
 			if (superQuiet)

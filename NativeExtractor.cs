@@ -49,8 +49,9 @@ internal static class NativeExtractor
 		[
 			"onnxruntime.dll",
 			"onnxruntime_providers_shared.dll",
-				"sherpa-onnx-c-api.dll",
-			],
+			"DirectML.dll",
+			"sherpa-onnx-c-api.dll",
+		],
 	};
 
 	private static readonly object SyncRoot = new();
@@ -59,6 +60,9 @@ internal static class NativeExtractor
 	private static DllGroup _resolvedGroups = DllGroup.None;
 	private static NativePayloadManifestEntry[]? _cachedManifest;
 	private static bool _staleCleaned;
+
+	/// <summary>When true, emits per-DLL extraction timing to stderr.</summary>
+	internal static bool ShowPerf { get; set; }
 
 	/// <summary>
 	/// Ensures that all native DLLs in the requested groups are available and loadable.
@@ -71,6 +75,8 @@ internal static class NativeExtractor
 		{
 			return;
 		}
+
+		var sw = ShowPerf ? System.Diagnostics.Stopwatch.StartNew() : null;
 
 		lock (SyncRoot)
 		{
@@ -106,14 +112,24 @@ internal static class NativeExtractor
 
 				var resolved = new ConcurrentBag<ResolvedDll>();
 				var cwd = Path.GetFullPath(Directory.GetCurrentDirectory());
+				var perDll = ShowPerf
+					? new System.Collections.Concurrent.ConcurrentDictionary<string, long>()
+					: null;
 
 				Parallel.ForEach
 				(
 					entries,
 					entry =>
 					{
+						var dllSw = ShowPerf
+							? System.Diagnostics.Stopwatch.StartNew()
+							: null;
 						var result = FindOrExtract(assembly, entry, cwd);
 						resolved.Add(result);
+						if (dllSw is not null)
+						{
+							perDll![entry.Name] = dllSw.ElapsedMilliseconds;
+						}
 					}
 				);
 
@@ -126,6 +142,22 @@ internal static class NativeExtractor
 				}
 
 				_resolvedGroups |= needed;
+
+				if (sw is not null && perDll is not null)
+				{
+					foreach (var kvp in perDll.OrderByDescending(x => x.Value))
+					{
+						Console.Error.WriteLine
+						(
+							$"[dll] {kvp.Key}: {kvp.Value}ms"
+						);
+					}
+					Console.Error.WriteLine
+					(
+						$"[dll] total: {sw.ElapsedMilliseconds}ms "
+						+ $"({entries.Length} DLLs)"
+					);
+				}
 			}
 			finally
 			{

@@ -5,7 +5,7 @@
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <AssemblyName>say</AssemblyName>
     <RootNamespace>Talktastic</RootNamespace>
-    <Version>0.5.3</Version>
+    <Version>0.5.4</Version>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <Product>Talktastic</Product>
     <Description>Standalone Windows TTS CLI</Description>
@@ -41,6 +41,7 @@
     <PackageReference Include="Microsoft.CognitiveServices.Speech.Extension.Embedded.TTS" Version="1.50.0" GeneratePathProperty="true" />
     <PackageReference Include="Microsoft.CognitiveServices.Speech.Extension.ONNX.Runtime" Version="1.50.0" GeneratePathProperty="true" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.24.4" GeneratePathProperty="true" />
+    <PackageReference Include="Microsoft.AI.DirectML" Version="1.15.4" GeneratePathProperty="true" ExcludeAssets="all" />
     <PackageReference Include="NAudio.Lame" Version="2.1.0" GeneratePathProperty="true" ExcludeAssets="all" />
     <PackageReference Include="org.k2fsa.sherpa.onnx" Version="1.13.2" />
     <PackageReference Include="org.k2fsa.sherpa.onnx.runtime.win-x64" Version="1.13.2" GeneratePathProperty="true" />
@@ -61,7 +62,7 @@
   </ItemGroup>
 
   <Target Name="PrepareNativeResources" BeforeTargets="PrepareResourceNames" Condition="'$(DesignTimeBuild)' != 'true'">
-    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\build-resources.ps1&quot; -OutputDirectory &quot;$(SpeechNativeResourceDirectory)&quot; -BasePackageDirectory &quot;$(PkgMicrosoft_CognitiveServices_Speech)&quot; -EmbeddedTtsPackageDirectory &quot;$(PkgMicrosoft_CognitiveServices_Speech_Extension_Embedded_TTS)&quot; -OnnxRuntimePackageDirectory &quot;$(PkgMicrosoft_CognitiveServices_Speech_Extension_ONNX_Runtime)&quot; -LamePackageDirectory &quot;$(PkgNAudio_Lame)&quot; -SherpaOnnxPackageDirectory &quot;$(Pkgorg_k2fsa_sherpa_onnx_runtime_win-x64)&quot; -DmlOnnxRuntimePackageDirectory &quot;$(PkgMicrosoft_ML_OnnxRuntime_DirectML)&quot; -RuntimeIdentifier &quot;$(SpeechNativeRuntimeIdentifier)&quot;" />
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\build-resources.ps1&quot; -OutputDirectory &quot;$(SpeechNativeResourceDirectory)&quot; -BasePackageDirectory &quot;$(PkgMicrosoft_CognitiveServices_Speech)&quot; -EmbeddedTtsPackageDirectory &quot;$(PkgMicrosoft_CognitiveServices_Speech_Extension_Embedded_TTS)&quot; -OnnxRuntimePackageDirectory &quot;$(PkgMicrosoft_CognitiveServices_Speech_Extension_ONNX_Runtime)&quot; -LamePackageDirectory &quot;$(PkgNAudio_Lame)&quot; -SherpaOnnxPackageDirectory &quot;$(Pkgorg_k2fsa_sherpa_onnx_runtime_win-x64)&quot; -DmlOnnxRuntimePackageDirectory &quot;$(PkgMicrosoft_ML_OnnxRuntime_DirectML)&quot; -DirectMlPackageDirectory &quot;$(PkgMicrosoft_AI_DirectML)&quot; -RuntimeIdentifier &quot;$(SpeechNativeRuntimeIdentifier)&quot;" />
     <ItemGroup>
       <GeneratedNativeResource Remove="$(SpeechNativeResourceDirectory)\*.dll.gz" />
       <GeneratedNativeResource Include="$(SpeechNativeResourceDirectory)\*.dll.gz" />
