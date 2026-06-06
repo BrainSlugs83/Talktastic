@@ -11,6 +11,13 @@ internal static partial class SpeechEngine
 {
 	public static async Task<string> SynthesizeAsync(SynthesisRequest request, CancellationToken cancellationToken = default)
 	{
+		// If RVC is requested, we need to go through the WAV-bytes pipeline
+		// regardless of the output format, so we can apply voice conversion.
+		if (!string.IsNullOrWhiteSpace(request.RvcModel))
+		{
+			return await SynthesizeWithRvcAsync(request, cancellationToken).ConfigureAwait(false);
+		}
+
 		// Piper voices bypass the normal voice resolution
 		if (PiperEngine.IsPiperVoice(request.VoiceQuery))
 		{
@@ -34,6 +41,157 @@ internal static partial class SpeechEngine
 			var path when HasExtension(path, ".ogg") => await WriteOggAsync(path, request, voice, license).ConfigureAwait(false),
 			var path => throw new InvalidOperationException($"Unsupported output file extension for '{path}'. Use .wav, .mp3, or .ogg."),
 		};
+	}
+
+	/// <summary>
+	/// Synthesizes text with any TTS engine, then applies RVC voice conversion.
+	/// All engines produce WAV bytes first, then RVC converts, then output to file/device.
+	/// </summary>
+	private static async Task<string> SynthesizeWithRvcAsync
+	(
+		SynthesisRequest request,
+		CancellationToken cancellationToken
+	)
+	{
+		// Resolve the RVC model (download if needed)
+		var rvcModelPath = await RvcEngine.ResolveRvcModelAsync(request.RvcModel!, cancellationToken).ConfigureAwait(false);
+		var rvcDisplayName = Path.GetFileNameWithoutExtension(rvcModelPath);
+
+		// Step 1: Produce WAV bytes from the source TTS engine
+		byte[] wavBytes;
+		string sourceVoiceName;
+
+		if (PiperEngine.IsPiperVoice(request.VoiceQuery))
+		{
+			var modelPath = await PiperEngine.EnsureVoiceModelAsync(request.VoiceQuery!, cancellationToken).ConfigureAwait(false);
+			var modelName = Path.GetFileNameWithoutExtension(modelPath);
+			sourceVoiceName = PiperEngine.GetDisplayName(modelName);
+
+			var text = request.TreatInputAsSsml
+				? StripSsmlTags(request.Text)
+				: request.Text;
+
+			var lengthScale = RateToPiperLengthScale(request.Rate);
+			wavBytes = await PiperEngine.SynthesizeToWavAsync(text, modelPath, lengthScale, cancellationToken).ConfigureAwait(false);
+		}
+		else
+		{
+			var voice = await VoiceEnumerator.ResolveVoiceAsync(request.VoiceQuery, cancellationToken).ConfigureAwait(false);
+			sourceVoiceName = voice.Name;
+
+			if (voice.VoiceType == VoiceType.Legacy)
+			{
+				wavBytes = await SynthesizeLegacyToWavAsync(request, voice).ConfigureAwait(false);
+			}
+			else
+			{
+				wavBytes = await SynthesizeNeuralToWavAsync(request, voice, cancellationToken).ConfigureAwait(false);
+			}
+		}
+
+		// Step 2: Apply RVC voice conversion
+		await Console.Error.WriteLineAsync
+		(
+			$"Applying RVC voice conversion ({rvcDisplayName})..."
+		).ConfigureAwait(false);
+
+		wavBytes = await RvcEngine.ConvertAsync(wavBytes, rvcModelPath, cancellationToken).ConfigureAwait(false);
+
+		var displayName = $"{sourceVoiceName} → {rvcDisplayName}";
+
+		// Step 3: Output the converted audio
+		if (request.OutputPath is null)
+		{
+			await AudioOutput.PlayToDeviceAsync(wavBytes, request.DeviceQuery).ConfigureAwait(false);
+			return $"Spoke with {displayName}.";
+		}
+
+		AudioOutput.EnsureDirectoryExists(request.OutputPath);
+		var meta = new AudioMetadata(displayName, request.Text);
+
+		if (HasExtension(request.OutputPath, ".wav"))
+		{
+			await File.WriteAllBytesAsync(request.OutputPath, wavBytes, cancellationToken).ConfigureAwait(false);
+			return $"Wrote WAV file '{request.OutputPath}' with {displayName}.";
+		}
+
+		if (HasExtension(request.OutputPath, ".mp3"))
+		{
+			// RVC outputs vary in sample rate, use a generic format hint
+			await AudioOutput.WriteMp3Async(wavBytes, request.OutputFormat, request.OutputPath, meta, cancellationToken).ConfigureAwait(false);
+			return $"Wrote MP3 file '{request.OutputPath}' with {displayName}.";
+		}
+
+		if (HasExtension(request.OutputPath, ".ogg"))
+		{
+			await AudioOutput.WriteOggOpusAsync(wavBytes, request.OutputFormat, request.OutputPath, meta, cancellationToken).ConfigureAwait(false);
+			return $"Wrote OGG file '{request.OutputPath}' with {displayName}.";
+		}
+
+		throw new InvalidOperationException($"Unsupported output file extension for '{request.OutputPath}'. Use .wav, .mp3, or .ogg.");
+	}
+
+	/// <summary>
+	/// Synthesizes text using a legacy (SAPI/WinRT) voice and returns raw WAV bytes.
+	/// </summary>
+	private static async Task<byte[]> SynthesizeLegacyToWavAsync(SynthesisRequest request, InstalledVoice voice)
+	{
+		using var synth = new Windows.Media.SpeechSynthesis.SpeechSynthesizer();
+
+		var winrtVoice = Windows.Media.SpeechSynthesis.SpeechSynthesizer.AllVoices
+			.FirstOrDefault(v => string.Equals(v.Id, voice.VoicePath, StringComparison.OrdinalIgnoreCase));
+
+		if (winrtVoice is not null)
+		{
+			synth.Voice = winrtVoice;
+		}
+
+		var hasProsody = !string.IsNullOrWhiteSpace(request.Rate);
+		var useSsml = request.TreatInputAsSsml || hasProsody;
+
+		Windows.Media.SpeechSynthesis.SpeechSynthesisStream stream;
+		if (useSsml)
+		{
+			var ssml = request.TreatInputAsSsml
+				? EnsureSsmlWrapped(request.Text)
+				: BuildLegacySsml(request.Text, request.Rate, null);
+			stream = await synth.SynthesizeSsmlToStreamAsync(ssml);
+		}
+		else
+		{
+			stream = await synth.SynthesizeTextToStreamAsync(request.Text);
+		}
+
+		return await ReadStreamAsync(stream).ConfigureAwait(false);
+	}
+
+	/// <summary>
+	/// Synthesizes text using a neural (embedded) voice and returns raw WAV bytes.
+	/// </summary>
+	private static async Task<byte[]> SynthesizeNeuralToWavAsync
+	(
+		SynthesisRequest request,
+		InstalledVoice voice,
+		CancellationToken cancellationToken
+	)
+	{
+		var license = LicenseProvider.GetLicenseText();
+
+		// Force WAV output format for the intermediate step
+		var wavRequest = request with
+		{
+			OutputFormat = SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm,
+		};
+
+		using var pullStream = AudioOutputStream.CreatePullStream();
+		using var audioConfig = AudioConfig.FromStreamOutput(pullStream);
+		var config = CreateConfig(wavRequest, voice, license);
+		using var synthesizer = new SpeechSynthesizer(config, audioConfig);
+
+		var result = await SpeakAsync(synthesizer, request, voice).ConfigureAwait(false);
+		EnsureSuccess(result);
+
+		return result.AudioData;
 	}
 
 	private static async Task<string> SynthesizeLegacyAsync(SynthesisRequest request, InstalledVoice voice)
@@ -572,6 +730,7 @@ internal sealed record SynthesisRequest
 	string? DeviceQuery,
 	string? Rate,
 	string? Pitch,
+	string? RvcModel,
 	SpeechSynthesisOutputFormat OutputFormat,
 	bool TreatInputAsSsml
 );

@@ -57,6 +57,11 @@ var pitchOption = new Option<string>("--pitch", "-p")
 	Description = "Pitch adjustment (e.g. high, low, +10%, -5st)",
 };
 
+var rvcOption = new Option<string>("--rvc")
+{
+	Description = "Apply RVC voice conversion (URL or local .onnx path)",
+};
+
 var formatOption = new Option<string>("--format", "-f")
 {
 	DefaultValueFactory = static _ => SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm.ToString(),
@@ -99,6 +104,7 @@ var rootCommand = new RootCommand($"Talktastic v{version} - standalone Windows T
 	listDevicesOption,
 	rateOption,
 	pitchOption,
+	rvcOption,
 	formatOption,
 	ssmlOption,
 	helpSsmlOption,
@@ -126,6 +132,7 @@ rootCommand.SetAction
 				var listDevices = parseResult.GetValue(listDevicesOption);
 				var rate = parseResult.GetValue(rateOption);
 				var pitch = parseResult.GetValue(pitchOption);
+				var rvc = parseResult.GetValue(rvcOption);
 				var format = parseResult.GetRequiredValue(formatOption);
 				var ssml = parseResult.GetValue(ssmlOption);
 					var helpSsml = parseResult.GetValue(helpSsmlOption);
@@ -267,6 +274,7 @@ Notes:
 				DeviceQuery: device,
 				Rate: rate,
 					Pitch: pitch,
+					RvcModel: rvc,
 					OutputFormat: outputFormat,
 					TreatInputAsSsml: ssml
 				);
