@@ -15,8 +15,8 @@ static partial class ModelDownloader
 	/// </summary>
 	public static bool IsUrl(string query)
 	{
-		return query.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
-			|| query.StartsWith("http://", StringComparison.OrdinalIgnoreCase);
+		return Uri.TryCreate(query, UriKind.Absolute, out var uri)
+			&& (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
 	}
 
 	/// <summary>

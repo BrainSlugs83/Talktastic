@@ -427,10 +427,16 @@ static partial class RvcEngine
 
 	private static bool LooksLikeLocalPath(string query)
 	{
+		if (ModelDownloader.IsUrl(query))
+		{
+			return false;
+		}
+
 		return query.Contains(Path.DirectorySeparatorChar, StringComparison.Ordinal)
 			|| query.Contains(Path.AltDirectorySeparatorChar, StringComparison.Ordinal)
 			|| Path.IsPathRooted(query)
-			|| query.EndsWith(".onnx", StringComparison.OrdinalIgnoreCase);
+			|| query.EndsWith(".onnx", StringComparison.OrdinalIgnoreCase)
+			|| query.EndsWith(".pth", StringComparison.OrdinalIgnoreCase);
 	}
 
 	private static string[] ReadRegistryLines(string registryPath)
