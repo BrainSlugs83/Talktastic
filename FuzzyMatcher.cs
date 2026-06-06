@@ -8,7 +8,7 @@ namespace Talktastic;
 /// </summary>
 internal static class FuzzyMatcher
 {
-	private const double MinScore = 0.375;
+	private const double MinScore = 0.4;
 	private const double PrefixMinScore = 0.5;
 
 	/// <summary>
