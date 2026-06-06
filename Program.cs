@@ -47,7 +47,12 @@ var listDevicesOption = new Option<bool>("--list-devices")
 
 var listAllOption = new Option<bool>("--list", "-l")
 {
-	Description = "List voices and devices",
+	Description = "List voices, devices, Piper voices, and RVC models",
+};
+
+var listRvcsOption = new Option<bool>("--list-rvcs")
+{
+	Description = "List downloaded RVC voice conversion models",
 };
 
 var rateOption = new Option<string>("--rate", "-r")
@@ -111,6 +116,7 @@ var rootCommand = new RootCommand($"Talktastic v{version} - standalone Windows T
 	listAllOption,
 	listVoicesOption,
 	listDevicesOption,
+	listRvcsOption,
 	rateOption,
 	pitchOption,
 	rvcOption,
@@ -140,6 +146,7 @@ rootCommand.SetAction
 				var listAll = parseResult.GetValue(listAllOption);
 				var listVoices = parseResult.GetValue(listVoicesOption);
 				var listDevices = parseResult.GetValue(listDevicesOption);
+				var listRvcs = parseResult.GetValue(listRvcsOption);
 				var rate = parseResult.GetValue(rateOption);
 				var pitch = parseResult.GetValue(pitchOption);
 				var rvc = parseResult.GetValue(rvcOption);
@@ -228,8 +235,10 @@ Notes:
 							return 0;
 						}
 
-				if (listAll || listVoices || listDevices)
+				if (listAll || listVoices || listDevices || listRvcs)
 				{
+					var needSeparator = false;
+
 					if (listAll || listVoices)
 					{
 						var voices = await VoiceEnumerator.GetVoicesAsync(cancellationToken).ConfigureAwait(false);
@@ -239,11 +248,48 @@ Notes:
 							var tag = v.VoiceType == VoiceType.Neural ? "neural" : "legacy";
 							await Console.Out.WriteLineAsync($"  {v.Name} [{tag}] ({v.Locale}, {v.Gender})").ConfigureAwait(false);
 						}
+
+						var piperVoices = PiperEngine.GetCachedVoices();
+						if (piperVoices.Count > 0)
+						{
+							await Console.Out.WriteLineAsync().ConfigureAwait(false);
+							await Console.Out.WriteLineAsync("Piper voices:").ConfigureAwait(false);
+							foreach (var (name, sizeMb) in piperVoices)
+							{
+								await Console.Out.WriteLineAsync($"  {name} ({sizeMb} MB)").ConfigureAwait(false);
+							}
+						}
+
+						needSeparator = true;
+					}
+
+					if (listAll || listRvcs)
+					{
+						if (needSeparator)
+						{
+							await Console.Out.WriteLineAsync().ConfigureAwait(false);
+						}
+
+						var rvcModels = RvcEngine.GetCachedModels();
+						await Console.Out.WriteLineAsync("RVC models:").ConfigureAwait(false);
+						if (rvcModels.Count > 0)
+						{
+							foreach (var (name, ext, sizeMb) in rvcModels)
+							{
+								await Console.Out.WriteLineAsync($"  {name} [{ext}] ({sizeMb} MB)").ConfigureAwait(false);
+							}
+						}
+						else
+						{
+							await Console.Out.WriteLineAsync("  (none downloaded)").ConfigureAwait(false);
+						}
+
+						needSeparator = true;
 					}
 
 					if (listAll || listDevices)
 					{
-						if (listAll || listVoices)
+						if (needSeparator)
 						{
 							await Console.Out.WriteLineAsync().ConfigureAwait(false);
 						}

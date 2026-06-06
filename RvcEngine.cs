@@ -46,6 +46,43 @@ static partial class RvcEngine
 
 	private static string? _resolvedRvcDir;
 
+	/// <summary>
+	/// Lists downloaded RVC models as (name, extension, sizeMB) tuples.
+	/// </summary>
+	public static List<(string Name, string Extension, int SizeMb)> GetCachedModels()
+	{
+		var results = new List<(string, string, int)>();
+		foreach (var basePath in SearchBases)
+		{
+			var voicesDir = Path.Combine(basePath, RvcDirName, VoicesSubDir);
+			if (!Directory.Exists(voicesDir))
+			{
+				continue;
+			}
+
+			foreach (var file in Directory.GetFiles(voicesDir))
+			{
+				var ext = Path.GetExtension(file);
+				if
+				(
+					!string.Equals(ext, ".onnx", StringComparison.OrdinalIgnoreCase)
+					&& !string.Equals(ext, ".pth", StringComparison.OrdinalIgnoreCase)
+				)
+				{
+					continue;
+				}
+
+				var name = Path.GetFileNameWithoutExtension(file);
+				var sizeMb = (int)(new FileInfo(file).Length / 1024 / 1024);
+				results.Add((name, ext[1..], sizeMb));
+			}
+
+			break;
+		}
+
+		return results;
+	}
+
 	public static async Task<string> ResolveRvcModelAsync
 	(
 		string rvcQuery,

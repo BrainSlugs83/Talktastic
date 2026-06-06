@@ -34,6 +34,33 @@ static partial class PiperEngine
 	];
 
 	/// <summary>
+	/// Lists downloaded Piper voice models as (name, sizeMB) tuples.
+	/// </summary>
+	public static List<(string Name, int SizeMb)> GetCachedVoices()
+	{
+		var results = new List<(string, int)>();
+		foreach (var basePath in SearchBases)
+		{
+			var voicesDir = Path.Combine(basePath, PiperDirName, VoicesSubDir);
+			if (!Directory.Exists(voicesDir))
+			{
+				continue;
+			}
+
+			foreach (var file in Directory.GetFiles(voicesDir, "*.onnx"))
+			{
+				var name = Path.GetFileNameWithoutExtension(file);
+				var sizeMb = (int)(new FileInfo(file).Length / 1024 / 1024);
+				results.Add((name, sizeMb));
+			}
+
+			break;
+		}
+
+		return results;
+	}
+
+	/// <summary>
 	/// Finds or creates the .piper-tts directory. Searches LOCALAPPDATA, TEMP, CWD.
 	/// If the runtime isn't found anywhere, extracts the embedded zip to the first writable location.
 	/// </summary>
