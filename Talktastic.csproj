@@ -30,6 +30,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="BetterStringExtensions" Version="1.0.4" />
     <PackageReference Include="Concentus" Version="2.2.2" />
     <PackageReference Include="Concentus.Oggfile" Version="1.0.7" />
     <PackageReference Include="Microsoft.CognitiveServices.Speech" Version="1.50.0" GeneratePathProperty="true" />

@@ -73,9 +73,10 @@ internal static class VoiceEnumerator
 		var exactMatch = voices.FirstOrDefault
 		(
 			v =>
-				string.Equals(v.Name, query, StringComparison.OrdinalIgnoreCase) ||
-				string.Equals(v.ShortName, query, StringComparison.OrdinalIgnoreCase) ||
-				string.Equals(v.LocalName, query, StringComparison.OrdinalIgnoreCase)
+				v.Name.EqualsIgnoreCase(query) ||
+				v.ShortName.EqualsIgnoreCase(query) ||
+				v.LocalName.EqualsIgnoreCase(query) ||
+				v.FriendlyName.EqualsIgnoreCase(query)
 		);
 
 		if (exactMatch is not null)
@@ -83,18 +84,10 @@ internal static class VoiceEnumerator
 			return exactMatch;
 		}
 
-		var partialMatches = voices
-			.Where
-			(
-				v =>
-					ContainsIgnoreCase(v.Name, query) ||
-					ContainsIgnoreCase(v.ShortName, query) ||
-					ContainsIgnoreCase(v.LocalName, query)
-			)
-			.OrderBy(static v => v.Name, StringComparer.OrdinalIgnoreCase)
-			.ToArray();
-
-		return partialMatches.Length > 0 ? partialMatches[0] : null;
+		// Fuzzy match against the friendly name (best for short queries like "hazl")
+		return FuzzyMatcher.FindBestMatch(voices, query, static v => v.FriendlyName)
+			?? FuzzyMatcher.FindBestMatch(voices, query, static v => v.Name)
+			?? FuzzyMatcher.FindBestMatch(voices, query, static v => v.ShortName);
 	}
 
 	private static InstalledVoice ResolveDefaultVoice(IReadOnlyList<InstalledVoice> voices)
@@ -121,7 +114,7 @@ internal static class VoiceEnumerator
 				// Prefer neural voice matching that person
 				var neuralMatch = voices.FirstOrDefault
 				(
-					v => v.VoiceType == VoiceType.Neural && ContainsIgnoreCase(v.Name, personName)
+					v => v.VoiceType == VoiceType.Neural && v.Name.ContainsIgnoreCase(personName)
 				);
 
 				if (neuralMatch is not null)
@@ -130,7 +123,7 @@ internal static class VoiceEnumerator
 				}
 
 				// Fall back to any voice matching that person
-				var anyMatch = voices.FirstOrDefault(v => ContainsIgnoreCase(v.Name, personName));
+				var anyMatch = voices.FirstOrDefault(v => v.Name.ContainsIgnoreCase(personName));
 				if (anyMatch is not null)
 				{
 					return anyMatch;
@@ -146,7 +139,7 @@ internal static class VoiceEnumerator
 		{
 			var neuralUpgrade = voices.FirstOrDefault
 			(
-				v => v.VoiceType == VoiceType.Neural && ContainsIgnoreCase(v.Name, defaultName)
+				v => v.VoiceType == VoiceType.Neural && v.Name.ContainsIgnoreCase(defaultName)
 			);
 
 			if (neuralUpgrade is not null)
@@ -286,11 +279,6 @@ internal static class VoiceEnumerator
 			.ToArray();
 	}
 
-	private static bool ContainsIgnoreCase(string? source, string value)
-	{
-		return source?.Contains(value, StringComparison.OrdinalIgnoreCase) ?? false;
-	}
-
 	private static string NormalizePath(string path)
 	{
 		return path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
@@ -306,4 +294,36 @@ internal sealed record InstalledVoice
 	string Gender,
 	string VoicePath,
 	VoiceType VoiceType
-);
+)
+{
+	private const string MicrosoftPrefix = "Microsoft ";
+
+	/// <summary>
+	/// Short friendly name stripped of the "Microsoft " prefix and any parenthetical suffixes.
+	/// E.g. "Microsoft Jenny(Natural) - English (United States)" → "Jenny".
+	/// </summary>
+	public string FriendlyName { get; } = ExtractFriendlyName
+	(
+		string.IsNullOrWhiteSpace(LocalName) ? Name : LocalName
+	);
+
+	private static string ExtractFriendlyName(string fullName)
+	{
+		var name = fullName.StartsWith(MicrosoftPrefix, StringComparison.OrdinalIgnoreCase)
+			? fullName[MicrosoftPrefix.Length..]
+			: fullName;
+
+		// Trim parenthetical/dash suffixes: "Jenny(Natural) - English (US)" → "Jenny"
+		var parenIdx = name.IndexOf('(', StringComparison.Ordinal);
+		var dashIdx = name.IndexOf(" - ", StringComparison.Ordinal);
+		var cutAt = (parenIdx, dashIdx) switch
+		{
+			( >= 0, >= 0) => Math.Min(parenIdx, dashIdx),
+			( >= 0, _) => parenIdx,
+			(_, >= 0) => dashIdx,
+			_ => -1,
+		};
+
+		return cutAt > 0 ? name[..cutAt].Trim() : name.Trim();
+	}
+}

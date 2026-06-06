@@ -485,7 +485,7 @@ static partial class PiperEngine
 		// Case-insensitive search through the catalog
 		foreach (var (name, modelName) in VoiceCatalog)
 		{
-			if (string.Equals(name, friendlyName, StringComparison.OrdinalIgnoreCase))
+			if (name.EqualsIgnoreCase(friendlyName))
 				return modelName;
 		}
 		return null;

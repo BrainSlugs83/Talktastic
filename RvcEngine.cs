@@ -180,32 +180,28 @@ static partial class RvcEngine
 			return downloadPath;
 		}
 
-		var namedModel = FindCachedModel(voicesDir, rvcQuery)
-			?? FindCachedModelFuzzy(voicesDir, rvcQuery);
+		var namedModel = FindCachedModel(voicesDir, rvcQuery);
 		if (namedModel is not null)
 		{
 			return namedModel;
 		}
 
-		foreach (var line in ReadRegistryLines(registryPath))
-		{
-			var tab = line.IndexOf('\t', StringComparison.Ordinal);
-			if (tab < 0)
-			{
-				continue;
-			}
-
-			var modelName = line[(tab + 1)..];
-			if
+		var registryNames = ReadRegistryLines(registryPath)
+			.Select
 			(
-				!string.Equals(modelName, rvcQuery, StringComparison.InvariantCultureIgnoreCase)
-				&& !modelName.Contains(rvcQuery, StringComparison.InvariantCultureIgnoreCase)
+				line =>
+				{
+					var tab = line.IndexOf('\t', StringComparison.Ordinal);
+					return tab >= 0 ? line[(tab + 1)..] : null;
+				}
 			)
-			{
-				continue;
-			}
+			.Where(static name => name is not null)
+			.ToArray();
 
-			var resolvedPath = FindCachedModel(voicesDir, modelName);
+		var bestRegistryMatch = FuzzyMatcher.FindBestMatch(registryNames!, rvcQuery);
+		if (!string.IsNullOrEmpty(bestRegistryMatch))
+		{
+			var resolvedPath = FindCachedModel(voicesDir, bestRegistryMatch);
 			if (resolvedPath is not null)
 			{
 				return resolvedPath;
@@ -251,6 +247,7 @@ static partial class RvcEngine
 
 	private static string? FindCachedModel(string voicesDir, string modelName)
 	{
+		// Exact match first
 		var onnxPath = Path.Combine(voicesDir, $"{modelName}.onnx");
 		if (File.Exists(onnxPath))
 		{
@@ -263,36 +260,37 @@ static partial class RvcEngine
 			return pthPath;
 		}
 
-		return null;
-	}
-
-	private static string? FindCachedModelFuzzy(string voicesDir, string query)
-	{
+		// Fuzzy match fallback (contains → Levenshtein distance)
 		if (!Directory.Exists(voicesDir))
 		{
 			return null;
 		}
 
-		foreach (var file in Directory.GetFiles(voicesDir))
-		{
-			var ext = Path.GetExtension(file);
-			if
+		var modelFiles = Directory.GetFiles(voicesDir)
+			.Where
 			(
-				!string.Equals(ext, ".onnx", StringComparison.OrdinalIgnoreCase)
-				&& !string.Equals(ext, ".pth", StringComparison.OrdinalIgnoreCase)
+				f =>
+				{
+					var ext = Path.GetExtension(f);
+					return string.Equals(ext, ".onnx", StringComparison.OrdinalIgnoreCase)
+						|| string.Equals(ext, ".pth", StringComparison.OrdinalIgnoreCase);
+				}
 			)
-			{
-				continue;
-			}
+			.ToArray();
 
-			var name = Path.GetFileNameWithoutExtension(file);
-			if (name.Contains(query, StringComparison.InvariantCultureIgnoreCase))
-			{
-				return file;
-			}
+		var names = modelFiles.Select(Path.GetFileNameWithoutExtension).ToArray();
+		var bestName = FuzzyMatcher.FindBestMatch(names!, modelName);
+
+		if (string.IsNullOrEmpty(bestName))
+		{
+			return null;
 		}
 
-		return null;
+		return modelFiles.FirstOrDefault
+		(
+			f => Path.GetFileNameWithoutExtension(f)
+				.EqualsIgnoreCase(bestName)
+		);
 	}
 
 	public static async Task EnsureInfraModelsAsync(CancellationToken ct)
