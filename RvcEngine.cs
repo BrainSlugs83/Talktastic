@@ -94,7 +94,14 @@ static partial class RvcEngine
 
 		if (File.Exists(rvcQuery))
 		{
-			return Path.GetFullPath(rvcQuery);
+			var fullPath = Path.GetFullPath(rvcQuery);
+
+			if (fullPath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+			{
+				return await ExtractLocalZipAsync(fullPath, ct).ConfigureAwait(false);
+			}
+
+			return fullPath;
 		}
 
 		if (LooksLikeLocalPath(rvcQuery))
@@ -204,6 +211,37 @@ static partial class RvcEngine
 		(
 			$"Unknown RVC model '{rvcQuery}'. Use a friendly name already cached, a local .onnx/.pth path, or a URL."
 		);
+	}
+
+	private static async Task<string> ExtractLocalZipAsync(string zipPath, CancellationToken ct)
+	{
+		var rvcDir = EnsureRvcDirectory();
+		var voicesDir = Path.Combine(rvcDir, VoicesSubDir);
+		var registryPath = Path.Combine(rvcDir, RegistryFileName);
+		Directory.CreateDirectory(voicesDir);
+
+		var cachedModelName = ModelDownloader.LookupRegistry(registryPath, zipPath);
+		if (cachedModelName is not null)
+		{
+			var cachedPath = FindCachedModel(voicesDir, cachedModelName);
+			if (cachedPath is not null)
+			{
+				return cachedPath;
+			}
+		}
+
+		await Console.Error.WriteLineAsync
+		(
+			$"Extracting RVC model from '{Path.GetFileName(zipPath)}'..."
+		).ConfigureAwait(false);
+
+		var (modelPath, extractedName) = await ModelDownloader.ExtractZipAsync
+		(
+			zipPath, voicesDir, ct
+		).ConfigureAwait(false);
+
+		ModelDownloader.WriteRegistry(registryPath, zipPath, extractedName);
+		return modelPath;
 	}
 
 	private static string? FindCachedModel(string voicesDir, string modelName)

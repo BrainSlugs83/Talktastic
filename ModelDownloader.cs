@@ -77,14 +77,36 @@ static partial class ModelDownloader
 	{
 		Directory.CreateDirectory(destDir);
 		var tempZip = Path.Combine(destDir, $"download-{Guid.NewGuid():N}.zip");
-		var tempExtract = Path.Combine(destDir, $"extract-{Guid.NewGuid():N}");
 
 		try
 		{
 			await DownloadFileAsync(http, url, tempZip, cancellationToken).ConfigureAwait(false);
+			return await ExtractZipAsync(tempZip, destDir, cancellationToken).ConfigureAwait(false);
+		}
+		finally
+		{
+			try { File.Delete(tempZip); } catch (IOException) { }
+		}
+	}
 
+	/// <summary>
+	/// Extracts a local .zip file, finds the first .onnx or .pth model,
+	/// and moves it (plus companion .json/.index files) into destDir.
+	/// </summary>
+	public static async Task<(string ModelPath, string ModelName)> ExtractZipAsync
+	(
+		string zipPath,
+		string destDir,
+		CancellationToken cancellationToken
+	)
+	{
+		Directory.CreateDirectory(destDir);
+		var tempExtract = Path.Combine(destDir, $"extract-{Guid.NewGuid():N}");
+
+		try
+		{
 			Directory.CreateDirectory(tempExtract);
-			await ZipFile.ExtractToDirectoryAsync(tempZip, tempExtract, overwriteFiles: true, cancellationToken).ConfigureAwait(false);
+			await ZipFile.ExtractToDirectoryAsync(zipPath, tempExtract, overwriteFiles: true, cancellationToken).ConfigureAwait(false);
 
 			// Prefer .onnx files, fall back to .pth
 			var onnxFiles = Directory.GetFiles(tempExtract, "*.onnx", SearchOption.AllDirectories);
@@ -113,12 +135,11 @@ static partial class ModelDownloader
 
 			throw new InvalidOperationException
 			(
-				$"No .onnx or .pth model file found in zip archive from {url}"
+				$"No .onnx or .pth model file found in zip archive: {Path.GetFileName(zipPath)}"
 			);
 		}
 		finally
 		{
-			try { File.Delete(tempZip); } catch (IOException) { }
 			try { if (Directory.Exists(tempExtract)) Directory.Delete(tempExtract, recursive: true); }
 			catch (IOException) { }
 		}
