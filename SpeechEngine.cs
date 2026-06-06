@@ -9,17 +9,18 @@ namespace Talktastic;
 
 internal static partial class SpeechEngine
 {
-	public static async Task<string> SynthesizeAsync(SynthesisRequest request, CancellationToken cancellationToken = default)
+	public static async Task<string> SynthesizeAsync
+	(
+		SynthesisRequest request,
+		InstalledVoice voice,
+		(string Path, string DisplayName)? rvc,
+		CancellationToken cancellationToken = default
+	)
 	{
-		// If RVC is requested, we need to go through the WAV-bytes pipeline
-		// regardless of the output format, so we can apply voice conversion.
-		if (!string.IsNullOrWhiteSpace(request.RvcModel))
+		if (rvc is not null)
 		{
-			return await SynthesizeWithRvcAsync(request, cancellationToken).ConfigureAwait(false);
+			return await SynthesizeWithRvcAsync(request, voice, rvc.Value, cancellationToken).ConfigureAwait(false);
 		}
-
-		// Resolve voice from the unified list (neural + legacy + piper)
-		var voice = await VoiceEnumerator.ResolveVoiceAsync(request.VoiceQuery, cancellationToken).ConfigureAwait(false);
 
 		return voice.VoiceType switch
 		{
@@ -36,14 +37,12 @@ internal static partial class SpeechEngine
 	private static async Task<string> SynthesizeWithRvcAsync
 	(
 		SynthesisRequest request,
+		InstalledVoice voice,
+		(string Path, string DisplayName) rvc,
 		CancellationToken cancellationToken
 	)
 	{
-		// Resolve the RVC model (download if needed)
-		var (rvcModelPath, rvcDisplayName) = await RvcEngine.ResolveRvcModelAsync(request.RvcModel!, cancellationToken).ConfigureAwait(false);
-
-		// Step 1: Produce WAV bytes from the source TTS engine (unified resolution)
-		var voice = await VoiceEnumerator.ResolveVoiceAsync(request.VoiceQuery, cancellationToken).ConfigureAwait(false);
+		var (rvcModelPath, rvcDisplayName) = rvc;
 		var sourceVoiceName = voice.VoiceType == VoiceType.Piper ? voice.LocalName : voice.Name;
 
 		byte[] wavBytes;

@@ -383,7 +383,25 @@ Notes:
 				return 0;
 			}
 
-			// Suppress stdout after help/list checks so -q doesn't hide help text
+			// Resolve voice and RVC model once, up front
+			var resolvedVoice = await VoiceEnumerator.ResolveVoiceAsync(voice, cancellationToken).ConfigureAwait(false);
+			var resolvedRvc = !string.IsNullOrWhiteSpace(rvc)
+				? await RvcEngine.ResolveRvcModelAsync(rvc, cancellationToken).ConfigureAwait(false)
+				: ((string Path, string DisplayName)?)null;
+
+			if (!quiet && !superQuiet)
+			{
+				var voiceLabel = resolvedVoice.VoiceType == VoiceType.Piper
+					? resolvedVoice.LocalName
+					: resolvedVoice.Name;
+
+				var label = resolvedRvc is not null
+					? $"Voice: {voiceLabel} → {resolvedRvc.Value.DisplayName}"
+					: $"Voice: {voiceLabel}";
+
+				await Console.Out.WriteLineAsync(label).ConfigureAwait(false);
+			}
+
 			if (quiet || superQuiet)
 			{
 				Console.SetOut(TextWriter.Null);
@@ -403,7 +421,7 @@ Notes:
 					TreatInputAsSsml: ssml
 				);
 
-			var summary = await SpeechEngine.SynthesizeAsync(request, cancellationToken).ConfigureAwait(false);
+			var summary = await SpeechEngine.SynthesizeAsync(request, resolvedVoice, resolvedRvc, cancellationToken).ConfigureAwait(false);
 			await Console.Out.WriteLineAsync(summary).ConfigureAwait(false);
 			return 0;
 		}
