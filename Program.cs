@@ -90,7 +90,7 @@ var rvcOption = new Option<string>("--rvc")
 	Description = "Apply RVC voice conversion (URL or local .onnx path)",
 };
 
-var inputOption = new Option<string>("--in")
+var inputOption = new Option<string>("--in", "-i")
 {
 	Description = "Input audio file (.wav, .mp3, .ogg) to process through RVC (no TTS)",
 };
@@ -445,6 +445,11 @@ Notes:
 			// ── RVC-only mode: process an existing audio file ──
 			if (!string.IsNullOrWhiteSpace(inputFile))
 			{
+				if (!string.IsNullOrWhiteSpace(text))
+				{
+					throw new InvalidOperationException("--in and text input are mutually exclusive. Use --in for file-based RVC, or provide text for TTS.");
+				}
+
 				if (string.IsNullOrWhiteSpace(rvc))
 				{
 					throw new InvalidOperationException("--in requires --rvc to specify a voice conversion model.");
