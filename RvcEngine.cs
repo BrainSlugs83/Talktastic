@@ -36,32 +36,23 @@ static partial class RvcEngine
 
 	private static readonly HttpClient Http = CreateHttpClient();
 
-	private static readonly string[] SearchBases =
-	[
-		Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Talktastic"),
-		Path.GetTempPath(),
-		Environment.CurrentDirectory,
-	];
-
 	private static readonly float[] CentsMapping = CreateCentsMapping();
 
 	private static string? _resolvedRvcDir;
+
+	private readonly record struct SegmentSlice
+	(
+		float[] Audio,
+		int PitchStart,
+		int PitchEnd
+	);
 
 	/// <summary>
 	/// Returns the RVC voices directory path, if it exists.
 	/// </summary>
 	internal static string? FindVoicesDir()
 	{
-		foreach (var basePath in SearchBases)
-		{
-			var voicesDir = Path.Combine(basePath, RvcDirName, VoicesSubDir);
-			if (Directory.Exists(voicesDir))
-			{
-				return voicesDir;
-			}
-		}
-
-		return null;
+		return AppPaths.FindExistingDir(Path.Combine(RvcDirName, VoicesSubDir));
 	}
 
 	/// <summary>
@@ -126,7 +117,7 @@ static partial class RvcEngine
 	public static List<(string Name, string Extension, int SizeMb, bool HasIndex)> GetCachedModels()
 	{
 		var results = new List<(string, string, int, bool)>();
-		foreach (var basePath in SearchBases)
+		foreach (var basePath in AppPaths.SearchBases)
 		{
 			var voicesDir = Path.Combine(basePath, RvcDirName, VoicesSubDir);
 
@@ -457,32 +448,63 @@ static partial class RvcEngine
 
 		try
 		{
-				// Load companion FAISS index for feature retrieval (if available)
-				FaissIndex.Index? faissIndex = null;
-				var indexPath = FindCompanionIndex(rvcModelPath);
-				if (indexPath is not null)
-				{
-					faissIndex = FaissIndex.Load(indexPath);
-					await Console.Error.WriteLineAsync
-					(
-						$"Using index: {Path.GetFileName(indexPath)} "
-						+ $"({faissIndex.Count} vectors, dim={faissIndex.Dimension})"
-					).ConfigureAwait(false);
-				}
-
-				var (pitchf, pitch) = ExtractF0(rmvpeSession, inferenceAudio, pitchShiftSemitones, ct);
-				var convertedSegments = InferSegments
+			// Load companion FAISS index for feature retrieval (if available)
+			FaissIndex.Index? faissIndex = null;
+			var indexPath = FindCompanionIndex(rvcModelPath);
+			if (indexPath is not null)
+			{
+				faissIndex = FaissIndex.Load(indexPath);
+				await Console.Error.WriteLineAsync
 				(
-					rvcSession,
-					vecSession,
-					inferenceAudio,
-					pitch,
-					pitchf,
-					optTs,
-					targetSampleRate,
-					faissIndex,
-					ct
+					$"Using index: {Path.GetFileName(indexPath)} "
+					+ $"({faissIndex.Count} vectors, dim={faissIndex.Dimension})"
+				).ConfigureAwait(false);
+			}
+
+			var segmentSlices = ComputeSegmentSlices(inferenceAudio, optTs, ct);
+			var f0Task = Task.Run
+			(
+				() => ExtractF0(rmvpeSession, inferenceAudio, pitchShiftSemitones, ct),
+				ct
+			);
+
+			var featureTasks = segmentSlices
+				.Select
+				(
+					slice => Task.Run
+					(
+						() => ExtractSegmentFeatures(vecSession, slice.Audio, faissIndex),
+						ct
+					)
+				)
+				.ToArray();
+
+			var allFeaturesTask = Task.WhenAll(featureTasks);
+			await Task.WhenAll(f0Task, allFeaturesTask).ConfigureAwait(false);
+
+			var (pitchf, pitch) = await f0Task.ConfigureAwait(false);
+			var segmentFeatures = await allFeaturesTask.ConfigureAwait(false);
+			var convertedSegments = new List<float[]>(segmentSlices.Length);
+			for (var i = 0; i < segmentSlices.Length; i++)
+			{
+				ct.ThrowIfCancellationRequested();
+
+				var slice = segmentSlices[i];
+				var (pitchStart, pitchEnd) = ClampPitchRange(slice, pitch, pitchf);
+				convertedSegments.Add
+				(
+					RunRvcInference
+					(
+						rvcSession,
+						segmentFeatures[i],
+						pitch[pitchStart..pitchEnd],
+						pitchf[pitchStart..pitchEnd],
+						slice.Audio,
+						targetSampleRate,
+						ct
+					)
 				);
+			}
 
 			var finalSamples = Concatenate(convertedSegments);
 			return AudioDsp.EncodeWav(finalSamples, targetSampleRate);
@@ -582,7 +604,7 @@ static partial class RvcEngine
 			return _resolvedRvcDir;
 		}
 
-		foreach (var basePath in SearchBases)
+		foreach (var basePath in AppPaths.SearchBases)
 		{
 			var candidate = Path.Combine(basePath, RvcDirName);
 			if (Directory.Exists(candidate))
@@ -592,7 +614,7 @@ static partial class RvcEngine
 			}
 		}
 
-		foreach (var basePath in SearchBases)
+		foreach (var basePath in AppPaths.SearchBases)
 		{
 			var candidate = Path.Combine(basePath, RvcDirName);
 			try
@@ -946,46 +968,23 @@ static partial class RvcEngine
 		CancellationToken ct
 	)
 	{
-		var tPad = InputSampleRate * XPadSeconds;
-		var tPad2 = tPad * 2;
-		var results = new List<float[]>();
-		var segmentStart = 0;
-
-		foreach (var timestamp in optTs)
+		var segmentSlices = ComputeSegmentSlices(audioPad, optTs, ct);
+		var results = new List<float[]>(segmentSlices.Length);
+		foreach (var slice in segmentSlices)
 		{
 			ct.ThrowIfCancellationRequested();
 
-			var alignedTimestamp = (timestamp / Window) * Window;
-			var startWin = segmentStart / Window;
-			var endWin = Math.Min(pitch.Length, (alignedTimestamp + tPad2) / Window);
-			var audioEnd = Math.Min(audioPad.Length, alignedTimestamp + tPad2 + Window);
+			var (pitchStart, pitchEnd) = ClampPitchRange(slice, pitch, pitchf);
 
-			var audioSlice = audioPad[segmentStart..audioEnd];
-			var pitchSlice = pitch[startWin..endWin];
-			var pitchfSlice = pitchf[startWin..endWin];
-
-			results.Add
-			(
-				RunSegment(rvcSession, vecSession, audioSlice, pitchSlice, pitchfSlice, targetSampleRate, faissIndex, ct)
-			);
-
-			segmentStart = alignedTimestamp;
-		}
-
-		if (segmentStart < audioPad.Length)
-		{
-			ct.ThrowIfCancellationRequested();
-
-			var startWin = Math.Min(pitch.Length, segmentStart / Window);
 			results.Add
 			(
 				RunSegment
 				(
 					rvcSession,
 					vecSession,
-					audioPad[segmentStart..],
-					pitch[startWin..],
-					pitchf[startWin..],
+					slice.Audio,
+					pitch[pitchStart..pitchEnd],
+					pitchf[pitchStart..pitchEnd],
 					targetSampleRate,
 					faissIndex,
 					ct
@@ -994,6 +993,55 @@ static partial class RvcEngine
 		}
 
 		return results;
+	}
+
+	private static SegmentSlice[] ComputeSegmentSlices
+	(
+		float[] audioPad,
+		List<int> optTs,
+		CancellationToken ct
+	)
+	{
+		var tPad = InputSampleRate * XPadSeconds;
+		var tPad2 = tPad * 2;
+		var totalFrames = audioPad.Length / Window;
+		var results = new List<SegmentSlice>(optTs.Count + 1);
+		var segmentStart = 0;
+
+		foreach (var timestamp in optTs)
+		{
+			ct.ThrowIfCancellationRequested();
+
+			var alignedTimestamp = (timestamp / Window) * Window;
+			var pitchStart = segmentStart / Window;
+			var pitchEnd = Math.Min(totalFrames, (alignedTimestamp + tPad2) / Window);
+			var audioEnd = Math.Min(audioPad.Length, alignedTimestamp + tPad2 + Window);
+
+			results.Add(new SegmentSlice(audioPad[segmentStart..audioEnd], pitchStart, pitchEnd));
+			segmentStart = alignedTimestamp;
+		}
+
+		if (segmentStart < audioPad.Length)
+		{
+			ct.ThrowIfCancellationRequested();
+
+			var pitchStart = Math.Min(totalFrames, segmentStart / Window);
+			results.Add(new SegmentSlice(audioPad[segmentStart..], pitchStart, totalFrames));
+		}
+
+		return [.. results];
+	}
+
+	private static (int PitchStart, int PitchEnd) ClampPitchRange
+	(
+		SegmentSlice segmentSlice,
+		long[] pitch,
+		float[] pitchf
+	)
+	{
+		var pitchEnd = Math.Min(segmentSlice.PitchEnd, Math.Min(pitch.Length, pitchf.Length));
+		var pitchStart = Math.Min(segmentSlice.PitchStart, pitchEnd);
+		return (pitchStart, pitchEnd);
 	}
 
 	private static float[] RunSegment
@@ -1010,13 +1058,48 @@ static partial class RvcEngine
 	{
 		ct.ThrowIfCancellationRequested();
 
+		var features = ExtractSegmentFeatures(vecSession, audioSegment, faissIndex);
+		return RunRvcInference
+		(
+			rvcSession,
+			features,
+			pitchSegment,
+			pitchfSegment,
+			audioSegment,
+			targetSampleRate,
+			ct
+		);
+	}
+
+	private static float[,] ExtractSegmentFeatures
+	(
+		InferenceSession vecSession,
+		float[] audioSegment,
+		FaissIndex.Index? faissIndex
+	)
+	{
 		var features = RunContentVec(vecSession, audioSegment);
 
-		// Apply FAISS index feature retrieval (if index is available)
 		if (faissIndex is not null && faissIndex.Dimension == features.GetLength(1))
 		{
 			features = ApplyFaissRetrieval(features, faissIndex);
 		}
+
+		return features;
+	}
+
+	private static float[] RunRvcInference
+	(
+		InferenceSession rvcSession,
+		float[,] features,
+		long[] pitchSegment,
+		float[] pitchfSegment,
+		float[] audioSegment,
+		int targetSampleRate,
+		CancellationToken ct
+	)
+	{
+		ct.ThrowIfCancellationRequested();
 
 		// ContentVec runs at half the RVC frame rate — double the frames first
 		var doubledFrames = features.GetLength(0) * 2;

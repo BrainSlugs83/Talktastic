@@ -192,16 +192,28 @@ static partial class ModelDownloader
 
 		if (internalUsable)
 		{
-			return internalName;
+			return CleanModelName(internalName)!;
 		}
 
 		if (fallbackUsable)
 		{
-			return SanitizeFileName(fallbackName);
+			return CleanModelName(SanitizeFileName(fallbackName))!;
 		}
 
 		// Both are garbage -- return internal as-is (shouldn't happen in practice)
-		return internalName;
+		return CleanModelName(internalName)!;
+	}
+
+	internal static string? CleanModelName(string? rawName)
+	{
+		if (string.IsNullOrEmpty(rawName))
+		{
+			return rawName;
+		}
+
+		var cleaned = rawName.Replace('_', ' ');
+		cleaned = MultipleSpacesPattern().Replace(cleaned, " ");
+		return cleaned.Trim();
 	}
 
 	internal static bool IsUsableName(string name)
@@ -355,9 +367,15 @@ static partial class ModelDownloader
 			{
 				var filePath = string.Join('/', segments[4..]);
 				var fileUrl = $"https://huggingface.co/{owner}/{repo}/resolve/{branch}/{filePath}";
-				var name = Path.GetFileNameWithoutExtension(filePath);
+				var resolvedSubPath = Path.GetDirectoryName(filePath)?.Replace('\\', '/') ?? "";
+				var fileName = Path.GetFileNameWithoutExtension(filePath);
+				var name = string.IsNullOrEmpty(resolvedSubPath)
+					? DeriveModelNameFromRepo(repo, resolvedSubPath)
+					: IsUsableName(fileName)
+						? fileName
+						: DeriveModelNameFromRepo(repo, resolvedSubPath);
 				var isZip = filePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase);
-				return (fileUrl, name, isZip, null);
+				return (fileUrl, CleanModelName(name)!, isZip, null);
 			}
 		}
 
@@ -390,10 +408,12 @@ static partial class ModelDownloader
 		{
 			var fileUrl = $"{baseResolve}/{onnxPath}";
 			var onnxFilename = Path.GetFileNameWithoutExtension(onnxPath);
-			var modelName = onnxFilename.Equals("model", StringComparison.OrdinalIgnoreCase)
+			var modelName = string.IsNullOrEmpty(subPath)
 				? DeriveModelNameFromRepo(repo, subPath)
-				: onnxFilename;
-			return (fileUrl, modelName, false, null);
+				: onnxFilename.Equals("model", StringComparison.OrdinalIgnoreCase)
+					? DeriveModelNameFromRepo(repo, subPath)
+					: onnxFilename;
+			return (fileUrl, CleanModelName(modelName)!, false, null);
 		}
 
 		// Fall back to .zip files
@@ -401,8 +421,11 @@ static partial class ModelDownloader
 		if (zipPath is not null)
 		{
 			var fileUrl = $"{baseResolve}/{zipPath}";
-			var modelName = Path.GetFileNameWithoutExtension(zipPath);
-			return (fileUrl, modelName, true, null);
+			var zipFilename = Path.GetFileNameWithoutExtension(zipPath);
+			var modelName = string.IsNullOrEmpty(subPath)
+				? DeriveModelNameFromRepo(repo, subPath)
+				: zipFilename;
+			return (fileUrl, CleanModelName(modelName)!, true, null);
 		}
 
 		// Fall back to .pth files (with companion .index/.json downloads)
@@ -411,9 +434,11 @@ static partial class ModelDownloader
 		{
 			var fileUrl = $"{baseResolve}/{pthPath}";
 			var pthFilename = Path.GetFileNameWithoutExtension(pthPath);
-			var modelName = IsUsableName(pthFilename)
-				? pthFilename
-				: DeriveModelNameFromRepo(repo, subPath);
+			var modelName = string.IsNullOrEmpty(subPath)
+				? DeriveModelNameFromRepo(repo, subPath)
+				: IsUsableName(pthFilename)
+					? pthFilename
+					: DeriveModelNameFromRepo(repo, subPath);
 
 			// Collect companion files (.index, .json but not .gitattributes etc.)
 			var companions = new List<string>();
@@ -429,7 +454,7 @@ static partial class ModelDownloader
 				companions.Add($"{baseResolve}/{jsonPath}");
 			}
 
-			return (fileUrl, modelName, false, companions.Count > 0 ? companions.ToArray() : null);
+			return (fileUrl, CleanModelName(modelName)!, false, companions.Count > 0 ? companions.ToArray() : null);
 		}
 
 		throw new InvalidOperationException
@@ -464,17 +489,17 @@ static partial class ModelDownloader
 			if (filename.EndsWith(".onnx", StringComparison.OrdinalIgnoreCase))
 			{
 				var name = filename[..^".onnx".Length];
-				return (uri.ToString(), name, false, null);
+				return (uri.ToString(), CleanModelName(name)!, false, null);
 			}
 			if (filename.EndsWith(".pth", StringComparison.OrdinalIgnoreCase))
 			{
 				var name = filename[..^".pth".Length];
-				return (uri.ToString(), name, false, null);
+				return (uri.ToString(), CleanModelName(name)!, false, null);
 			}
 			if (filename.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
 			{
 				var name = filename[..^".zip".Length];
-				return (uri.ToString(), name, true, null);
+				return (uri.ToString(), CleanModelName(name)!, true, null);
 			}
 		}
 
@@ -497,7 +522,7 @@ static partial class ModelDownloader
 		if (onnxUrl is not null)
 		{
 			var onnxFilename = Path.GetFileName(new Uri(onnxUrl).LocalPath);
-			return (onnxUrl, onnxFilename[..^".onnx".Length], false, null);
+			return (onnxUrl, CleanModelName(onnxFilename[..^".onnx".Length])!, false, null);
 		}
 
 		// Fall back to .zip assets
@@ -505,7 +530,7 @@ static partial class ModelDownloader
 		if (zipUrl is not null)
 		{
 			var zipFilename = Path.GetFileName(new Uri(zipUrl).LocalPath);
-			return (zipUrl, zipFilename[..^".zip".Length], true, null);
+			return (zipUrl, CleanModelName(zipFilename[..^".zip".Length])!, true, null);
 		}
 
 		// Fall back to .pth assets (with companion .index)
@@ -524,7 +549,7 @@ static partial class ModelDownloader
 				companions.Add(indexUrl);
 			}
 
-			return (pthUrl, modelName, false, companions.Count > 0 ? companions.ToArray() : null);
+			return (pthUrl, CleanModelName(modelName)!, false, companions.Count > 0 ? companions.ToArray() : null);
 		}
 
 		throw new InvalidOperationException
@@ -623,6 +648,9 @@ static partial class ModelDownloader
 	[GeneratedRegex(@"(?:vits-)?piper-(.+)$", RegexOptions.IgnoreCase)]
 	private static partial Regex RepoNamePattern();
 
+	[GeneratedRegex(" {2,}")]
+	private static partial Regex MultipleSpacesPattern();
+
 	/// <summary>
 	/// Finds the first file path matching a pattern in a JSON listing.
 	/// Optionally excludes paths ending with a specific suffix.
@@ -670,7 +698,7 @@ static partial class ModelDownloader
 		var fileName = Uri.UnescapeDataString(Path.GetFileNameWithoutExtension(uri.LocalPath));
 		if (IsUsableName(fileName))
 		{
-			return fileName;
+			return CleanModelName(fileName)!;
 		}
 
 		// Walk up path segments for something usable
@@ -695,11 +723,11 @@ static partial class ModelDownloader
 
 			if (IsUsableName(seg))
 			{
-				return seg;
+				return CleanModelName(seg)!;
 			}
 		}
 
-		return fileName;
+		return CleanModelName(fileName)!;
 	}
 
 	internal static string DeriveModelNameFromRepo(string repo, string subPath)
@@ -713,11 +741,11 @@ static partial class ModelDownloader
 				var name = parts.Length >= 3 ? parts[2] : "";
 				var quality = parts.Length >= 4 ? parts[3] : "medium";
 				if (!string.IsNullOrEmpty(name))
-					return $"{locale}-{name}-{quality}";
+					return CleanModelName($"{locale}-{name}-{quality}")!;
 			}
 		}
 
 		var match = RepoNamePattern().Match(repo);
-		return match.Success ? match.Groups[1].Value : repo;
+		return CleanModelName(match.Success ? match.Groups[1].Value : repo)!;
 	}
 }

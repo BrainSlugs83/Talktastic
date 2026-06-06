@@ -1,4 +1,6 @@
 using System.IO.Compression;
+using System.Net;
+using System.Net.Http;
 
 namespace Talktastic.Tests;
 
@@ -139,12 +141,55 @@ public sealed class ModelDownloaderTests : IDisposable
 		Assert.Equal("egirl", ModelDownloader.SanitizeFileName(name));
 	}
 
+	[Theory]
+	[InlineData("chief_keef_v2", "chief keef v2")]
+	[InlineData("BartSimpson_e230_s7360", "BartSimpson e230 s7360")]
+	[InlineData("SpongeBob_SquarePants__RVC_v2_", "SpongeBob SquarePants RVC v2")]
+	public void CleanModelName_ReplacesUnderscoresWithSpaces(string rawName, string expected)
+	{
+		Assert.Equal(expected, ModelDownloader.CleanModelName(rawName));
+	}
+
+	[Theory]
+	[InlineData("Peter  Griffin", "Peter Griffin")]
+	[InlineData("Peter__Griffin", "Peter Griffin")]
+	[InlineData("Peter_  Griffin", "Peter Griffin")]
+	public void CleanModelName_CollapsesMultipleSpaces(string rawName, string expected)
+	{
+		Assert.Equal(expected, ModelDownloader.CleanModelName(rawName));
+	}
+
+	[Theory]
+	[InlineData("  homer  ", "homer")]
+	[InlineData(" chief_keef_v2 ", "chief keef v2")]
+	public void CleanModelName_TrimsWhitespace(string rawName, string expected)
+	{
+		Assert.Equal(expected, ModelDownloader.CleanModelName(rawName));
+	}
+
+	[Theory]
+	[InlineData(null, null)]
+	[InlineData("", "")]
+	public void CleanModelName_ReturnsEmptyForNullOrEmpty(string? rawName, string? expected)
+	{
+		Assert.Equal(expected, ModelDownloader.CleanModelName(rawName));
+	}
+
+	[Theory]
+	[InlineData("homer")]
+	[InlineData("Hank Hill")]
+	[InlineData("Vonv2")]
+	public void CleanModelName_PreservesAlreadyCleanNames(string rawName)
+	{
+		Assert.Equal(rawName, ModelDownloader.CleanModelName(rawName));
+	}
+
 	[Fact]
 	public void ResolveModelName_PrefersUsableInternalName()
 	{
 		var resolved = ModelDownloader.ResolveModelName("C:\\models\\BartSimpson_e230_s7360.pth", "fallback");
 
-		Assert.Equal("BartSimpson_e230_s7360", resolved);
+		Assert.Equal("BartSimpson e230 s7360", resolved);
 	}
 
 	[Fact]
@@ -184,7 +229,7 @@ public sealed class ModelDownloaderTests : IDisposable
 	{
 		var uri = new Uri("https://huggingface.co/binant/BartSimpson_e230_s7360/resolve/main/model.pth");
 
-		Assert.Equal("BartSimpson_e230_s7360", ModelDownloader.DeriveNameFromDirectUrl(uri));
+		Assert.Equal("BartSimpson e230 s7360", ModelDownloader.DeriveNameFromDirectUrl(uri));
 	}
 
 	[Fact]
@@ -200,7 +245,7 @@ public sealed class ModelDownloaderTests : IDisposable
 	{
 		var derived = ModelDownloader.DeriveModelNameFromRepo("ignored", "en/en_US/ryan/high");
 
-		Assert.Equal("en_US-ryan-high", derived);
+		Assert.Equal("en US-ryan-high", derived);
 	}
 
 	[Fact]
@@ -208,7 +253,7 @@ public sealed class ModelDownloaderTests : IDisposable
 	{
 		var derived = ModelDownloader.DeriveModelNameFromRepo("piper-en_US-ryan", "");
 
-		Assert.Equal("en_US-ryan", derived);
+		Assert.Equal("en US-ryan", derived);
 	}
 
 	[Fact]
@@ -217,6 +262,65 @@ public sealed class ModelDownloaderTests : IDisposable
 		var derived = ModelDownloader.DeriveModelNameFromRepo("cool-voice-pack", "");
 
 		Assert.Equal("cool-voice-pack", derived);
+	}
+
+	[Theory]
+	[InlineData("KingVonv2", "", "KingVonv2")]
+	[InlineData("Peter_Griffin__Family_Guy___RVC_V2__300_Epoch", "", "Peter Griffin Family Guy RVC V2 300 Epoch")]
+	public void DeriveModelNameFromRepo_AtRoot_ReturnsRepoName(string repo, string subPath, string expected)
+	{
+		var derived = ModelDownloader.DeriveModelNameFromRepo(repo, subPath);
+
+		Assert.Equal(expected, derived);
+	}
+
+	[Fact]
+	public async Task ResolveModelUrlAsync_HuggingFaceRootPth_PrefersRepoNameOverUsableInternalName()
+	{
+		using var handler = new StubHttpMessageHandler
+		(
+			req =>
+			{
+				Assert.Equal
+				(
+					"https://huggingface.co/api/models/tester/KingVonv2/tree/main",
+					req.RequestUri?.ToString()
+				);
+
+				return new HttpResponseMessage(HttpStatusCode.OK)
+				{
+					Content = new StringContent("""[{ "path": "Vonv2.pth" }]"""),
+				};
+			}
+		);
+		using var http = new HttpClient(handler);
+
+		var resolved = await ModelDownloader.ResolveModelUrlAsync
+		(
+			http,
+			"https://huggingface.co/tester/KingVonv2/tree/main",
+			CancellationToken.None
+		);
+
+		Assert.Equal("KingVonv2", resolved.ModelName);
+		Assert.Equal("https://huggingface.co/tester/KingVonv2/resolve/main/Vonv2.pth", resolved.FileUrl);
+	}
+
+	[Fact]
+	public async Task ResolveModelUrlAsync_GitHubReleaseDownload_CleansModelName()
+	{
+		using var handler = new StubHttpMessageHandler(_ => throw new InvalidOperationException("No HTTP call expected."));
+		using var http = new HttpClient(handler);
+
+		var resolved = await ModelDownloader.ResolveModelUrlAsync
+		(
+			http,
+			"https://github.com/tester/models/releases/download/v1/chief_keef_v2.pth",
+			CancellationToken.None
+		);
+
+		Assert.Equal("chief keef v2", resolved.ModelName);
+		Assert.Equal("https://github.com/tester/models/releases/download/v1/chief_keef_v2.pth", resolved.FileUrl);
 	}
 
 	[Fact]
@@ -541,5 +645,24 @@ public sealed class ModelDownloaderTests : IDisposable
 	private string GetRegistryPath()
 	{
 		return Path.Combine(_artifactRoot, $"{Guid.NewGuid():N}.tsv");
+	}
+
+	private sealed class StubHttpMessageHandler : HttpMessageHandler
+	{
+		private readonly Func<HttpRequestMessage, HttpResponseMessage> _handler;
+
+		public StubHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> handler)
+		{
+			_handler = handler;
+		}
+
+		protected override Task<HttpResponseMessage> SendAsync
+		(
+			HttpRequestMessage request,
+			CancellationToken cancellationToken
+		)
+		{
+			return Task.FromResult(_handler(request));
+		}
 	}
 }

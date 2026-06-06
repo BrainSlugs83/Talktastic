@@ -17,16 +17,27 @@ internal static partial class SpeechEngine
 		CancellationToken cancellationToken = default
 	)
 	{
-		if (rvc is not null)
+		return ResolveSynthesisRoute(voice, rvc is not null) switch
 		{
-			return await SynthesizeWithRvcAsync(request, voice, rvc.Value, cancellationToken).ConfigureAwait(false);
+			SynthesisRoute.Rvc => await SynthesizeWithRvcAsync(request, voice, rvc!.Value, cancellationToken).ConfigureAwait(false),
+			SynthesisRoute.Piper => await SynthesizePiperAsync(request, voice, cancellationToken).ConfigureAwait(false),
+			SynthesisRoute.Legacy => await SynthesizeLegacyAsync(request, voice).ConfigureAwait(false),
+			_ => await SynthesizeNeuralAsync(request, voice).ConfigureAwait(false),
+		};
+	}
+
+	internal static SynthesisRoute ResolveSynthesisRoute(InstalledVoice voice, bool useRvc)
+	{
+		if (useRvc)
+		{
+			return SynthesisRoute.Rvc;
 		}
 
 		return voice.VoiceType switch
 		{
-			VoiceType.Piper => await SynthesizePiperAsync(request, voice, cancellationToken).ConfigureAwait(false),
-			VoiceType.Legacy => await SynthesizeLegacyAsync(request, voice).ConfigureAwait(false),
-			_ => await SynthesizeNeuralAsync(request, voice).ConfigureAwait(false),
+			VoiceType.Piper => SynthesisRoute.Piper,
+			VoiceType.Legacy => SynthesisRoute.Legacy,
+			_ => SynthesisRoute.Neural,
 		};
 	}
 
@@ -727,3 +738,11 @@ internal sealed record SynthesisRequest
 	SpeechSynthesisOutputFormat OutputFormat,
 	bool TreatInputAsSsml
 );
+
+internal enum SynthesisRoute
+{
+	Neural,
+	Piper,
+	Legacy,
+	Rvc,
+}

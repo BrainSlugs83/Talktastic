@@ -65,6 +65,16 @@ var removeRvcOption = new Option<string>("--remove-rvc")
 	Description = "Remove a downloaded RVC model",
 };
 
+var renameVoiceOption = new Option<string>("--rename-voice")
+{
+	Description = "Rename a downloaded Piper voice (old=new)",
+};
+
+var renameRvcOption = new Option<string>("--rename-rvc")
+{
+	Description = "Rename a downloaded RVC model (old=new)",
+};
+
 var rateOption = new Option<string>("--rate", "-r")
 {
 	Description = "Speaking rate adjustment",
@@ -129,6 +139,8 @@ var rootCommand = new RootCommand($"Talktastic v{version} - standalone Windows T
 	listRvcsOption,
 	removeVoiceOption,
 	removeRvcOption,
+	renameVoiceOption,
+	renameRvcOption,
 	rateOption,
 	pitchOption,
 	rvcOption,
@@ -161,6 +173,8 @@ rootCommand.SetAction
 			var listRvcs = parseResult.GetValue(listRvcsOption);
 			var removeVoice = parseResult.GetValue(removeVoiceOption);
 			var removeRvc = parseResult.GetValue(removeRvcOption);
+				var renameVoice = parseResult.GetValue(renameVoiceOption);
+				var renameRvc = parseResult.GetValue(renameRvcOption);
 			var rate = parseResult.GetValue(rateOption);
 			var pitch = parseResult.GetValue(pitchOption);
 			var rvc = parseResult.GetValue(rvcOption);
@@ -177,11 +191,21 @@ rootCommand.SetAction
 				Console.SetError(TextWriter.Null);
 			}
 
-			if (!string.IsNullOrWhiteSpace(removeVoice) && !string.IsNullOrWhiteSpace(removeRvc))
+			// Management operations are mutually exclusive
+			var managementOps = new[]
 			{
+				("--remove-voice", removeVoice),
+				("--remove-rvc", removeRvc),
+				("--rename-voice", renameVoice),
+				("--rename-rvc", renameRvc),
+			};
+			var activeOps = managementOps.Where(op => !string.IsNullOrWhiteSpace(op.Item2)).ToArray();
+			if (activeOps.Length > 1)
+			{
+				var names = string.Join(", ", activeOps.Select(op => op.Item1));
 				await Console.Error.WriteLineAsync
 				(
-					"--remove-voice and --remove-rvc cannot be combined."
+					$"{names} cannot be combined."
 				).ConfigureAwait(false);
 				return 1;
 			}
@@ -194,6 +218,16 @@ rootCommand.SetAction
 			if (!string.IsNullOrWhiteSpace(removeRvc))
 			{
 				return RemoveRvcModel(removeRvc);
+			}
+
+			if (!string.IsNullOrWhiteSpace(renameVoice))
+			{
+				return RenamePiperVoice(renameVoice);
+			}
+
+			if (!string.IsNullOrWhiteSpace(renameRvc))
+			{
+				return RenameRvcModel(renameRvc);
 			}
 
 			// --rvc with a URL but no text: just download/cache the model and exit
@@ -485,27 +519,7 @@ static async Task<string?> ReadInputTextAsync(string? text, CancellationToken ca
 
 static int RemovePiperVoice(string query)
 {
-	var voicesDir = PiperEngine.FindVoicesDir();
-	if (voicesDir is null)
-	{
-		throw new InvalidOperationException($"Unknown Piper voice '{query}'.");
-	}
-
-	var candidates = PiperEngine.EnumerateCachedVoices(voicesDir)
-		.Select(v => new CachedItem(v.OnnxPath))
-		.ToArray();
-
-	var match = FuzzyMatcher.FindBestMatch
-	(
-		candidates,
-		query,
-		static candidate => candidate.Name
-	);
-
-	if (match is null)
-	{
-		throw new InvalidOperationException($"Unknown Piper voice '{query}'.");
-	}
+	var match = ResolvePiperVoice(query);
 
 	var configPath = match.PrimaryPath + ".json";
 	var deletePaths = new List<string> { match.PrimaryPath };
@@ -528,6 +542,7 @@ static int RemovePiperVoice(string query)
 		File.Delete(path);
 	}
 
+	var voicesDir = Path.GetDirectoryName(match.PrimaryPath)!;
 	var piperRoot = Path.GetDirectoryName(voicesDir)!;
 	RemoveRegistryEntries(Path.Combine(piperRoot, "voices.json"), match.Name);
 	return 0;
@@ -535,30 +550,11 @@ static int RemovePiperVoice(string query)
 
 static int RemoveRvcModel(string query)
 {
-	var voicesDir = RvcEngine.FindVoicesDir();
-	if (voicesDir is null)
-	{
-		throw new InvalidOperationException($"Unknown RVC model '{query}'.");
-	}
-
-	var candidates = RvcEngine.EnumerateCachedModels(voicesDir)
-		.Select(m => new CachedItem(m.Path))
-		.ToArray();
-
-	var match = FuzzyMatcher.FindBestMatch
-	(
-		candidates,
-		query,
-		static candidate => candidate.Name
-	);
-
-	if (match is null)
-	{
-		throw new InvalidOperationException($"Unknown RVC model '{query}'.");
-	}
+	var match = ResolveRvcModel(query);
 
 	// Delete the entire model directory (subdirectory layout)
 	var modelDir = Path.GetDirectoryName(match.PrimaryPath)!;
+	var voicesDir = RvcEngine.FindVoicesDir()!;
 	var isSubDir = !string.Equals
 	(
 		Path.GetFullPath(modelDir),
@@ -616,9 +612,165 @@ static void RemoveRegistryEntries(string registryPath, string modelName)
 	File.WriteAllLines(registryPath, remainingLines);
 }
 
-file sealed record CachedItem(string PrimaryPath)
+static (string OldName, string NewName) ParseRenameArg(string arg)
 {
-	public string Name { get; } = Path.GetFileNameWithoutExtension(PrimaryPath);
+	var eqIndex = arg.IndexOf('=', StringComparison.Ordinal);
+	if (eqIndex < 0)
+	{
+		throw new InvalidOperationException
+		(
+			$"Rename argument must be in the form 'old=new', got '{arg}'."
+		);
+	}
+
+	var oldName = arg[..eqIndex].Trim();
+	var newName = arg[(eqIndex + 1)..].Trim();
+
+	if (string.IsNullOrWhiteSpace(oldName) || string.IsNullOrWhiteSpace(newName))
+	{
+		throw new InvalidOperationException
+		(
+			$"Rename argument must be in the form 'old=new', got '{arg}'."
+		);
+	}
+
+	return (oldName, newName);
+}
+
+static int RenamePiperVoice(string arg)
+{
+	var (oldQuery, newName) = ParseRenameArg(arg);
+	var match = ResolvePiperVoice(oldQuery);
+
+	var voicesDir = Path.GetDirectoryName(match.PrimaryPath)!;
+	var newOnnxPath = Path.Combine(voicesDir, newName + ".onnx");
+
+	if (File.Exists(newOnnxPath))
+	{
+		throw new InvalidOperationException($"A Piper voice named '{newName}' already exists.");
+	}
+
+	File.Move(match.PrimaryPath, newOnnxPath);
+
+	var oldConfigPath = match.PrimaryPath + ".json";
+	var newConfigPath = newOnnxPath + ".json";
+	if (File.Exists(oldConfigPath))
+	{
+		File.Move(oldConfigPath, newConfigPath);
+	}
+
+	var piperRoot = Path.GetDirectoryName(voicesDir)!;
+	RenameRegistryEntries(Path.Combine(piperRoot, "voices.json"), match.Name, newName);
+
+	Console.Error.WriteLine($"Renamed Piper voice '{match.Name}' → '{newName}'.");
+	return 0;
+}
+
+static int RenameRvcModel(string arg)
+{
+	var (oldQuery, newName) = ParseRenameArg(arg);
+	var match = ResolveRvcModel(oldQuery);
+
+	var modelDir = Path.GetDirectoryName(match.PrimaryPath)!;
+	var voicesDir = RvcEngine.FindVoicesDir()!;
+	var isSubDir = !string.Equals
+	(
+		Path.GetFullPath(modelDir),
+		Path.GetFullPath(voicesDir),
+		StringComparison.OrdinalIgnoreCase
+	);
+
+	if (isSubDir)
+	{
+		var newDir = Path.Combine(voicesDir, newName);
+		if (Directory.Exists(newDir))
+		{
+			throw new InvalidOperationException($"An RVC model named '{newName}' already exists.");
+		}
+
+		Directory.Move(modelDir, newDir);
+	}
+	else
+	{
+		// Legacy flat file
+		var ext = Path.GetExtension(match.PrimaryPath);
+		var newPath = Path.Combine(voicesDir, newName + ext);
+		if (File.Exists(newPath))
+		{
+			throw new InvalidOperationException($"An RVC model named '{newName}' already exists.");
+		}
+
+		File.Move(match.PrimaryPath, newPath);
+	}
+
+	var rvcRoot = Path.GetDirectoryName(voicesDir)!;
+	RenameRegistryEntries(Path.Combine(rvcRoot, "rvcs.json"), match.Name, newName);
+
+	Console.Error.WriteLine($"Renamed RVC model '{match.Name}' → '{newName}'.");
+	return 0;
+}
+
+static void RenameRegistryEntries(string registryPath, string oldName, string newName)
+{
+	if (!File.Exists(registryPath))
+	{
+		return;
+	}
+
+	var lines = File.ReadAllLines(registryPath);
+	var modified = false;
+
+	for (var i = 0; i < lines.Length; i++)
+	{
+		var tab = lines[i].IndexOf('\t', StringComparison.Ordinal);
+		if (tab < 0)
+		{
+			continue;
+		}
+
+		var entryModelName = lines[i][(tab + 1)..];
+		if (string.Equals(entryModelName, oldName, StringComparison.OrdinalIgnoreCase))
+		{
+			lines[i] = lines[i][..(tab + 1)] + newName;
+			modified = true;
+		}
+	}
+
+	if (modified)
+	{
+		File.WriteAllLines(registryPath, lines);
+	}
+}
+
+static CachedItem ResolvePiperVoice(string query)
+{
+	var voicesDir = PiperEngine.FindVoicesDir()
+		?? throw new InvalidOperationException($"Unknown Piper voice '{query}'.");
+
+	var candidates = PiperEngine.EnumerateCachedVoices(voicesDir)
+		.Select(v => new CachedItem(v.OnnxPath))
+		.ToArray();
+
+	return FuzzyMatcher.FindBestMatch(candidates, query, static c => c.Name)
+		?? throw new InvalidOperationException($"Unknown Piper voice '{query}'.");
+}
+
+static CachedItem ResolveRvcModel(string query)
+{
+	var voicesDir = RvcEngine.FindVoicesDir()
+		?? throw new InvalidOperationException($"Unknown RVC model '{query}'.");
+
+	var candidates = RvcEngine.EnumerateCachedModels(voicesDir)
+		.Select(m => new CachedItem(m.Path, m.Name))
+		.ToArray();
+
+	return FuzzyMatcher.FindBestMatch(candidates, query, static c => c.Name)
+		?? throw new InvalidOperationException($"Unknown RVC model '{query}'.");
+}
+
+file sealed record CachedItem(string PrimaryPath, string? DisplayName = null)
+{
+	public string Name { get; } = DisplayName ?? Path.GetFileNameWithoutExtension(PrimaryPath);
 
 	public string FileName { get; } = Path.GetFileName(PrimaryPath);
 

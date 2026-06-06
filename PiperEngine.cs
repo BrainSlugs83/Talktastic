@@ -26,28 +26,12 @@ static partial class PiperEngine
 
 	// ── Location resolution ──
 
-	private static readonly string[] SearchBases =
-	[
-		Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Talktastic"),
-		Path.GetTempPath(),
-		Environment.CurrentDirectory,
-	];
-
 	/// <summary>
 	/// Returns the Piper voices directory path, if it exists.
 	/// </summary>
 	internal static string? FindVoicesDir()
 	{
-		foreach (var basePath in SearchBases)
-		{
-			var voicesDir = Path.Combine(basePath, PiperDirName, VoicesSubDir);
-			if (Directory.Exists(voicesDir))
-			{
-				return voicesDir;
-			}
-		}
-
-		return null;
+		return AppPaths.FindExistingDir(Path.Combine(PiperDirName, VoicesSubDir));
 	}
 
 	/// <summary>
@@ -69,7 +53,8 @@ static partial class PiperEngine
 			}
 		}
 	}
-
+
+
 	/// <summary>
 	/// Finds or creates the .piper-tts directory. Searches LOCALAPPDATA, TEMP, CWD.
 	/// If the runtime isn't found anywhere, extracts the embedded zip to the first writable location.
@@ -80,7 +65,7 @@ static partial class PiperEngine
 			return _resolvedPiperDir;
 
 		// Check existing installations
-		foreach (var basePath in SearchBases)
+		foreach (var basePath in AppPaths.SearchBases)
 		{
 			var candidate = Path.Combine(basePath, PiperDirName);
 			if (File.Exists(Path.Combine(candidate, "piper.exe")))
@@ -110,7 +95,7 @@ static partial class PiperEngine
 				"Piper runtime not embedded. Piper voices are not available in this build."
 			);
 
-		foreach (var basePath in SearchBases)
+		foreach (var basePath in AppPaths.SearchBases)
 		{
 			var targetDir = Path.Combine(basePath, PiperDirName);
 			try
