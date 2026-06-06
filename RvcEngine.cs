@@ -28,6 +28,7 @@ static partial class RvcEngine
 	private const int XMaxSeconds = 50;
 	private const float RmsMixRate = 0.25f;
 	private const float Protect = 0.33f;
+	private const float DefaultIndexRate = 0.75f;
 	private const int SpeakerId = 0;
 	private const int NoiseChannels = 192;
 	private const float RmvpeThreshold = 0.03f;
@@ -47,6 +48,42 @@ static partial class RvcEngine
 	private static string? _resolvedRvcDir;
 
 	/// <summary>
+	/// Enumerates all cached RVC models as (displayName, modelFilePath) pairs.
+	/// Searches subdirectories first, then legacy flat files.
+	/// </summary>
+	private static IEnumerable<(string Name, string Path)> EnumerateCachedModels(string voicesDir)
+	{
+		if (!Directory.Exists(voicesDir))
+		{
+			yield break;
+		}
+
+		// Subdirectories (current layout)
+		foreach (var dir in Directory.GetDirectories(voicesDir))
+		{
+			var modelFile = FindModelFileInDir(dir);
+			if (modelFile is not null)
+			{
+				yield return (System.IO.Path.GetFileName(dir), modelFile);
+			}
+		}
+
+		// Legacy: flat files in voicesDir
+		foreach (var file in Directory.GetFiles(voicesDir))
+		{
+			var ext = System.IO.Path.GetExtension(file);
+			if
+			(
+				string.Equals(ext, ".onnx", StringComparison.OrdinalIgnoreCase)
+				|| string.Equals(ext, ".pth", StringComparison.OrdinalIgnoreCase)
+			)
+			{
+				yield return (System.IO.Path.GetFileNameWithoutExtension(file), file);
+			}
+		}
+	}
+
+	/// <summary>
 	/// Lists downloaded RVC models as (name, extension, sizeMB) tuples.
 	/// </summary>
 	public static List<(string Name, string Extension, int SizeMb)> GetCachedModels()
@@ -55,29 +92,18 @@ static partial class RvcEngine
 		foreach (var basePath in SearchBases)
 		{
 			var voicesDir = Path.Combine(basePath, RvcDirName, VoicesSubDir);
-			if (!Directory.Exists(voicesDir))
-			{
-				continue;
-			}
 
-			foreach (var file in Directory.GetFiles(voicesDir))
+			foreach (var (name, modelPath) in EnumerateCachedModels(voicesDir))
 			{
-				var ext = Path.GetExtension(file);
-				if
-				(
-					!string.Equals(ext, ".onnx", StringComparison.OrdinalIgnoreCase)
-					&& !string.Equals(ext, ".pth", StringComparison.OrdinalIgnoreCase)
-				)
-				{
-					continue;
-				}
-
-				var name = Path.GetFileNameWithoutExtension(file);
-				var sizeMb = (int)(new FileInfo(file).Length / 1024 / 1024);
+				var ext = Path.GetExtension(modelPath);
+				var sizeMb = (int)(new FileInfo(modelPath).Length / 1024 / 1024);
 				results.Add((name, ext[1..], sizeMb));
 			}
 
-			break;
+			if (Directory.Exists(voicesDir))
+			{
+				break;
+			}
 		}
 
 		return results;
@@ -119,7 +145,8 @@ static partial class RvcEngine
 			var cachedModelName = ModelDownloader.LookupRegistry(registryPath, rvcQuery);
 			if (cachedModelName is not null)
 			{
-				var cachedPath = FindCachedModel(voicesDir, cachedModelName);
+				// Exact match only -- registry knows the precise directory name
+				var cachedPath = FindCachedModelExact(voicesDir, cachedModelName);
 				if (cachedPath is not null)
 				{
 					return cachedPath;
@@ -147,28 +174,46 @@ static partial class RvcEngine
 				modelName = extractedName;
 			}
 			else
-			{
-				modelName = resolved.ModelName;
-				var ext = Path.GetExtension(resolved.FileUrl);
-				if (string.Equals(ext, ".pth", StringComparison.OrdinalIgnoreCase))
 				{
-					downloadPath = Path.Combine(voicesDir, $"{modelName}.pth");
-				}
-				else
-				{
-					downloadPath = Path.Combine(voicesDir, $"{modelName}.onnx");
-				}
+					modelName = resolved.ModelName;
+					var ext = Path.GetExtension(resolved.FileUrl);
+					var isOnnx = !string.Equals(ext, ".pth", StringComparison.OrdinalIgnoreCase);
+					var modelDir = Path.Combine(voicesDir, modelName);
+					var modelExt = isOnnx ? ".onnx" : ".pth";
+					downloadPath = Path.Combine(modelDir, $"{modelName}{modelExt}");
+					Directory.CreateDirectory(modelDir);
 
-				if (!File.Exists(downloadPath))
-				{
-					await Console.Error.WriteLineAsync
-					(
-						$"Downloading RVC model '{modelName}'..."
-					).ConfigureAwait(false);
+					if (!File.Exists(downloadPath))
+					{
+						await Console.Error.WriteLineAsync
+						(
+							$"Downloading RVC model '{modelName}'..."
+						).ConfigureAwait(false);
 
-					await ModelDownloader.DownloadFileAsync(Http, resolved.FileUrl, downloadPath, ct).ConfigureAwait(false);
+						await ModelDownloader.DownloadFileAsync(Http, resolved.FileUrl, downloadPath, ct).ConfigureAwait(false);
+					}
+
+					// Download companion files (.index, .json) that are missing
+					if (resolved.CompanionUrls is not null)
+					{
+						foreach (var companionUrl in resolved.CompanionUrls)
+						{
+							var companionName = Uri.UnescapeDataString
+							(
+								Path.GetFileName(new Uri(companionUrl).LocalPath)
+							);
+							var companionPath = Path.Combine(modelDir, companionName);
+							if (!File.Exists(companionPath))
+							{
+								await Console.Error.WriteLineAsync
+								(
+									$"Downloading {companionName}..."
+								).ConfigureAwait(false);
+								await ModelDownloader.DownloadFileAsync(Http, companionUrl, companionPath, ct).ConfigureAwait(false);
+							}
+						}
+					}
 				}
-			}
 
 			var sizeMb = new FileInfo(downloadPath).Length / 1024 / 1024;
 			await Console.Error.WriteLineAsync
@@ -238,59 +283,68 @@ static partial class RvcEngine
 
 		var (modelPath, extractedName) = await ModelDownloader.ExtractZipAsync
 		(
-			zipPath, voicesDir, ct
+				zipPath, voicesDir, cancellationToken: ct
 		).ConfigureAwait(false);
 
 		ModelDownloader.WriteRegistry(registryPath, zipPath, extractedName);
 		return modelPath;
 	}
 
+	/// <summary>
+	/// Exact-match lookup for registry-resolved names. No fuzzy matching.
+	/// </summary>
+	private static string? FindCachedModelExact(string voicesDir, string modelName)
+	{
+		return EnumerateCachedModels(voicesDir)
+			.Where(m => m.Name.EqualsIgnoreCase(modelName))
+			.Select(m => m.Path)
+			.FirstOrDefault();
+	}
+
 	private static string? FindCachedModel(string voicesDir, string modelName)
 	{
+		var all = EnumerateCachedModels(voicesDir).ToArray();
+
 		// Exact match first
-		var onnxPath = Path.Combine(voicesDir, $"{modelName}.onnx");
-		if (File.Exists(onnxPath))
+		var exact = all.FirstOrDefault(m => m.Name.EqualsIgnoreCase(modelName));
+		if (exact.Path is not null)
 		{
-			return onnxPath;
+			return exact.Path;
 		}
 
-		var pthPath = Path.Combine(voicesDir, $"{modelName}.pth");
-		if (File.Exists(pthPath))
+		// Fuzzy match
+		var names = all.Select(m => m.Name).ToArray();
+		var best = FuzzyMatcher.FindBestMatch(names, modelName);
+		if (!string.IsNullOrEmpty(best))
 		{
-			return pthPath;
+			return all.First(m => m.Name.EqualsIgnoreCase(best)).Path;
 		}
 
-		// Fuzzy match fallback (contains → Levenshtein distance)
-		if (!Directory.Exists(voicesDir))
+		return null;
+	}
+
+	/// <summary>
+	/// Finds the first .onnx or .pth file in a directory.
+	/// </summary>
+	private static string? FindModelFileInDir(string dir)
+	{
+		return Directory.GetFiles(dir, "*.onnx").FirstOrDefault()
+			?? Directory.GetFiles(dir, "*.pth").FirstOrDefault();
+	}
+
+	/// <summary>
+	/// Finds a companion .index file next to the model file.
+	/// Trivial: just look for *.index in the same directory.
+	/// </summary>
+	private static string? FindCompanionIndex(string modelPath)
+	{
+		var dir = Path.GetDirectoryName(modelPath);
+		if (dir is null || !Directory.Exists(dir))
 		{
 			return null;
 		}
 
-		var modelFiles = Directory.GetFiles(voicesDir)
-			.Where
-			(
-				f =>
-				{
-					var ext = Path.GetExtension(f);
-					return string.Equals(ext, ".onnx", StringComparison.OrdinalIgnoreCase)
-						|| string.Equals(ext, ".pth", StringComparison.OrdinalIgnoreCase);
-				}
-			)
-			.ToArray();
-
-		var names = modelFiles.Select(Path.GetFileNameWithoutExtension).ToArray();
-		var bestName = FuzzyMatcher.FindBestMatch(names!, modelName);
-
-		if (string.IsNullOrEmpty(bestName))
-		{
-			return null;
-		}
-
-		return modelFiles.FirstOrDefault
-		(
-			f => Path.GetFileNameWithoutExtension(f)
-				.EqualsIgnoreCase(bestName)
-		);
+		return Directory.GetFiles(dir, "*.index").FirstOrDefault();
 	}
 
 	public static async Task EnsureInfraModelsAsync(CancellationToken ct)
@@ -362,18 +416,32 @@ static partial class RvcEngine
 
 		try
 		{
-			var (pitchf, pitch) = ExtractF0(rmvpeSession, inferenceAudio, pitchShiftSemitones, ct);
-			var convertedSegments = InferSegments
-			(
-				rvcSession,
-				vecSession,
-				inferenceAudio,
-				pitch,
-				pitchf,
-				optTs,
-				targetSampleRate,
-				ct
-			);
+				// Load companion FAISS index for feature retrieval (if available)
+				FaissIndex.Index? faissIndex = null;
+				var indexPath = FindCompanionIndex(rvcModelPath);
+				if (indexPath is not null)
+				{
+					faissIndex = FaissIndex.Load(indexPath);
+					await Console.Error.WriteLineAsync
+					(
+						$"Using index: {Path.GetFileName(indexPath)} "
+						+ $"({faissIndex.Count} vectors, dim={faissIndex.Dimension})"
+					).ConfigureAwait(false);
+				}
+
+				var (pitchf, pitch) = ExtractF0(rmvpeSession, inferenceAudio, pitchShiftSemitones, ct);
+				var convertedSegments = InferSegments
+				(
+					rvcSession,
+					vecSession,
+					inferenceAudio,
+					pitch,
+					pitchf,
+					optTs,
+					targetSampleRate,
+					faissIndex,
+					ct
+				);
 
 			var finalSamples = Concatenate(convertedSegments);
 			return AudioDsp.EncodeWav(finalSamples, targetSampleRate);
@@ -833,6 +901,7 @@ static partial class RvcEngine
 		float[] pitchf,
 		List<int> optTs,
 		int targetSampleRate,
+		FaissIndex.Index? faissIndex,
 		CancellationToken ct
 	)
 	{
@@ -856,7 +925,7 @@ static partial class RvcEngine
 
 			results.Add
 			(
-				RunSegment(rvcSession, vecSession, audioSlice, pitchSlice, pitchfSlice, targetSampleRate, ct)
+				RunSegment(rvcSession, vecSession, audioSlice, pitchSlice, pitchfSlice, targetSampleRate, faissIndex, ct)
 			);
 
 			segmentStart = alignedTimestamp;
@@ -877,6 +946,7 @@ static partial class RvcEngine
 					pitch[startWin..],
 					pitchf[startWin..],
 					targetSampleRate,
+					faissIndex,
 					ct
 				)
 			);
@@ -893,12 +963,19 @@ static partial class RvcEngine
 		long[] pitchSegment,
 		float[] pitchfSegment,
 		int targetSampleRate,
+		FaissIndex.Index? faissIndex,
 		CancellationToken ct
 	)
 	{
 		ct.ThrowIfCancellationRequested();
 
 		var features = RunContentVec(vecSession, audioSegment);
+
+		// Apply FAISS index feature retrieval (if index is available)
+		if (faissIndex is not null && faissIndex.Dimension == features.GetLength(1))
+		{
+			features = ApplyFaissRetrieval(features, faissIndex);
+		}
 
 		// ContentVec runs at half the RVC frame rate — double the frames first
 		var doubledFrames = features.GetLength(0) * 2;
@@ -1014,6 +1091,40 @@ static partial class RvcEngine
 		}
 
 		return features;
+	}
+
+	/// <summary>
+	/// Applies FAISS index-based feature retrieval: for each frame's
+	/// ContentVec features, finds k=8 nearest training vectors and
+	/// blends them with the original using inverse-squared-distance
+	/// weighting and the configured index rate.
+	/// </summary>
+	private static float[,] ApplyFaissRetrieval
+	(
+		float[,] features,
+		FaissIndex.Index faissIndex
+	)
+	{
+		var frameCount = features.GetLength(0);
+		var d = features.GetLength(1);
+
+		// Flatten features to 1D for FaissIndex.SearchAndBlend
+		var flat = new float[frameCount * d];
+		Buffer.BlockCopy(features, 0, flat, 0, flat.Length * sizeof(float));
+
+		var blended = FaissIndex.SearchAndBlend
+		(
+			faissIndex,
+			flat,
+			frameCount,
+			k: 8,
+			indexRate: DefaultIndexRate
+		);
+
+		// Reshape back to [frames, channels]
+		var result = new float[frameCount, d];
+		Buffer.BlockCopy(blended, 0, result, 0, blended.Length * sizeof(float));
+		return result;
 	}
 
 	private static float[,] SliceFeatures(float[,] features, int frameCount)

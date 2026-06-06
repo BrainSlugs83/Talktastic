@@ -16,7 +16,7 @@ internal static class AudioDsp
 	private const float LogClamp = 1e-5f;
 	private const int WaveFormatPcm = 0x0001;
 	private const int WaveFormatIeeeFloat = 0x0003;
-	private const int WaveFormatExtensible = unchecked((short)0xFFFE);
+	private const int WaveFormatExtensible = 0xFFFE;
 	private const int RiffHeaderSize = 44;
 	private const int HighPassPadLength = 18;
 

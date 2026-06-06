@@ -55,6 +55,16 @@ var listRvcsOption = new Option<bool>("--list-rvcs")
 	Description = "List downloaded RVC voice conversion models",
 };
 
+var removeVoiceOption = new Option<string>("--remove-voice")
+{
+	Description = "Remove a downloaded Piper voice",
+};
+
+var removeRvcOption = new Option<string>("--remove-rvc")
+{
+	Description = "Remove a downloaded RVC model",
+};
+
 var rateOption = new Option<string>("--rate", "-r")
 {
 	Description = "Speaking rate adjustment",
@@ -117,6 +127,8 @@ var rootCommand = new RootCommand($"Talktastic v{version} - standalone Windows T
 	listVoicesOption,
 	listDevicesOption,
 	listRvcsOption,
+	removeVoiceOption,
+	removeRvcOption,
 	rateOption,
 	pitchOption,
 	rvcOption,
@@ -143,55 +155,108 @@ rootCommand.SetAction
 			var voice = parseResult.GetValue(voiceOption);
 			var output = parseResult.GetValue(outputOption);
 			var device = parseResult.GetValue(deviceOption);
-				var listAll = parseResult.GetValue(listAllOption);
-				var listVoices = parseResult.GetValue(listVoicesOption);
-				var listDevices = parseResult.GetValue(listDevicesOption);
-				var listRvcs = parseResult.GetValue(listRvcsOption);
-				var rate = parseResult.GetValue(rateOption);
-				var pitch = parseResult.GetValue(pitchOption);
-				var rvc = parseResult.GetValue(rvcOption);
-				var rvcPitch = parseResult.GetRequiredValue(rvcPitchOption);
-				var format = parseResult.GetRequiredValue(formatOption);
-				var ssml = parseResult.GetValue(ssmlOption);
-					var helpSsml = parseResult.GetValue(helpSsmlOption);
-					var installVoices = parseResult.GetValue(installVoicesOption);
-					var quiet = parseResult.GetValue(quietOption);
-				var superQuiet = parseResult.GetValue(superQuietOption);
+			var listAll = parseResult.GetValue(listAllOption);
+			var listVoices = parseResult.GetValue(listVoicesOption);
+			var listDevices = parseResult.GetValue(listDevicesOption);
+			var listRvcs = parseResult.GetValue(listRvcsOption);
+			var removeVoice = parseResult.GetValue(removeVoiceOption);
+			var removeRvc = parseResult.GetValue(removeRvcOption);
+			var rate = parseResult.GetValue(rateOption);
+			var pitch = parseResult.GetValue(pitchOption);
+			var rvc = parseResult.GetValue(rvcOption);
+			var rvcPitch = parseResult.GetRequiredValue(rvcPitchOption);
+			var format = parseResult.GetRequiredValue(formatOption);
+			var ssml = parseResult.GetValue(ssmlOption);
+			var helpSsml = parseResult.GetValue(helpSsmlOption);
+			var installVoices = parseResult.GetValue(installVoicesOption);
+			var quiet = parseResult.GetValue(quietOption);
+			var superQuiet = parseResult.GetValue(superQuietOption);
 
-				if (superQuiet)
-				{
-					Console.SetError(TextWriter.Null);
-				}
+			if (superQuiet)
+			{
+				Console.SetError(TextWriter.Null);
+			}
 
-				if (!Enum.TryParse(format, ignoreCase: true, out SpeechSynthesisOutputFormat outputFormat))
-				{
-					await Console.Error.WriteLineAsync($"Unknown audio format '{format}'.").ConfigureAwait(false);
-					return 1;
-				}
+			if (!string.IsNullOrWhiteSpace(removeVoice) && !string.IsNullOrWhiteSpace(removeRvc))
+			{
+				await Console.Error.WriteLineAsync
+				(
+					"--remove-voice and --remove-rvc cannot be combined."
+				).ConfigureAwait(false);
+				return 1;
+			}
 
-				if (ssml && (!string.IsNullOrWhiteSpace(rate) || !string.IsNullOrWhiteSpace(pitch)))
-				{
-					await Console.Error.WriteLineAsync
-					(
-						"--ssml cannot be combined with --rate or --pitch. Use <prosody> in your SSML instead."
-					).ConfigureAwait(false);
-					return 1;
-				}
+			if (!string.IsNullOrWhiteSpace(removeVoice))
+			{
+				return RemovePiperVoice(removeVoice);
+			}
 
-					if (installVoices)
-					{
-						await Console.Out.WriteLineAsync
-						(
-							"Opening voice installer..."
-						).ConfigureAwait(false);
-						VoiceInstaller.OpenAddVoiceDialog();
-						return 0;
-					}
+			if (!string.IsNullOrWhiteSpace(removeRvc))
+			{
+				return RemoveRvcModel(removeRvc);
+			}
 
-						if (helpSsml)
-						{
-							await Console.Out.WriteLineAsync
-							(
+			// --rvc with a URL but no text: just download/cache the model and exit
+			if
+			(
+				!string.IsNullOrWhiteSpace(rvc)
+				&& ModelDownloader.IsUrl(rvc)
+				&& string.IsNullOrWhiteSpace(text)
+			)
+			{
+				var modelPath = await RvcEngine.ResolveRvcModelAsync(rvc, cancellationToken).ConfigureAwait(false);
+				await Console.Error.WriteLineAsync
+				(
+					$"Cached: {modelPath}"
+				).ConfigureAwait(false);
+				return 0;
+			}
+
+			// -v with a URL but no text: just download/cache the Piper voice and exit
+			if
+			(
+				!string.IsNullOrWhiteSpace(voice)
+				&& ModelDownloader.IsUrl(voice)
+				&& string.IsNullOrWhiteSpace(text)
+			)
+			{
+				var modelPath = await PiperEngine.EnsureVoiceModelAsync(voice, cancellationToken).ConfigureAwait(false);
+				await Console.Error.WriteLineAsync
+				(
+					$"Cached: {modelPath}"
+				).ConfigureAwait(false);
+				return 0;
+			}
+
+			if (!Enum.TryParse(format, ignoreCase: true, out SpeechSynthesisOutputFormat outputFormat))
+			{
+				await Console.Error.WriteLineAsync($"Unknown audio format '{format}'.").ConfigureAwait(false);
+				return 1;
+			}
+
+			if (ssml && (!string.IsNullOrWhiteSpace(rate) || !string.IsNullOrWhiteSpace(pitch)))
+			{
+				await Console.Error.WriteLineAsync
+				(
+					"--ssml cannot be combined with --rate or --pitch. Use <prosody> in your SSML instead."
+				).ConfigureAwait(false);
+				return 1;
+			}
+
+			if (installVoices)
+			{
+				await Console.Out.WriteLineAsync
+				(
+					"Opening voice installer..."
+				).ConfigureAwait(false);
+				VoiceInstaller.OpenAddVoiceDialog();
+				return 0;
+			}
+
+			if (helpSsml)
+			{
+				await Console.Out.WriteLineAsync
+				(
 """
 SSML (Speech Synthesis Markup Language) lets you control how text is spoken.
 Pass --ssml to treat the input as SSML instead of plain text.
@@ -231,84 +296,84 @@ Notes:
   - Neural voices support all tags above; legacy voices have limited support.
   - The --rate option can be combined with --ssml to wrap everything in <prosody>.
 """
-							).ConfigureAwait(false);
-							return 0;
-						}
+				).ConfigureAwait(false);
+				return 0;
+			}
 
-				if (listAll || listVoices || listDevices || listRvcs)
+			if (listAll || listVoices || listDevices || listRvcs)
+			{
+				var needSeparator = false;
+
+				if (listAll || listVoices)
 				{
-					var needSeparator = false;
-
-					if (listAll || listVoices)
+					var voices = await VoiceEnumerator.GetVoicesAsync(cancellationToken).ConfigureAwait(false);
+					await Console.Out.WriteLineAsync("Voices:").ConfigureAwait(false);
+					foreach (var v in voices)
 					{
-						var voices = await VoiceEnumerator.GetVoicesAsync(cancellationToken).ConfigureAwait(false);
-						await Console.Out.WriteLineAsync("Voices:").ConfigureAwait(false);
-						foreach (var v in voices)
-						{
-							var tag = v.VoiceType == VoiceType.Neural ? "neural" : "legacy";
-							await Console.Out.WriteLineAsync($"  {v.Name} [{tag}] ({v.Locale}, {v.Gender})").ConfigureAwait(false);
-						}
-
-						var piperVoices = PiperEngine.GetCachedVoices();
-						if (piperVoices.Count > 0)
-						{
-							await Console.Out.WriteLineAsync().ConfigureAwait(false);
-							await Console.Out.WriteLineAsync("Piper voices:").ConfigureAwait(false);
-							foreach (var (name, sizeMb) in piperVoices)
-							{
-								await Console.Out.WriteLineAsync($"  {name} ({sizeMb} MB)").ConfigureAwait(false);
-							}
-						}
-
-						needSeparator = true;
+						var tag = v.VoiceType == VoiceType.Neural ? "neural" : "legacy";
+						await Console.Out.WriteLineAsync($"  {v.Name} [{tag}] ({v.Locale}, {v.Gender})").ConfigureAwait(false);
 					}
 
-					if (listAll || listRvcs)
+					var piperVoices = PiperEngine.GetCachedVoices();
+					if (piperVoices.Count > 0)
 					{
-						if (needSeparator)
+						await Console.Out.WriteLineAsync().ConfigureAwait(false);
+						await Console.Out.WriteLineAsync("Piper voices:").ConfigureAwait(false);
+						foreach (var (name, sizeMb) in piperVoices)
 						{
-							await Console.Out.WriteLineAsync().ConfigureAwait(false);
-						}
-
-						var rvcModels = RvcEngine.GetCachedModels();
-						await Console.Out.WriteLineAsync("RVC models:").ConfigureAwait(false);
-						if (rvcModels.Count > 0)
-						{
-							foreach (var (name, ext, sizeMb) in rvcModels)
-							{
-								await Console.Out.WriteLineAsync($"  {name} [{ext}] ({sizeMb} MB)").ConfigureAwait(false);
-							}
-						}
-						else
-						{
-							await Console.Out.WriteLineAsync("  (none downloaded)").ConfigureAwait(false);
-						}
-
-						needSeparator = true;
-					}
-
-					if (listAll || listDevices)
-					{
-						if (needSeparator)
-						{
-							await Console.Out.WriteLineAsync().ConfigureAwait(false);
-						}
-
-						await Console.Out.WriteLineAsync("Devices:").ConfigureAwait(false);
-						var devices = AudioOutput.GetSpeakers();
-						foreach (var d in devices)
-						{
-							await Console.Out.WriteLineAsync($"  {d.FriendlyName}").ConfigureAwait(false);
-						}
-
-						if (devices.Count == 0)
-						{
-							await Console.Out.WriteLineAsync("  (none found)").ConfigureAwait(false);
+							await Console.Out.WriteLineAsync($"  {name} ({sizeMb} MB)").ConfigureAwait(false);
 						}
 					}
 
-					return 0;
+					needSeparator = true;
 				}
+
+				if (listAll || listRvcs)
+				{
+					if (needSeparator)
+					{
+						await Console.Out.WriteLineAsync().ConfigureAwait(false);
+					}
+
+					var rvcModels = RvcEngine.GetCachedModels();
+					await Console.Out.WriteLineAsync("RVC models:").ConfigureAwait(false);
+					if (rvcModels.Count > 0)
+					{
+						foreach (var (name, ext, sizeMb) in rvcModels)
+						{
+							await Console.Out.WriteLineAsync($"  {name} [{ext}] ({sizeMb} MB)").ConfigureAwait(false);
+						}
+					}
+					else
+					{
+						await Console.Out.WriteLineAsync("  (none downloaded)").ConfigureAwait(false);
+					}
+
+					needSeparator = true;
+				}
+
+				if (listAll || listDevices)
+				{
+					if (needSeparator)
+					{
+						await Console.Out.WriteLineAsync().ConfigureAwait(false);
+					}
+
+					await Console.Out.WriteLineAsync("Devices:").ConfigureAwait(false);
+					var devices = AudioOutput.GetSpeakers();
+					foreach (var d in devices)
+					{
+						await Console.Out.WriteLineAsync($"  {d.FriendlyName}").ConfigureAwait(false);
+					}
+
+					if (devices.Count == 0)
+					{
+						await Console.Out.WriteLineAsync("  (none found)").ConfigureAwait(false);
+					}
+				}
+
+				return 0;
+			}
 
 			var inputText = await ReadInputTextAsync(text, cancellationToken).ConfigureAwait(false);
 			if (string.IsNullOrWhiteSpace(inputText))
@@ -397,4 +462,226 @@ static async Task<string?> ReadInputTextAsync(string? text, CancellationToken ca
 	}
 
 	return await Console.In.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+}
+
+static int RemovePiperVoice(string query)
+{
+	var piperRoot = FindCacheRoot
+	(
+		[".piper-tts", ".piper"],
+		"voices"
+	);
+
+	if (piperRoot is null)
+	{
+		throw new InvalidOperationException($"Unknown Piper voice '{query}'.");
+	}
+
+	var voicesDir = Path.Combine(piperRoot, "voices");
+	var candidates = Directory.GetFiles(voicesDir, "*.onnx")
+		.OrderBy(static file => file, StringComparer.OrdinalIgnoreCase)
+		.Select(static file => new CachedItem(file))
+		.ToArray();
+
+	var match = FuzzyMatcher.FindBestMatch
+	(
+		candidates,
+		query,
+		static candidate => candidate.Name
+	);
+
+	if (match is null)
+	{
+		throw new InvalidOperationException($"Unknown Piper voice '{query}'.");
+	}
+
+	var configPath = match.PrimaryPath + ".json";
+	var deletePaths = new List<string>
+	{
+		match.PrimaryPath,
+	};
+
+	if (File.Exists(configPath))
+	{
+		deletePaths.Add(configPath);
+	}
+
+	var sizeMb = (int)(match.SizeBytes / 1024 / 1024);
+	Console.Error.Write($"Remove Piper voice '{match.Name}' ({match.FileName}, {sizeMb} MB)? [y/N] ");
+	var response = Console.In.ReadLine();
+	if (!string.Equals(response, "y", StringComparison.OrdinalIgnoreCase))
+	{
+		return 0;
+	}
+
+	foreach (var path in deletePaths)
+	{
+		File.Delete(path);
+	}
+
+	RemoveRegistryEntries(Path.Combine(piperRoot, "voices.json"), match.Name);
+	return 0;
+}
+
+static int RemoveRvcModel(string query)
+{
+	var rvcRoot = FindCacheRoot([".rvc"], "voices");
+	if (rvcRoot is null)
+	{
+		throw new InvalidOperationException($"Unknown RVC model '{query}'.");
+	}
+
+	var voicesDir = Path.Combine(rvcRoot, "voices");
+	var candidates = Directory.GetFiles(voicesDir)
+		.Where
+		(
+			static file =>
+			{
+				var extension = Path.GetExtension(file);
+				return string.Equals(extension, ".onnx", StringComparison.OrdinalIgnoreCase)
+					|| string.Equals(extension, ".pth", StringComparison.OrdinalIgnoreCase);
+			}
+		)
+		.OrderBy(static file => file, StringComparer.OrdinalIgnoreCase)
+		.Select(static file => new CachedItem(file))
+		.ToArray();
+
+	var match = FuzzyMatcher.FindBestMatch
+	(
+		candidates,
+		query,
+		static candidate => candidate.Name
+	);
+
+	if (match is null)
+	{
+		throw new InvalidOperationException($"Unknown RVC model '{query}'.");
+	}
+
+	var deletePaths = Directory.GetFiles(voicesDir)
+		.Where
+		(
+			file =>
+			{
+				if (string.Equals(file, match.PrimaryPath, StringComparison.OrdinalIgnoreCase))
+				{
+					return true;
+				}
+
+				var extension = Path.GetExtension(file);
+				if
+				(
+					!string.Equals(extension, ".index", StringComparison.OrdinalIgnoreCase)
+					&& !string.Equals(extension, ".json", StringComparison.OrdinalIgnoreCase)
+				)
+				{
+					return false;
+				}
+
+				var companionName = Path.GetFileNameWithoutExtension(file);
+				return HasMatchingPrefix(companionName, match.Name);
+			}
+		)
+		.Distinct(StringComparer.OrdinalIgnoreCase)
+		.ToArray();
+
+	var sizeMb = (int)(match.SizeBytes / 1024 / 1024);
+	Console.Error.Write($"Remove RVC model '{match.Name}' ({match.FileName}, {sizeMb} MB)? [y/N] ");
+	var response = Console.In.ReadLine();
+	if (!string.Equals(response, "y", StringComparison.OrdinalIgnoreCase))
+	{
+		return 0;
+	}
+
+	foreach (var path in deletePaths)
+	{
+		File.Delete(path);
+	}
+
+	RemoveRegistryEntries(Path.Combine(rvcRoot, "rvcs.json"), match.Name);
+	return 0;
+}
+
+static string? FindCacheRoot
+(
+	IReadOnlyList<string> dirNames,
+	string voicesSubDir
+)
+{
+	foreach (var basePath in GetSearchBases())
+	{
+		foreach (var dirName in dirNames)
+		{
+			var candidateRoot = Path.Combine(basePath, dirName);
+			var voicesDir = Path.Combine(candidateRoot, voicesSubDir);
+			if (Directory.Exists(voicesDir))
+			{
+				return candidateRoot;
+			}
+		}
+	}
+
+	return null;
+}
+
+static IReadOnlyList<string> GetSearchBases()
+{
+	return
+	[
+		Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Talktastic"),
+		Path.GetTempPath(),
+		Environment.CurrentDirectory,
+	];
+}
+
+static void RemoveRegistryEntries(string registryPath, string modelName)
+{
+	if (!File.Exists(registryPath))
+	{
+		return;
+	}
+
+	var remainingLines = File.ReadAllLines(registryPath)
+		.Where
+		(
+			line =>
+			{
+				var tab = line.IndexOf('\t', StringComparison.Ordinal);
+				if (tab < 0)
+				{
+					return true;
+				}
+
+				var entryModelName = line[(tab + 1)..];
+				return !string.Equals(entryModelName, modelName, StringComparison.OrdinalIgnoreCase);
+			}
+		)
+		.ToArray();
+
+	File.WriteAllLines(registryPath, remainingLines);
+}
+
+static bool HasMatchingPrefix(string candidate, string prefix)
+{
+	if (!candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+	{
+		return false;
+	}
+
+	if (candidate.Length == prefix.Length)
+	{
+		return true;
+	}
+
+	var next = candidate[prefix.Length];
+	return next == '.' || next == '_' || next == '-';
+}
+
+file sealed record CachedItem(string PrimaryPath)
+{
+	public string Name { get; } = Path.GetFileNameWithoutExtension(PrimaryPath);
+
+	public string FileName { get; } = Path.GetFileName(PrimaryPath);
+
+	public long SizeBytes { get; } = new FileInfo(PrimaryPath).Length;
 }

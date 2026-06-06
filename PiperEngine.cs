@@ -36,25 +36,43 @@ static partial class PiperEngine
 	/// <summary>
 	/// Lists downloaded Piper voice models as (name, sizeMB) tuples.
 	/// </summary>
+	/// <summary>
+	/// Enumerates all cached Piper voices as (name, onnxPath) pairs.
+	/// </summary>
+	private static IEnumerable<(string Name, string OnnxPath)> EnumerateCachedVoices(string voicesDir)
+	{
+		if (!Directory.Exists(voicesDir))
+		{
+			yield break;
+		}
+
+		foreach (var file in Directory.GetFiles(voicesDir, "*.onnx"))
+		{
+			var configPath = file + ".json";
+			if (File.Exists(configPath))
+			{
+				yield return (Path.GetFileNameWithoutExtension(file), file);
+			}
+		}
+	}
+
 	public static List<(string Name, int SizeMb)> GetCachedVoices()
 	{
 		var results = new List<(string, int)>();
 		foreach (var basePath in SearchBases)
 		{
 			var voicesDir = Path.Combine(basePath, PiperDirName, VoicesSubDir);
-			if (!Directory.Exists(voicesDir))
-			{
-				continue;
-			}
 
-			foreach (var file in Directory.GetFiles(voicesDir, "*.onnx"))
+			foreach (var (name, onnxPath) in EnumerateCachedVoices(voicesDir))
 			{
-				var name = Path.GetFileNameWithoutExtension(file);
-				var sizeMb = (int)(new FileInfo(file).Length / 1024 / 1024);
+				var sizeMb = (int)(new FileInfo(onnxPath).Length / 1024 / 1024);
 				results.Add((name, sizeMb));
 			}
 
-			break;
+			if (Directory.Exists(voicesDir))
+			{
+				break;
+			}
 		}
 
 		return results;
@@ -245,15 +263,18 @@ static partial class PiperEngine
 			: ResolvePiperShorthand(voiceQuery);
 
 		var modelPath = Path.Combine(voicesDir, $"{resolved.ModelName}.onnx");
-		var configPath = Path.Combine(voicesDir, $"{resolved.ModelName}.onnx.json");
+		var configPath = modelPath + ".json";
 
-		if (File.Exists(modelPath) && File.Exists(configPath))
+		var existing = EnumerateCachedVoices(voicesDir)
+			.FirstOrDefault(v => v.Name.Equals(resolved.ModelName, StringComparison.OrdinalIgnoreCase));
+
+		if (existing.OnnxPath is not null)
 		{
 			// Already downloaded but wasn't in registry (piper: shorthand, or registry lost)
 			if (IsUrlVoice(voiceQuery))
 				WriteRegistry(piperDir, voiceQuery, resolved.ModelName);
 
-			return modelPath;
+			return existing.OnnxPath;
 		}
 
 		await Console.Error.WriteLineAsync
@@ -362,11 +383,12 @@ static partial class PiperEngine
 			return null;
 
 		var normalizedUrl = NormalizeUrl(url);
-		var lines = File.ReadAllLines(registryPath);
+		var voicesDir = Path.Combine(piperDir, VoicesSubDir);
+		var cached = EnumerateCachedVoices(voicesDir)
+			.ToDictionary(v => v.Name, v => v.OnnxPath, StringComparer.OrdinalIgnoreCase);
 
-		foreach (var line in lines)
+		foreach (var line in File.ReadAllLines(registryPath))
 		{
-			// Format: <url>\t<modelName>
 			var tab = line.IndexOf('\t', StringComparison.Ordinal);
 			if (tab < 0)
 				continue;
@@ -374,14 +396,14 @@ static partial class PiperEngine
 			var entryUrl = line[..tab];
 			var modelName = line[(tab + 1)..];
 
-			if (!string.Equals(entryUrl, normalizedUrl, StringComparison.OrdinalIgnoreCase))
-				continue;
-
-			var modelPath = Path.Combine(piperDir, VoicesSubDir, $"{modelName}.onnx");
-			var configPath = Path.Combine(piperDir, VoicesSubDir, $"{modelName}.onnx.json");
-
-			if (File.Exists(modelPath) && File.Exists(configPath))
-				return modelPath;
+			if
+			(
+				string.Equals(entryUrl, normalizedUrl, StringComparison.OrdinalIgnoreCase)
+				&& cached.TryGetValue(modelName, out var onnxPath)
+			)
+			{
+				return onnxPath;
+			}
 		}
 
 		return null;
