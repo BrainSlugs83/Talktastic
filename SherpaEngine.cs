@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 
@@ -105,8 +106,8 @@ internal static class SherpaEngine
 	}
 
 	/// <summary>
-	/// Locates the espeak-ng-data directory. Searches alongside the model's
-	/// parent directories, then falls back to the Piper runtime directory.
+	/// Locates or extracts the espeak-ng-data directory needed for phonemization.
+	/// Searches alongside the model, then in Piper's dir, then extracts from embedded resource.
 	/// </summary>
 	internal static string EnsureEspeakData(string modelPath)
 	{
@@ -125,25 +126,58 @@ internal static class SherpaEngine
 			}
 		}
 
-		// Fall back to the PiperEngine's runtime dir
-		var piperVoicesDir = PiperEngine.FindVoicesDir();
-		if (piperVoicesDir is not null)
+		// Check all search bases
+		foreach (var basePath in AppPaths.SearchBases)
 		{
-			var piperBaseDir = Path.GetDirectoryName(piperVoicesDir);
-			if (piperBaseDir is not null)
+			var candidate = Path.Combine(basePath, ".piper-tts", "espeak-ng-data");
+			if (Directory.Exists(candidate))
 			{
-				var espeakDir = Path.Combine(piperBaseDir, "espeak-ng-data");
-				if (Directory.Exists(espeakDir))
-				{
-					return espeakDir;
-				}
+				return candidate;
 			}
 		}
 
-		throw new DirectoryNotFoundException
-		(
-			"espeak-ng-data directory not found. Ensure the Piper runtime is installed."
-		);
+		// Not found -- extract from embedded resource
+		return ExtractEspeakData();
+	}
+
+	private static string ExtractEspeakData()
+	{
+		var assembly = typeof(SherpaEngine).Assembly;
+		const string resourceName = "Talktastic.Piper.espeak-ng-data.zip";
+
+		using var stream = assembly.GetManifestResourceStream(resourceName)
+			?? throw new InvalidOperationException
+			(
+				"espeak-ng-data not embedded. Piper voice synthesis is not available in this build."
+			);
+
+		var targetDir = Path.Combine(AppPaths.SearchBases[0], ".piper-tts");
+		Directory.CreateDirectory(targetDir);
+
+		using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
+		var espeakDir = Path.Combine(targetDir, "espeak-ng-data");
+		Directory.CreateDirectory(espeakDir);
+
+		foreach (var entry in zip.Entries)
+		{
+			if (string.IsNullOrEmpty(entry.Name))
+			{
+				continue;
+			}
+
+			var destPath = Path.GetFullPath(Path.Combine(espeakDir, entry.FullName));
+			if (!destPath.StartsWith(espeakDir, StringComparison.OrdinalIgnoreCase))
+			{
+				continue;
+			}
+
+			var destDir = Path.GetDirectoryName(destPath)!;
+			Directory.CreateDirectory(destDir);
+
+			entry.ExtractToFile(destPath, overwrite: true);
+		}
+
+		return espeakDir;
 	}
 
 	/// <summary>

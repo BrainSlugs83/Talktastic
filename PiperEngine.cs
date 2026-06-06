@@ -5,9 +5,9 @@ using System.Text.RegularExpressions;
 namespace Talktastic;
 
 /// <summary>
-/// Synthesizes speech using Piper TTS via process invocation.
-/// Runtime and voice models live in a .piper-tts directory (LOCALAPPDATA → TEMP → CWD).
-/// Voice models are downloaded on demand from HuggingFace.
+/// Manages Piper TTS voice models and synthesis via sherpa-onnx.
+/// Voice models live in a .piper-tts/voices directory (LOCALAPPDATA → TEMP → CWD).
+/// Models are downloaded on demand from HuggingFace.
 /// </summary>
 static partial class PiperEngine
 {
@@ -56,10 +56,9 @@ static partial class PiperEngine
 
 
 	/// <summary>
-	/// Finds or creates the .piper-tts directory. Searches LOCALAPPDATA, TEMP, CWD.
-	/// If the runtime isn't found anywhere, extracts the embedded zip to the first writable location.
+	/// Ensures the .piper-tts directory exists. Returns its path.
 	/// </summary>
-	public static string EnsureRuntimeAvailable()
+	public static string EnsurePiperDir()
 	{
 		if (_resolvedPiperDir is not null)
 			return _resolvedPiperDir;
@@ -68,54 +67,18 @@ static partial class PiperEngine
 		foreach (var basePath in AppPaths.SearchBases)
 		{
 			var candidate = Path.Combine(basePath, PiperDirName);
-			if (File.Exists(Path.Combine(candidate, "piper.exe")))
+			if (Directory.Exists(Path.Combine(candidate, VoicesSubDir)))
 			{
 				_resolvedPiperDir = candidate;
 				return candidate;
 			}
 		}
 
-		// Not found -- extract embedded runtime
-		_resolvedPiperDir = ExtractRuntime();
-		return _resolvedPiperDir;
-	}
-
-	/// <summary>
-	/// Extracts the embedded piper-runtime.zip to the first writable .piper-tts location.
-	/// </summary>
-	private static string ExtractRuntime()
-	{
-		var assembly = typeof(PiperEngine).Assembly;
-		var resourceName = "Talktastic.Piper.piper-runtime.zip";
-
-		using var stream = assembly.GetManifestResourceStream(resourceName);
-		if (stream is null)
-			throw new InvalidOperationException
-			(
-				"Piper runtime not embedded. Piper voices are not available in this build."
-			);
-
-		foreach (var basePath in AppPaths.SearchBases)
-		{
-			var targetDir = Path.Combine(basePath, PiperDirName);
-			try
-			{
-				Directory.CreateDirectory(targetDir);
-
-				using var zip = new ZipArchive(stream, ZipArchiveMode.Read, leaveOpen: true);
-				zip.ExtractToDirectory(targetDir, overwriteFiles: true);
-
-				if (File.Exists(Path.Combine(targetDir, "piper.exe")))
-					return targetDir;
-			}
-			catch (UnauthorizedAccessException) { }
-			catch (IOException) { }
-		}
-
-		throw new InvalidOperationException
-		(
-			"Failed to extract Piper runtime. Could not write to LOCALAPPDATA, TEMP, or CWD."
-		);
+		// Not found -- create in default location
+		var dir = Path.Combine(AppPaths.SearchBases[0], PiperDirName);
+		Directory.CreateDirectory(Path.Combine(dir, VoicesSubDir));
+		_resolvedPiperDir = dir;
+		return dir;
 	}
 
 	// ── Public API ──
@@ -173,7 +136,7 @@ static partial class PiperEngine
 		CancellationToken cancellationToken
 	)
 	{
-		var piperDir = EnsureRuntimeAvailable();
+		var piperDir = EnsurePiperDir();
 		var voicesDir = Path.Combine(piperDir, VoicesSubDir);
 		Directory.CreateDirectory(voicesDir);
 
@@ -769,9 +732,6 @@ static partial class PiperEngine
 		CancellationToken cancellationToken
 	)
 	{
-		// Ensure espeak-ng-data is available (needed for phonemization)
-		EnsureRuntimeAvailable();
-
 		cancellationToken.ThrowIfCancellationRequested();
 		var wavBytes = SherpaEngine.SynthesizeToWav(text, modelPath, lengthScale);
 		return Task.FromResult(wavBytes);

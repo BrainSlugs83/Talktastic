@@ -79,8 +79,8 @@
         <WithCulture>false</WithCulture>
         <Visible>false</Visible>
       </EmbeddedResource>
-      <EmbeddedResource Include="$(SpeechNativeResourceDirectory)\piper-runtime.zip" Condition="Exists('$(SpeechNativeResourceDirectory)\piper-runtime.zip')">
-        <LogicalName>Talktastic.Piper.piper-runtime.zip</LogicalName>
+      <EmbeddedResource Include="$(SpeechNativeResourceDirectory)\espeak-ng-data.zip" Condition="Exists('$(SpeechNativeResourceDirectory)\espeak-ng-data.zip')">
+        <LogicalName>Talktastic.Piper.espeak-ng-data.zip</LogicalName>
         <Type>Non-Resx</Type>
         <WithCulture>false</WithCulture>
         <Visible>false</Visible>

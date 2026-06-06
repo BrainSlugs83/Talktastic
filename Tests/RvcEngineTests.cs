@@ -39,10 +39,11 @@ public sealed class RvcEngineTests : IDisposable
 	[InlineData("48k")]
 	public void LoadEmbeddedSkeleton_ReturnsNonEmptyBytes(string srKey)
 	{
-		if (!HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}.onnx.gz"))
-		{
-			return;
-		}
+		Assert.True
+		(
+			HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}.onnx.gz"),
+			$"Required embedded skeleton resource missing for {srKey}. Rebuild with skeletons in native-resources/."
+		);
 
 		var bytes = RvcEngine.LoadEmbeddedSkeleton(srKey);
 		Assert.NotNull(bytes);
@@ -61,10 +62,11 @@ public sealed class RvcEngineTests : IDisposable
 	[InlineData("48k")]
 	public void LoadEmbeddedManifest_ReturnsValidManifest(string srKey)
 	{
-		if (!HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}_manifest.json.gz"))
-		{
-			return;
-		}
+		Assert.True
+		(
+			HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}_manifest.json.gz"),
+			$"Required embedded manifest resource missing for {srKey}. Rebuild with skeletons in native-resources/."
+		);
 
 		var manifest = RvcEngine.LoadEmbeddedManifest(srKey);
 		Assert.NotNull(manifest);
@@ -86,10 +88,11 @@ public sealed class RvcEngineTests : IDisposable
 	[InlineData("48k")]
 	public void UnpatchedSkeleton_CanLoadInOrt(string srKey)
 	{
-		if (!HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}.onnx.gz"))
-		{
-			return;
-		}
+		Assert.True
+		(
+			HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}.onnx.gz"),
+			$"Required embedded skeleton resource missing for {srKey}."
+		);
 
 		var bytes = RvcEngine.LoadEmbeddedSkeleton(srKey);
 		using var options = new SessionOptions();
@@ -103,10 +106,11 @@ public sealed class RvcEngineTests : IDisposable
 	[Fact]
 	public void UnpatchedSkeleton32k_CanLoadInOrt()
 	{
-		if (!HasEmbeddedRvcResource("Talktastic.Rvc.skeleton_v2_32k.onnx.gz"))
-		{
-			return;
-		}
+		Assert.True
+		(
+			HasEmbeddedRvcResource("Talktastic.Rvc.skeleton_v2_32k.onnx.gz"),
+			"Required embedded 32k skeleton resource missing."
+		);
 
 		// This is the critical test -- if the 32k skeleton can't even load
 		// unpatched, the skeleton itself is corrupt/incompatible.
@@ -127,14 +131,12 @@ public sealed class RvcEngineTests : IDisposable
 	[InlineData("48k")]
 	public void Skeleton_InitializerOffsets_MatchManifest(string srKey)
 	{
-		if
+		Assert.True
 		(
-			!HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}.onnx.gz")
-			|| !HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}_manifest.json.gz")
-		)
-		{
-			return;
-		}
+			HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}.onnx.gz")
+			&& HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}_manifest.json.gz"),
+			$"Required embedded skeleton/manifest resources missing for {srKey}."
+		);
 
 		var bytes = RvcEngine.LoadEmbeddedSkeleton(srKey);
 		var manifest = RvcEngine.LoadEmbeddedManifest(srKey);
@@ -157,14 +159,12 @@ public sealed class RvcEngineTests : IDisposable
 	[InlineData("48k")]
 	public void Skeleton_ManifestShapes_MatchOnnxSizes(string srKey)
 	{
-		if
+		Assert.True
 		(
-			!HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}.onnx.gz")
-			|| !HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}_manifest.json.gz")
-		)
-		{
-			return;
-		}
+			HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}.onnx.gz")
+			&& HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}_manifest.json.gz"),
+			$"Required embedded skeleton/manifest resources missing for {srKey}."
+		);
 
 		var bytes = RvcEngine.LoadEmbeddedSkeleton(srKey);
 		var manifest = RvcEngine.LoadEmbeddedManifest(srKey);
@@ -213,14 +213,12 @@ public sealed class RvcEngineTests : IDisposable
 			return;
 		}
 
-		if
+		Assert.True
 		(
-			!HasEmbeddedRvcResource("Talktastic.Rvc.skeleton_v2_32k.onnx.gz")
-			|| !HasEmbeddedRvcResource("Talktastic.Rvc.skeleton_v2_32k_manifest.json.gz")
-		)
-		{
-			return;
-		}
+			HasEmbeddedRvcResource("Talktastic.Rvc.skeleton_v2_32k.onnx.gz")
+			&& HasEmbeddedRvcResource("Talktastic.Rvc.skeleton_v2_32k_manifest.json.gz"),
+			"Required embedded 32k skeleton/manifest resources missing."
+		);
 
 		// This should NOT crash with 0xC0000005
 		var (session, sampleRate) = RvcEngine.CreatePthSession(bartPath);
