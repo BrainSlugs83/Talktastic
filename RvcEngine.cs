@@ -363,74 +363,75 @@ static partial class RvcEngine
 	)
 	{
 		var pthModel = PthLoader.Load(pthPath);
-		var srLabel = pthModel.SampleRateLabel;
+		var srKey = pthModel.SampleRateLabel.TrimEnd('k', 'K') + "k";
 
-		var skeletonPath = ResolveSkeletonPath(srLabel);
-		if (!File.Exists(skeletonPath))
-		{
-			throw new FileNotFoundException
-			(
-				$"RVC skeleton template not found for {srLabel} architecture. "
-				+ $"Expected at: {skeletonPath}. "
-				+ "Place skeleton ONNX files in the .rvc/infra/ directory, or use a pre-converted .onnx model.",
-				skeletonPath
-			);
-		}
+		var skeletonBytes = LoadEmbeddedSkeleton(srKey);
+		var manifest = LoadEmbeddedManifest(srKey);
 
-		// Read initializer metadata from companion manifest JSON
-		var manifestPath = Path.ChangeExtension(skeletonPath, null) + "_manifest.json";
-		if (!File.Exists(manifestPath))
-		{
-			throw new FileNotFoundException
-			(
-				$"Skeleton manifest not found: {manifestPath}. "
-				+ "The manifest JSON is required for .pth weight mapping.",
-				manifestPath
-			);
-		}
-
-		var manifestJson = File.ReadAllText(manifestPath);
-		var manifest = JsonSerializer.Deserialize
-		(
-			manifestJson,
-			SkeletonManifestJsonContext.Default.SkeletonManifest
-		) ?? throw new InvalidDataException($"Failed to parse manifest: {manifestPath}");
-
-		// Build name mapping from manifest's explicit pthToOnnx mapping
 		var nameMap = new Dictionary<string, string>(StringComparer.Ordinal);
 		foreach (var (pthName, _) in pthModel.Weights)
 		{
 			if (manifest.Initializers.ContainsKey(pthName))
 			{
-				// Direct match — same name in .pth and ONNX
 				nameMap[pthName] = pthName;
 			}
 			else if (manifest.PthToOnnx.TryGetValue(pthName, out var onnxName))
 			{
-				// Explicit mapping from manifest
 				nameMap[pthName] = onnxName;
 			}
 		}
 
-		// Patch skeleton ONNX bytes in-place: replace zeroed raw_data with real weights.
-		// Same size data means protobuf length fields don't change.
-		var modelBytes = File.ReadAllBytes(skeletonPath);
-		var offsets = OnnxPatcher.FindInitializerOffsets(modelBytes);
-		OnnxPatcher.PatchWeights(modelBytes, offsets, pthModel.Weights, nameMap);
+		var offsets = OnnxPatcher.FindInitializerOffsets(skeletonBytes);
+		OnnxPatcher.PatchWeights(skeletonBytes, offsets, pthModel.Weights, nameMap);
 
-		// Load patched model from bytes
 		using var options = new SessionOptions();
 		options.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
 
-		var session = new InferenceSession(modelBytes, options);
+		var session = new InferenceSession(skeletonBytes, options);
 		return (session, pthModel.TargetSampleRate);
 	}
 
-	private static string ResolveSkeletonPath(string srLabel)
+	private static byte[] LoadEmbeddedSkeleton(string srKey)
 	{
-		var infraDir = Path.Combine(EnsureRvcDirectory(), InfraSubDir);
-		var key = srLabel.TrimEnd('k', 'K');
-		return Path.Combine(infraDir, $"skeleton_v2_{key}k.onnx");
+		var resourceName = $"Talktastic.Rvc.skeleton_v2_{srKey}.onnx.gz";
+		using var stream = typeof(RvcEngine).Assembly.GetManifestResourceStream(resourceName)
+			?? throw new InvalidOperationException
+			(
+				$"Unsupported RVC architecture: {srKey}. "
+				+ $"No embedded skeleton template found."
+			);
+
+		using var gzip = new System.IO.Compression.GZipStream
+		(
+			stream, System.IO.Compression.CompressionMode.Decompress
+		);
+		using var ms = new MemoryStream();
+		gzip.CopyTo(ms);
+		return ms.ToArray();
+	}
+
+	private static SkeletonManifest LoadEmbeddedManifest(string srKey)
+	{
+		var resourceName = $"Talktastic.Rvc.skeleton_v2_{srKey}_manifest.json.gz";
+		using var stream = typeof(RvcEngine).Assembly.GetManifestResourceStream(resourceName)
+			?? throw new InvalidOperationException
+			(
+				$"Unsupported RVC architecture: {srKey}. "
+				+ $"No embedded manifest found."
+			);
+
+		using var gzip = new System.IO.Compression.GZipStream
+		(
+			stream, System.IO.Compression.CompressionMode.Decompress
+		);
+		using var reader = new StreamReader(gzip);
+		var json = reader.ReadToEnd();
+
+		return JsonSerializer.Deserialize
+		(
+			json,
+			SkeletonManifestJsonContext.Default.SkeletonManifest
+		) ?? throw new InvalidDataException($"Failed to parse embedded manifest for {srKey}");
 	}
 
 	private static string EnsureRvcDirectory()
