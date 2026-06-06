@@ -16,10 +16,10 @@ param
 	[string]$LamePackageDirectory,
 
 	[Parameter(Mandatory = $true)]
-	[string]$MlOnnxRuntimePackageDirectory,
+	[string]$SherpaOnnxPackageDirectory,
 
 	[Parameter(Mandatory = $true)]
-	[string]$SherpaOnnxPackageDirectory,
+	[string]$DmlOnnxRuntimePackageDirectory,
 
 	[string]$RuntimeIdentifier = 'win-x64'
 )
@@ -121,13 +121,13 @@ $nativeDlls = @(
 		SourcePath = Join-Path $LamePackageDirectory 'build\libmp3lame.64.dll'
 	}
 	@{
-		# Use sherpa-onnx's ORT (1.24.4) -- compatible with both sherpa-onnx and Microsoft.ML.OnnxRuntime managed wrapper
+		# DirectML-enabled ORT (includes CPU fallback)
 		Name = 'onnxruntime.dll'
-		SourcePath = Join-Path $SherpaOnnxPackageDirectory "runtimes\$RuntimeIdentifier\native\onnxruntime.dll"
+		SourcePath = Join-Path $DmlOnnxRuntimePackageDirectory "runtimes\$RuntimeIdentifier\native\onnxruntime.dll"
 	}
 	@{
 		Name = 'onnxruntime_providers_shared.dll'
-		SourcePath = Join-Path $MlOnnxRuntimePackageDirectory "runtimes\$RuntimeIdentifier\native\onnxruntime_providers_shared.dll"
+		SourcePath = Join-Path $DmlOnnxRuntimePackageDirectory "runtimes\$RuntimeIdentifier\native\onnxruntime_providers_shared.dll"
 	}
 	@{
 		Name = 'sherpa-onnx-c-api.dll'

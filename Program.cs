@@ -127,6 +127,11 @@ var superQuietOption = new Option<bool>("--super-quiet", "-Q")
 	Description = "Suppress all output (stdout and stderr)",
 };
 
+var noGpuOption = new Option<bool>("--no-gpu")
+{
+	Description = "Disable DirectML GPU acceleration (use CPU only for RVC)",
+};
+
 var rootCommand = new RootCommand($"Talktastic v{version} - standalone Windows TTS CLI")
 {
 	textArgument,
@@ -151,6 +156,7 @@ var rootCommand = new RootCommand($"Talktastic v{version} - standalone Windows T
 	installVoicesOption,
 	quietOption,
 	superQuietOption,
+	noGpuOption,
 };
 
 rootCommand.SetAction
@@ -185,6 +191,12 @@ rootCommand.SetAction
 			var installVoices = parseResult.GetValue(installVoicesOption);
 			var quiet = parseResult.GetValue(quietOption);
 			var superQuiet = parseResult.GetValue(superQuietOption);
+			var noGpu = parseResult.GetValue(noGpuOption);
+
+			if (noGpu)
+			{
+				RvcEngine.DisableGpu = true;
+			}
 
 			if (superQuiet)
 			{

@@ -729,10 +729,55 @@ static partial class RvcEngine
 			: [];
 	}
 
+	private static bool _dmlAvailable = true;
+	private static bool _dmlLogged;
+	private static readonly object _dmlLock = new();
+
+	// Set via --no-gpu flag or TALKTASTIC_NO_GPU=1 env var
+	internal static bool DisableGpu { get; set; } =
+		Environment.GetEnvironmentVariable("TALKTASTIC_NO_GPU") is "1" or "true";
+
 	private static SessionOptions CreateSessionOptions()
 	{
 		var options = new SessionOptions();
 		options.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
+		options.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR;
+
+		if (_dmlAvailable && !DisableGpu)
+		{
+			try
+			{
+				options.AppendExecutionProvider_DML(0);
+				lock (_dmlLock)
+				{
+					if (!_dmlLogged)
+					{
+						_dmlLogged = true;
+						Console.Error.WriteLine("Using DirectML GPU acceleration.");
+					}
+				}
+			}
+			catch (Exception ex) when
+			(
+				ex is OnnxRuntimeException
+				or EntryPointNotFoundException
+				or DllNotFoundException
+			)
+			{
+				lock (_dmlLock)
+				{
+					if (_dmlAvailable)
+					{
+						_dmlAvailable = false;
+						Console.Error.WriteLine
+						(
+							$"DirectML not available ({ex.GetType().Name}: {ex.Message}), using CPU."
+						);
+					}
+				}
+			}
+		}
+
 		return options;
 	}
 
