@@ -67,7 +67,7 @@ static partial class ModelDownloader
 	/// Downloads a zip archive, extracts it, and returns the path to the first .onnx file found.
 	/// The .onnx file is moved to <paramref name="destDir"/> and the temp zip is cleaned up.
 	/// </summary>
-	public static async Task<(string OnnxPath, string ModelName)> DownloadAndExtractZipAsync
+	public static async Task<(string ModelPath, string ModelName)> DownloadAndExtractZipAsync
 	(
 		HttpClient http,
 		string url,
@@ -86,56 +86,58 @@ static partial class ModelDownloader
 			Directory.CreateDirectory(tempExtract);
 			await ZipFile.ExtractToDirectoryAsync(tempZip, tempExtract, overwriteFiles: true, cancellationToken).ConfigureAwait(false);
 
-			// Find .onnx files in the extracted contents
+			// Prefer .onnx files, fall back to .pth
 			var onnxFiles = Directory.GetFiles(tempExtract, "*.onnx", SearchOption.AllDirectories);
-			if (onnxFiles.Length == 0)
+			if (onnxFiles.Length > 0)
 			{
-				// Check if there are .pth files (common RVC format) -- give a helpful message
-				var pthFiles = Directory.GetFiles(tempExtract, "*.pth", SearchOption.AllDirectories);
-				if (pthFiles.Length > 0)
-				{
-					throw new InvalidOperationException
-					(
-						$"The zip archive contains .pth (PyTorch) files but no .onnx files. "
-						+ "RVC .pth models must be converted to ONNX format first. "
-						+ "Use the convert-rvc.py script to export: "
-						+ $"found {string.Join(", ", pthFiles.Select(Path.GetFileName))}"
-					);
-				}
+				var sourceOnnx = onnxFiles[0];
+				var modelName = Path.GetFileNameWithoutExtension(sourceOnnx);
+				var finalPath = Path.Combine(destDir, $"{modelName}.onnx");
 
-				throw new InvalidOperationException
-				(
-					$"No .onnx model file found in zip archive from {url}"
-				);
+				File.Move(sourceOnnx, finalPath, overwrite: true);
+				CopyCompanionFiles(Path.GetDirectoryName(sourceOnnx)!, destDir);
+				return (finalPath, modelName);
 			}
 
-			// Take the first (or only) .onnx file
-			var sourceOnnx = onnxFiles[0];
-			var modelName = Path.GetFileNameWithoutExtension(sourceOnnx);
-			var finalPath = Path.Combine(destDir, $"{modelName}.onnx");
-
-			File.Move(sourceOnnx, finalPath, overwrite: true);
-
-			// Also grab any companion files (.onnx.json, .index, etc.)
-			var sourceDir = Path.GetDirectoryName(sourceOnnx)!;
-			foreach (var companion in Directory.GetFiles(sourceDir))
+			var pthFiles = Directory.GetFiles(tempExtract, "*.pth", SearchOption.AllDirectories);
+			if (pthFiles.Length > 0)
 			{
-				var ext = Path.GetExtension(companion);
-				if (string.Equals(ext, ".json", StringComparison.OrdinalIgnoreCase)
-					|| string.Equals(ext, ".index", StringComparison.OrdinalIgnoreCase))
-				{
-					var destFile = Path.Combine(destDir, Path.GetFileName(companion));
-					File.Move(companion, destFile, overwrite: true);
-				}
+				var sourcePth = pthFiles[0];
+				var modelName = Path.GetFileNameWithoutExtension(sourcePth);
+				var finalPath = Path.Combine(destDir, $"{modelName}.pth");
+
+				File.Move(sourcePth, finalPath, overwrite: true);
+				CopyCompanionFiles(Path.GetDirectoryName(sourcePth)!, destDir);
+				return (finalPath, modelName);
 			}
 
-			return (finalPath, modelName);
+			throw new InvalidOperationException
+			(
+				$"No .onnx or .pth model file found in zip archive from {url}"
+			);
 		}
 		finally
 		{
 			try { File.Delete(tempZip); } catch (IOException) { }
 			try { if (Directory.Exists(tempExtract)) Directory.Delete(tempExtract, recursive: true); }
 			catch (IOException) { }
+		}
+	}
+
+	private static void CopyCompanionFiles(string sourceDir, string destDir)
+	{
+		foreach (var companion in Directory.GetFiles(sourceDir))
+		{
+			var ext = Path.GetExtension(companion);
+			if
+			(
+				string.Equals(ext, ".json", StringComparison.OrdinalIgnoreCase)
+				|| string.Equals(ext, ".index", StringComparison.OrdinalIgnoreCase)
+			)
+			{
+				var destFile = Path.Combine(destDir, Path.GetFileName(companion));
+				File.Move(companion, destFile, overwrite: true);
+			}
 		}
 	}
 

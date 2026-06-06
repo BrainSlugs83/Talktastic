@@ -16,6 +16,11 @@ static partial class RvcEngine
 	private const string InfraSubDir = "infra";
 	private const string RegistryFileName = "rvcs.json";
 
+	private static readonly JsonSerializerOptions ManifestJsonOptions = new()
+	{
+		PropertyNameCaseInsensitive = true,
+	};
+
 	private const string ContentVecUrl = "https://huggingface.co/NaruseMioShirakana/MoeSS-SUBModel/resolve/main/vec-768-layer-12.onnx";
 	private const string RmvpeUrl = "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.onnx";
 
@@ -74,8 +79,8 @@ static partial class RvcEngine
 			var cachedModelName = ModelDownloader.LookupRegistry(registryPath, rvcQuery);
 			if (cachedModelName is not null)
 			{
-				var cachedPath = Path.Combine(voicesDir, $"{cachedModelName}.onnx");
-				if (File.Exists(cachedPath))
+				var cachedPath = FindCachedModel(voicesDir, cachedModelName);
+				if (cachedPath is not null)
 				{
 					return cachedPath;
 				}
@@ -93,18 +98,26 @@ static partial class RvcEngine
 					$"Downloading and extracting RVC model '{resolved.ModelName}'..."
 				).ConfigureAwait(false);
 
-				var (onnxPath, extractedName) = await ModelDownloader.DownloadAndExtractZipAsync
+				var (modelPath, extractedName) = await ModelDownloader.DownloadAndExtractZipAsync
 				(
 					Http, resolved.FileUrl, voicesDir, ct
 				).ConfigureAwait(false);
 
-				downloadPath = onnxPath;
+				downloadPath = modelPath;
 				modelName = extractedName;
 			}
 			else
 			{
 				modelName = resolved.ModelName;
-				downloadPath = Path.Combine(voicesDir, $"{modelName}.onnx");
+				var ext = Path.GetExtension(resolved.FileUrl);
+				if (string.Equals(ext, ".pth", StringComparison.OrdinalIgnoreCase))
+				{
+					downloadPath = Path.Combine(voicesDir, $"{modelName}.pth");
+				}
+				else
+				{
+					downloadPath = Path.Combine(voicesDir, $"{modelName}.onnx");
+				}
 
 				if (!File.Exists(downloadPath))
 				{
@@ -127,10 +140,10 @@ static partial class RvcEngine
 			return downloadPath;
 		}
 
-		var namedPath = Path.Combine(voicesDir, $"{rvcQuery}.onnx");
-		if (File.Exists(namedPath))
+		var namedModel = FindCachedModel(voicesDir, rvcQuery);
+		if (namedModel is not null)
 		{
-			return namedPath;
+			return namedModel;
 		}
 
 		foreach (var line in ReadRegistryLines(registryPath))
@@ -147,8 +160,8 @@ static partial class RvcEngine
 				continue;
 			}
 
-			var resolvedPath = Path.Combine(voicesDir, $"{modelName}.onnx");
-			if (File.Exists(resolvedPath))
+			var resolvedPath = FindCachedModel(voicesDir, modelName);
+			if (resolvedPath is not null)
 			{
 				return resolvedPath;
 			}
@@ -156,8 +169,25 @@ static partial class RvcEngine
 
 		throw new InvalidOperationException
 		(
-			$"Unknown RVC model '{rvcQuery}'. Use a friendly name already cached, a local .onnx path, or a URL."
+			$"Unknown RVC model '{rvcQuery}'. Use a friendly name already cached, a local .onnx/.pth path, or a URL."
 		);
+	}
+
+	private static string? FindCachedModel(string voicesDir, string modelName)
+	{
+		var onnxPath = Path.Combine(voicesDir, $"{modelName}.onnx");
+		if (File.Exists(onnxPath))
+		{
+			return onnxPath;
+		}
+
+		var pthPath = Path.Combine(voicesDir, $"{modelName}.pth");
+		if (File.Exists(pthPath))
+		{
+			return pthPath;
+		}
+
+		return null;
 	}
 
 	public static async Task EnsureInfraModelsAsync(CancellationToken ct)
@@ -211,25 +241,125 @@ static partial class RvcEngine
 
 		using var vecSession = CreateSession(vecPath);
 		using var rmvpeSession = CreateSession(rmvpePath);
-		using var rvcSession = CreateSession(rvcModelPath);
 
-		var targetSampleRate = GetTargetSampleRate(rvcSession);
-		var (pitchf, pitch) = ExtractF0(rmvpeSession, inferenceAudio, pitchShiftSemitones, ct);
-		var convertedSegments = InferSegments
+		int targetSampleRate;
+		InferenceSession rvcSession;
+
+		if (IsPthFile(rvcModelPath))
+		{
+			(rvcSession, targetSampleRate) = CreatePthSession(rvcModelPath);
+		}
+		else
+		{
+#pragma warning disable CA2000 // Disposed in finally block below
+			rvcSession = CreateSession(rvcModelPath);
+#pragma warning restore CA2000
+			targetSampleRate = GetTargetSampleRate(rvcSession);
+		}
+
+		try
+		{
+			var (pitchf, pitch) = ExtractF0(rmvpeSession, inferenceAudio, pitchShiftSemitones, ct);
+			var convertedSegments = InferSegments
+			(
+				rvcSession,
+				vecSession,
+				inferenceAudio,
+				pitch,
+				pitchf,
+				optTs,
+				targetSampleRate,
+				ct
+			);
+
+			var finalSamples = Concatenate(convertedSegments);
+			return AudioDsp.EncodeWav(finalSamples, targetSampleRate);
+		}
+		finally
+		{
+			rvcSession.Dispose();
+		}
+	}
+
+	private static bool IsPthFile(string path)
+	{
+		return path.EndsWith(".pth", StringComparison.OrdinalIgnoreCase);
+	}
+
+	private static (InferenceSession Session, int TargetSampleRate) CreatePthSession
+	(
+		string pthPath
+	)
+	{
+		var pthModel = PthLoader.Load(pthPath);
+		var srLabel = pthModel.SampleRateLabel;
+
+		var skeletonPath = ResolveSkeletonPath(srLabel);
+		if (!File.Exists(skeletonPath))
+		{
+			throw new FileNotFoundException
+			(
+				$"RVC skeleton template not found for {srLabel} architecture. "
+				+ $"Expected at: {skeletonPath}. "
+				+ "Place skeleton ONNX files in the .rvc/infra/ directory, or use a pre-converted .onnx model.",
+				skeletonPath
+			);
+		}
+
+		// Read initializer metadata from companion manifest JSON
+		var manifestPath = Path.ChangeExtension(skeletonPath, null) + "_manifest.json";
+		if (!File.Exists(manifestPath))
+		{
+			throw new FileNotFoundException
+			(
+				$"Skeleton manifest not found: {manifestPath}. "
+				+ "The manifest JSON is required for .pth weight mapping.",
+				manifestPath
+			);
+		}
+
+		var manifestJson = File.ReadAllText(manifestPath);
+		var manifest = JsonSerializer.Deserialize<SkeletonManifest>
 		(
-			rvcSession,
-			vecSession,
-			inferenceAudio,
-			pitch,
-			pitchf,
-			optTs,
-			targetSampleRate,
-			ct
-		);
+			manifestJson,
+			ManifestJsonOptions
+		) ?? throw new InvalidDataException($"Failed to parse manifest: {manifestPath}");
 
-		var finalSamples = Concatenate(convertedSegments);
+		// Build name mapping from manifest's explicit pthToOnnx mapping
+		var nameMap = new Dictionary<string, string>(StringComparer.Ordinal);
+		foreach (var (pthName, _) in pthModel.Weights)
+		{
+			if (manifest.Initializers.ContainsKey(pthName))
+			{
+				// Direct match — same name in .pth and ONNX
+				nameMap[pthName] = pthName;
+			}
+			else if (manifest.PthToOnnx.TryGetValue(pthName, out var onnxName))
+			{
+				// Explicit mapping from manifest
+				nameMap[pthName] = onnxName;
+			}
+		}
 
-		return AudioDsp.EncodeWav(finalSamples, targetSampleRate);
+		// Patch skeleton ONNX bytes in-place: replace zeroed raw_data with real weights.
+		// Same size data means protobuf length fields don't change.
+		var modelBytes = File.ReadAllBytes(skeletonPath);
+		var offsets = OnnxPatcher.FindInitializerOffsets(modelBytes);
+		OnnxPatcher.PatchWeights(modelBytes, offsets, pthModel.Weights, nameMap);
+
+		// Load patched model from bytes
+		using var options = new SessionOptions();
+		options.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
+
+		var session = new InferenceSession(modelBytes, options);
+		return (session, pthModel.TargetSampleRate);
+	}
+
+	private static string ResolveSkeletonPath(string srLabel)
+	{
+		var infraDir = Path.Combine(EnsureRvcDirectory(), InfraSubDir);
+		var key = srLabel.TrimEnd('k', 'K');
+		return Path.Combine(infraDir, $"skeleton_v2_{key}k.onnx");
 	}
 
 	private static string EnsureRvcDirectory()
@@ -954,3 +1084,10 @@ static partial class RvcEngine
 		return mapping;
 	}
 }
+
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Performance", "CA1812")]
+internal sealed record SkeletonManifest
+(
+	Dictionary<string, int[]> Initializers,
+	Dictionary<string, string> PthToOnnx
+);
