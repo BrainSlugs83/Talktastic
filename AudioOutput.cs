@@ -112,6 +112,65 @@ internal static class AudioOutput
 		).ConfigureAwait(false);
 	}
 
+	/// <summary>
+	/// Writes MP3 from raw WAV bytes, reading the sample rate from the RIFF header.
+	/// Use this for RVC output where the sample rate may differ from the TTS format.
+	/// </summary>
+	public static async Task WriteMp3FromWavAsync
+	(
+		byte[] wavBytes,
+		string outputPath,
+		AudioMetadata? metadata = null,
+		CancellationToken cancellationToken = default
+	)
+	{
+		var sampleRate = AudioDsp.ReadWavSampleRate(wavBytes);
+		EnsureDirectoryExists(outputPath);
+
+		var pcmBytes = StripWaveHeader(wavBytes);
+		var mp3Bytes = LameEncoder.EncodePcmToMp3(pcmBytes, sampleRate, 1);
+
+		using var output = File.Create(outputPath);
+
+		if (metadata is not null)
+		{
+			var id3 = Id3Writer.CreateTag(metadata);
+			await output.WriteAsync(id3, cancellationToken).ConfigureAwait(false);
+		}
+
+		await output.WriteAsync(mp3Bytes, cancellationToken).ConfigureAwait(false);
+	}
+
+	/// <summary>
+	/// Writes OGG Opus from raw WAV bytes, reading the sample rate from the RIFF header.
+	/// </summary>
+	public static async Task WriteOggOpusFromWavAsync
+	(
+		byte[] wavBytes,
+		string outputPath,
+		AudioMetadata? metadata = null,
+		CancellationToken cancellationToken = default
+	)
+	{
+		var sampleRate = AudioDsp.ReadWavSampleRate(wavBytes);
+		EnsureDirectoryExists(outputPath);
+
+		var pcmBytes = StripWaveHeader(wavBytes);
+
+		await Task.Run
+		(
+			() => OggOpusEncoder.EncodeToFile
+			(
+				pcmBytes,
+				sampleRate,
+				1,
+				outputPath,
+				metadata
+			),
+			cancellationToken
+		).ConfigureAwait(false);
+	}
+
 	public static byte[] ReadAllBytes(PullAudioOutputStream stream)
 	{
 		using var buffer = new MemoryStream();

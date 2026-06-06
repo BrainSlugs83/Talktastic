@@ -117,14 +117,13 @@ internal static partial class SpeechEngine
 
 		if (HasExtension(request.OutputPath, ".mp3"))
 		{
-			// RVC outputs vary in sample rate, use a generic format hint
-			await AudioOutput.WriteMp3Async(wavBytes, request.OutputFormat, request.OutputPath, meta, cancellationToken).ConfigureAwait(false);
+			await AudioOutput.WriteMp3FromWavAsync(wavBytes, request.OutputPath, meta, cancellationToken).ConfigureAwait(false);
 			return $"Wrote MP3 file '{request.OutputPath}' with {displayName}.";
 		}
 
 		if (HasExtension(request.OutputPath, ".ogg"))
 		{
-			await AudioOutput.WriteOggOpusAsync(wavBytes, request.OutputFormat, request.OutputPath, meta, cancellationToken).ConfigureAwait(false);
+			await AudioOutput.WriteOggOpusFromWavAsync(wavBytes, request.OutputPath, meta, cancellationToken).ConfigureAwait(false);
 			return $"Wrote OGG file '{request.OutputPath}' with {displayName}.";
 		}
 

@@ -41,6 +41,27 @@ internal static class AudioDsp
 	];
 
 	/// <summary>
+	/// Reads the sample rate from a RIFF/WAV header without fully parsing the file.
+	/// </summary>
+	internal static int ReadWavSampleRate(byte[] wavBytes)
+	{
+		// Standard WAV layout: RIFF(4) size(4) WAVE(4) fmt_(4) fmtSize(4) tag(2) ch(2) rate(4)
+		const int minSize = 28;
+		if (wavBytes is null || wavBytes.Length < minSize)
+		{
+			throw new InvalidDataException("WAV data is too short to read sample rate.");
+		}
+
+		ReadOnlySpan<byte> data = wavBytes;
+		if (!data[..4].SequenceEqual("RIFF"u8) || !data.Slice(8, 4).SequenceEqual("WAVE"u8))
+		{
+			throw new InvalidDataException("Input is not a RIFF/WAVE file.");
+		}
+
+		return BinaryPrimitives.ReadInt32LittleEndian(data.Slice(24, 4));
+	}
+
+	/// <summary>
 	/// Parses a WAV file from raw bytes and returns normalized float samples.
 	/// </summary>
 	/// <param name="wavBytes">The WAV payload.</param>
