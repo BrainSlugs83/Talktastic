@@ -881,11 +881,25 @@ static CachedItem ResolveRvcModel(string query)
 		?? throw new InvalidOperationException($"Unknown RVC model '{query}'.");
 }
 
+/// <summary>
+/// Represents a cached item.
+/// </summary>
+/// <param name="PrimaryPath">The primary path.</param>
+/// <param name="DisplayName">The display name, or <c>null</c> to infer it.</param>
 file sealed record CachedItem(string PrimaryPath, string? DisplayName = null)
 {
+	/// <summary>
+	/// Gets the display name.
+	/// </summary>
 	public string Name { get; } = DisplayName ?? Path.GetFileNameWithoutExtension(PrimaryPath);
 
+	/// <summary>
+	/// Gets the file name.
+	/// </summary>
 	public string FileName { get; } = Path.GetFileName(PrimaryPath);
 
+	/// <summary>
+	/// Gets the file size in bytes.
+	/// </summary>
 	public long SizeBytes { get; } = new FileInfo(PrimaryPath).Length;
 }

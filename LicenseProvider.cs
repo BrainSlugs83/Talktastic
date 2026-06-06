@@ -2,6 +2,9 @@ using System.Text;
 
 namespace Talktastic;
 
+/// <summary>
+/// Provides embedded speech license operations.
+/// </summary>
 internal static class LicenseProvider
 {
 	private const string EmbeddedSpeechExtensionPath =
@@ -10,6 +13,10 @@ internal static class LicenseProvider
 	private const string EulaMarker =
 		"This model and the software may not be used or distributed";
 
+	/// <summary>
+	/// Extracts the embedded speech license text.
+	/// </summary>
+	/// <returns>The resulting string.</returns>
 	public static string GetLicenseText()
 	{
 		if (!File.Exists(EmbeddedSpeechExtensionPath))

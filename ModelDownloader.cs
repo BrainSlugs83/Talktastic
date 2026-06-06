@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.IO.Compression;
 using System.Text.RegularExpressions;
 
@@ -22,6 +23,7 @@ static partial class ModelDownloader
 	/// <summary>
 	/// Downloads a file with temp-file-then-move for atomicity.
 	/// </summary>
+	[ExcludeFromCodeCoverage]
 	public static async Task DownloadFileAsync
 	(
 		HttpClient http,
@@ -67,6 +69,7 @@ static partial class ModelDownloader
 	/// Downloads a zip archive, extracts it, and returns the path to the first .onnx file found.
 	/// The .onnx file is moved to <paramref name="destDir"/> and the temp zip is cleaned up.
 	/// </summary>
+	[ExcludeFromCodeCoverage]
 	public static async Task<(string ModelPath, string ModelName)> DownloadAndExtractZipAsync
 	(
 		HttpClient http,
@@ -98,6 +101,7 @@ static partial class ModelDownloader
 	/// All files from the zip (.pth, .index, .json, etc.) live together.
 	/// Returns the path to the first .onnx or .pth found and the model name.
 	/// </summary>
+	[ExcludeFromCodeCoverage]
 	public static async Task<(string ModelPath, string ModelName)> ExtractZipAsync
 	(
 		string zipPath,
@@ -204,6 +208,11 @@ static partial class ModelDownloader
 		return CleanModelName(internalName)!;
 	}
 
+	/// <summary>
+	/// Cleans the model name.
+	/// </summary>
+	/// <param name="rawName">The raw name.</param>
+	/// <returns>The resulting string, or <c>null</c> if no value is available.</returns>
 	internal static string? CleanModelName(string? rawName)
 	{
 		if (string.IsNullOrEmpty(rawName))
@@ -216,6 +225,11 @@ static partial class ModelDownloader
 		return cleaned.Trim();
 	}
 
+	/// <summary>
+	/// Determines whether the name is usable.
+	/// </summary>
+	/// <param name="name">The name.</param>
+	/// <returns><c>true</c> if the condition is met; otherwise, <c>false</c>.</returns>
 	internal static bool IsUsableName(string name)
 	{
 		if (string.IsNullOrWhiteSpace(name))
@@ -342,6 +356,7 @@ static partial class ModelDownloader
 	/// Resolves a HuggingFace folder URL to a model file (.onnx or .zip) inside it.
 	/// Prefers .onnx files, falls back to .zip archives.
 	/// </summary>
+	[ExcludeFromCodeCoverage]
 	private static async Task<(string FileUrl, string ModelName, bool IsZip, string[]? CompanionUrls)> ResolveHuggingFaceModelAsync
 	(
 		HttpClient http,
@@ -467,6 +482,7 @@ static partial class ModelDownloader
 	/// Resolves a GitHub releases URL to a model file (.onnx or .zip) asset URL.
 	/// Prefers .onnx files, falls back to .zip archives.
 	/// </summary>
+	[ExcludeFromCodeCoverage]
 	private static async Task<(string FileUrl, string ModelName, bool IsZip, string[]? CompanionUrls)> ResolveGitHubReleaseModelAsync
 	(
 		HttpClient http,
@@ -565,6 +581,7 @@ static partial class ModelDownloader
 	/// Supports .onnx direct links, .zip archives, HuggingFace folders, and GitHub releases.
 	/// The returned FileUrl may be .onnx or .zip -- caller should check <see cref="IsZipUrl"/>.
 	/// </summary>
+	[ExcludeFromCodeCoverage]
 	public static async Task<(string FileUrl, string ModelName, bool IsZip, string[]? CompanionUrls)> ResolveModelUrlAsync
 	(
 		HttpClient http,
@@ -618,36 +635,80 @@ static partial class ModelDownloader
 
 	// ── JSON helpers (minimal regex-based, AOT-safe) ──
 
+	/// <summary>
+	/// Gets the HuggingFace ONNX path regex.
+	/// </summary>
+	/// <returns>The generated regex.</returns>
 	[GeneratedRegex(@"""path""\s*:\s*""([^""]+\.onnx)""")]
 	private static partial Regex HfOnnxPathPattern();
 
+	/// <summary>
+	/// Gets the HuggingFace ZIP path regex.
+	/// </summary>
+	/// <returns>The generated regex.</returns>
 	[GeneratedRegex(@"""path""\s*:\s*""([^""]+\.zip)""")]
 	private static partial Regex HfZipPathPattern();
 
+	/// <summary>
+	/// Gets the HuggingFace PTH path regex.
+	/// </summary>
+	/// <returns>The generated regex.</returns>
 	[GeneratedRegex(@"""path""\s*:\s*""([^""]+\.pth)""")]
 	private static partial Regex HfPthPathPattern();
 
+	/// <summary>
+	/// Gets the HuggingFace index path regex.
+	/// </summary>
+	/// <returns>The generated regex.</returns>
 	[GeneratedRegex(@"""path""\s*:\s*""([^""]+\.index)""")]
 	private static partial Regex HfIndexPathPattern();
 
+	/// <summary>
+	/// Gets the HuggingFace config JSON path regex.
+	/// </summary>
+	/// <returns>The generated regex.</returns>
 	[GeneratedRegex(@"""path""\s*:\s*""(config\.json|metadata\.json)""")]
 	private static partial Regex HfConfigJsonPathPattern();
 
+	/// <summary>
+	/// Gets the GitHub ONNX asset regex.
+	/// </summary>
+	/// <returns>The generated regex.</returns>
 	[GeneratedRegex(@"""browser_download_url""\s*:\s*""([^""]+\.onnx)""")]
 	private static partial Regex GhOnnxAssetPattern();
 
+	/// <summary>
+	/// Gets the GitHub ZIP asset regex.
+	/// </summary>
+	/// <returns>The generated regex.</returns>
 	[GeneratedRegex(@"""browser_download_url""\s*:\s*""([^""]+\.zip)""")]
 	private static partial Regex GhZipAssetPattern();
 
+	/// <summary>
+	/// Gets the GitHub PTH asset regex.
+	/// </summary>
+	/// <returns>The generated regex.</returns>
 	[GeneratedRegex(@"""browser_download_url""\s*:\s*""([^""]+\.pth)""")]
 	private static partial Regex GhPthAssetPattern();
 
+	/// <summary>
+	/// Gets the GitHub index asset regex.
+	/// </summary>
+	/// <returns>The generated regex.</returns>
 	[GeneratedRegex(@"""browser_download_url""\s*:\s*""([^""]+\.index)""")]
 	private static partial Regex GhIndexAssetPattern();
 
+	/// <summary>
+	/// Gets the repository name regex.
+	/// </summary>
+	/// <returns>The generated regex.</returns>
 	[GeneratedRegex(@"(?:vits-)?piper-(.+)$", RegexOptions.IgnoreCase)]
 	private static partial Regex RepoNamePattern();
 
+	/// <summary>
+	/// Gets the multiple-spaces regex.
+	/// </summary>
+	/// <returns>The generated regex.</returns>
 	[GeneratedRegex(" {2,}")]
 	private static partial Regex MultipleSpacesPattern();
 
@@ -730,6 +791,12 @@ static partial class ModelDownloader
 		return CleanModelName(fileName)!;
 	}
 
+	/// <summary>
+	/// Derives the model name from a repository.
+	/// </summary>
+	/// <param name="repo">The repository name.</param>
+	/// <param name="subPath">The subpath.</param>
+	/// <returns>The resulting string.</returns>
 	internal static string DeriveModelNameFromRepo(string repo, string subPath)
 	{
 		if (!string.IsNullOrEmpty(subPath))

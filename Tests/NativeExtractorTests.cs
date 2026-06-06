@@ -509,6 +509,128 @@ public sealed class NativeExtractorTests : IDisposable
 		Assert.True(File.Exists(path));
 	}
 
+	[Fact]
+	public void CleanupCwdExtractions_UnlockedFile_DeletesFileAndDrainsBag()
+	{
+		var path = WriteArtifact("unlocked.dll", "hello"u8.ToArray());
+		GetCwdExtractions().Add(path);
+
+		NativeExtractor.CleanupCwdExtractions();
+
+		Assert.False(File.Exists(path));
+		Assert.Empty(GetCwdExtractions());
+	}
+
+	[Fact]
+	public void CleanStaleFiles_DeletesUnknownDllsButKeepsManifestEntries()
+	{
+		var appDataDir = GetPrivateField<string>(typeof(NativeExtractor), "AppDataDir");
+		var keepPath = WriteArtifact($"keep-{Guid.NewGuid():N}.dll", "hello"u8.ToArray(), appDataDir);
+		var stalePath = WriteArtifact($"stale-{Guid.NewGuid():N}.dll", "hello"u8.ToArray(), appDataDir);
+		var nonDllPath = WriteArtifact($"notes-{Guid.NewGuid():N}.txt", "hello"u8.ToArray(), appDataDir);
+		var manifest = Directory.Exists(appDataDir)
+			? Directory.EnumerateFiles(appDataDir, "*.dll")
+				.Select(path => new NativePayloadManifestEntry(Path.GetFileName(path), 0, string.Empty))
+				.ToList()
+			: [];
+		manifest.RemoveAll(entry => string.Equals(entry.Name, Path.GetFileName(stalePath), StringComparison.OrdinalIgnoreCase));
+		if (!manifest.Any(entry => string.Equals(entry.Name, Path.GetFileName(keepPath), StringComparison.OrdinalIgnoreCase)))
+		{
+			manifest.Add(new NativePayloadManifestEntry(Path.GetFileName(keepPath), 5, HelloMd5));
+		}
+
+		InvokePrivateStaticVoid
+		(
+			typeof(NativeExtractor),
+			"CleanStaleFiles",
+			(object?)manifest.ToArray()
+		);
+
+		Assert.True(File.Exists(keepPath));
+		Assert.False(File.Exists(stalePath));
+		Assert.True(File.Exists(nonDllPath));
+	}
+
+	[Fact]
+	public void EnsureAvailable_NoneGroup_ReturnsWithoutChangingState()
+	{
+		ResetNativeExtractorState();
+
+		NativeExtractor.EnsureAvailable(DllGroup.None);
+
+		Assert.Equal(DllGroup.None, GetPrivateField<DllGroup>(typeof(NativeExtractor), "_resolvedGroups"));
+	}
+
+	[Fact]
+	public void EnsureAvailable_AlreadyResolvedGroup_ReturnsWithoutReadingManifest()
+	{
+		ResetNativeExtractorState();
+		SetPrivateField(typeof(NativeExtractor), "_resolvedGroups", DllGroup.Lame);
+		SetPrivateField<NativePayloadManifestEntry[]?>(typeof(NativeExtractor), "_cachedManifest", null);
+
+		NativeExtractor.EnsureAvailable(DllGroup.Lame);
+
+		Assert.Equal(DllGroup.Lame, GetPrivateField<DllGroup>(typeof(NativeExtractor), "_resolvedGroups"));
+		Assert.Null(GetPrivateFieldOrNull<NativePayloadManifestEntry[]>(typeof(NativeExtractor), "_cachedManifest"));
+	}
+
+	[Fact]
+	public void ConfigureSearchPaths_NewDirectories_PrependsPathAndAvoidsDuplicates()
+	{
+		ResetNativeExtractorState();
+
+		var configuredDirs = GetPrivateField<HashSet<string>>(typeof(NativeExtractor), "ConfiguredDirs");
+		var originalConfiguredDirs = configuredDirs.ToArray();
+		var originalPath = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+		var dir1 = Path.Combine(_artifactRoot, "dll-dir-1");
+		var dir2 = Path.Combine(_artifactRoot, "dll-dir-2");
+		Directory.CreateDirectory(dir1);
+		Directory.CreateDirectory(dir2);
+
+		try
+		{
+			InvokePrivateStaticVoid
+			(
+				typeof(NativeExtractor),
+				"ConfigureSearchPaths",
+				(object?)new[]
+				{
+					new ResolvedDll("a.dll", Path.Combine(dir1, "a.dll")),
+					new ResolvedDll("b.dll", Path.Combine(dir2, "b.dll")),
+					new ResolvedDll("c.dll", Path.Combine(dir1, "c.dll")),
+				}
+			);
+
+			var firstPath = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+			Assert.StartsWith($"{dir1};{dir2};", firstPath, StringComparison.OrdinalIgnoreCase);
+			Assert.Contains(dir1, configuredDirs);
+			Assert.Contains(dir2, configuredDirs);
+
+			InvokePrivateStaticVoid
+			(
+				typeof(NativeExtractor),
+				"ConfigureSearchPaths",
+				(object?)new[]
+				{
+					new ResolvedDll("again-a.dll", Path.Combine(dir1, "again-a.dll")),
+					new ResolvedDll("again-b.dll", Path.Combine(dir2, "again-b.dll")),
+				}
+			);
+
+			Assert.Equal(firstPath, Environment.GetEnvironmentVariable("PATH"));
+			Assert.Equal(2, configuredDirs.Count);
+		}
+		finally
+		{
+			Environment.SetEnvironmentVariable("PATH", originalPath);
+			configuredDirs.Clear();
+			foreach (var dir in originalConfiguredDirs)
+			{
+				configuredDirs.Add(dir);
+			}
+		}
+	}
+
 	private string WriteArtifact(string fileName, byte[] bytes, string? directory = null)
 	{
 		var path = Path.Combine(directory ?? _artifactRoot, fileName);
@@ -558,6 +680,13 @@ public sealed class NativeExtractorTests : IDisposable
 		var result = method!.Invoke(null, args);
 		Assert.NotNull(result);
 		return Assert.IsType<T>(result);
+	}
+
+	private static void InvokePrivateStaticVoid(Type type, string methodName, params object?[] args)
+	{
+		var method = type.GetMethod(methodName, BindingFlags.NonPublic | BindingFlags.Static);
+		Assert.NotNull(method);
+		method!.Invoke(null, args);
 	}
 
 	private static T GetPrivateField<T>(Type type, string fieldName)

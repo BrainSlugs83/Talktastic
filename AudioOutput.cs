@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using Microsoft.CognitiveServices.Speech;
@@ -10,8 +11,15 @@ using OpusCodecFactory = Concentus.OpusCodecFactory;
 
 namespace Talktastic;
 
+/// <summary>
+/// Provides audio output operations.
+/// </summary>
 internal static class AudioOutput
 {
+	/// <summary>
+	/// Gets the available speakers.
+	/// </summary>
+	/// <returns>The available speakers.</returns>
 	public static IReadOnlyList<AudioDeviceInfo> GetSpeakers()
 	{
 		var selector = MediaDevice.GetAudioRenderSelector();
@@ -30,6 +38,13 @@ internal static class AudioOutput
 			.ToArray();
 	}
 
+	/// <summary>
+	/// Plays WAV audio to a device.
+	/// </summary>
+	/// <param name="wavData">The WAV data.</param>
+	/// <param name="deviceQuery">The device query.</param>
+	/// <returns>A task that represents the asynchronous operation.</returns>
+	[ExcludeFromCodeCoverage]
 	public static async Task PlayToDeviceAsync(byte[] wavData, string? deviceQuery)
 	{
 		using var memStream = new Windows.Storage.Streams.InMemoryRandomAccessStream();
@@ -58,6 +73,16 @@ internal static class AudioOutput
 		await tcs.Task.ConfigureAwait(false);
 	}
 
+	/// <summary>
+	/// Writes MP3 audio.
+	/// </summary>
+	/// <param name="audioBytes">The audio bytes.</param>
+	/// <param name="outputFormat">The output format.</param>
+	/// <param name="outputPath">The output path.</param>
+	/// <param name="metadata">The metadata.</param>
+	/// <param name="cancellationToken">The cancellation token.</param>
+	/// <returns>A task that represents the asynchronous operation.</returns>
+	[ExcludeFromCodeCoverage]
 	public static async Task WriteMp3Async
 	(
 		byte[] audioBytes,
@@ -84,6 +109,16 @@ internal static class AudioOutput
 		await output.WriteAsync(mp3Bytes, cancellationToken).ConfigureAwait(false);
 	}
 
+	/// <summary>
+	/// Writes OGG Opus audio.
+	/// </summary>
+	/// <param name="audioBytes">The audio bytes.</param>
+	/// <param name="outputFormat">The output format.</param>
+	/// <param name="outputPath">The output path.</param>
+	/// <param name="metadata">The metadata.</param>
+	/// <param name="cancellationToken">The cancellation token.</param>
+	/// <returns>A task that represents the asynchronous operation.</returns>
+	[ExcludeFromCodeCoverage]
 	public static async Task WriteOggOpusAsync
 	(
 		byte[] audioBytes,
@@ -116,6 +151,7 @@ internal static class AudioOutput
 	/// Writes MP3 from raw WAV bytes, reading the sample rate from the RIFF header.
 	/// Use this for RVC output where the sample rate may differ from the TTS format.
 	/// </summary>
+	[ExcludeFromCodeCoverage]
 	public static async Task WriteMp3FromWavAsync
 	(
 		byte[] wavBytes,
@@ -144,6 +180,7 @@ internal static class AudioOutput
 	/// <summary>
 	/// Writes OGG Opus from raw WAV bytes, reading the sample rate from the RIFF header.
 	/// </summary>
+	[ExcludeFromCodeCoverage]
 	public static async Task WriteOggOpusFromWavAsync
 	(
 		byte[] wavBytes,
@@ -171,6 +208,11 @@ internal static class AudioOutput
 		).ConfigureAwait(false);
 	}
 
+	/// <summary>
+	/// Reads all bytes from the stream.
+	/// </summary>
+	/// <param name="stream">The stream.</param>
+	/// <returns>The resulting bytes.</returns>
 	public static byte[] ReadAllBytes(PullAudioOutputStream stream)
 	{
 		using var buffer = new MemoryStream();
@@ -188,6 +230,10 @@ internal static class AudioOutput
 		}
 	}
 
+	/// <summary>
+	/// Ensures the output directory exists.
+	/// </summary>
+	/// <param name="path">The path.</param>
 	public static void EnsureDirectoryExists(string path)
 	{
 		var directory = Path.GetDirectoryName(Path.GetFullPath(path));
@@ -197,6 +243,12 @@ internal static class AudioOutput
 		}
 	}
 
+	/// <summary>
+	/// Resolves a WinRT audio device.
+	/// </summary>
+	/// <param name="deviceQuery">The device query.</param>
+	/// <returns>A task that represents the asynchronous operation.</returns>
+	[ExcludeFromCodeCoverage]
 	private static async Task<DeviceInformation> ResolveWinRTDeviceAsync(string deviceQuery)
 	{
 		var selector = MediaDevice.GetAudioRenderSelector();
@@ -237,7 +289,12 @@ internal static class AudioOutput
 		};
 	}
 
-	private static PcmFormatInfo GetFormatInfo(SpeechSynthesisOutputFormat outputFormat)
+	/// <summary>
+	/// Gets the PCM format information.
+	/// </summary>
+	/// <param name="outputFormat">The output format.</param>
+	/// <returns>The PCM format information.</returns>
+	internal static PcmFormatInfo GetFormatInfo(SpeechSynthesisOutputFormat outputFormat)
 	{
 		return outputFormat switch
 		{
@@ -260,7 +317,12 @@ internal static class AudioOutput
 		};
 	}
 
-	private static byte[] StripWaveHeader(byte[] waveBytes)
+	/// <summary>
+	/// Strips the WAV header.
+	/// </summary>
+	/// <param name="waveBytes">The WAV bytes.</param>
+	/// <returns>The resulting bytes.</returns>
+	internal static byte[] StripWaveHeader(byte[] waveBytes)
 	{
 		if (waveBytes.Length < 44)
 		{
@@ -276,8 +338,18 @@ internal static class AudioOutput
 	}
 }
 
+/// <summary>
+/// Represents an audio output device.
+/// </summary>
+/// <param name="Id">The device ID.</param>
+/// <param name="FriendlyName">The friendly name.</param>
 internal readonly record struct AudioDeviceInfo(string Id, string FriendlyName);
 
+/// <summary>
+/// Represents PCM format information.
+/// </summary>
+/// <param name="SampleRate">The sample rate.</param>
+/// <param name="HasRiffHeader">Whether the format includes a RIFF header.</param>
 internal readonly record struct PcmFormatInfo(int SampleRate, bool HasRiffHeader);
 
 /// <summary>
@@ -288,27 +360,76 @@ internal static partial class LameEncoder
 {
 	private const int VBR_OFF = 0;
 
+	/// <summary>
+	/// Initializes the encoder handle.
+	/// </summary>
+	/// <returns>The encoder handle.</returns>
 	[LibraryImport("libmp3lame", EntryPoint = "lame_init")]
 	private static partial nint Init();
 
+	/// <summary>
+	/// Sets the In Samplerate.
+	/// </summary>
+	/// <param name="gfp">The encoder handle.</param>
+	/// <param name="sampleRate">The sample rate.</param>
+	/// <returns>The resulting integer value.</returns>
 	[LibraryImport("libmp3lame", EntryPoint = "lame_set_in_samplerate")]
 	private static partial int SetInSamplerate(nint gfp, int sampleRate);
 
+	/// <summary>
+	/// Sets the Num Channels.
+	/// </summary>
+	/// <param name="gfp">The encoder handle.</param>
+	/// <param name="channels">The channel count.</param>
+	/// <returns>The resulting integer value.</returns>
 	[LibraryImport("libmp3lame", EntryPoint = "lame_set_num_channels")]
 	private static partial int SetNumChannels(nint gfp, int channels);
 
+	/// <summary>
+	/// Sets the Brate.
+	/// </summary>
+	/// <param name="gfp">The encoder handle.</param>
+	/// <param name="bitrate">The bitrate.</param>
+	/// <returns>The resulting integer value.</returns>
 	[LibraryImport("libmp3lame", EntryPoint = "lame_set_brate")]
 	private static partial int SetBrate(nint gfp, int bitrate);
 
+	/// <summary>
+	/// Sets the VBR.
+	/// </summary>
+	/// <param name="gfp">The encoder handle.</param>
+	/// <param name="vbrMode">The VBR mode.</param>
+	/// <returns>The resulting integer value.</returns>
 	[LibraryImport("libmp3lame", EntryPoint = "lame_set_VBR")]
 	private static partial int SetVBR(nint gfp, int vbrMode);
 
+	/// <summary>
+	/// Sets the Quality.
+	/// </summary>
+	/// <param name="gfp">The encoder handle.</param>
+	/// <param name="quality">The quality level.</param>
+	/// <returns>The resulting integer value.</returns>
 	[LibraryImport("libmp3lame", EntryPoint = "lame_set_quality")]
 	private static partial int SetQuality(nint gfp, int quality);
 
+	/// <summary>
+	/// Initializes the Params.
+	/// </summary>
+	/// <param name="gfp">The encoder handle.</param>
+	/// <returns>The resulting integer value.</returns>
 	[LibraryImport("libmp3lame", EntryPoint = "lame_init_params")]
 	private static partial int InitParams(nint gfp);
 
+	/// <summary>
+	/// Encodes the Buffer.
+	/// </summary>
+	/// <param name="gfp">The encoder handle.</param>
+	/// <param name="bufferL">The buffer L.</param>
+	/// <param name="bufferR">The buffer R.</param>
+	/// <param name="nsamples">The n.</param>
+	/// <param name="mp3buf">The MP3 buffer.</param>
+	/// <param name="mp3bufSize">The MP3 buffer size.</param>
+	/// <returns>The resulting integer value.</returns>
 	[LibraryImport("libmp3lame", EntryPoint = "lame_encode_buffer")]
 	private static partial int EncodeBuffer
 	(
@@ -320,12 +441,30 @@ internal static partial class LameEncoder
 		int mp3bufSize
 	);
 
+	/// <summary>
+	/// Encodes the Flush.
+	/// </summary>
+	/// <param name="gfp">The encoder handle.</param>
+	/// <param name="mp3buf">The MP3 buffer.</param>
+	/// <param name="size">The buffer size.</param>
+	/// <returns>The resulting integer value.</returns>
 	[LibraryImport("libmp3lame", EntryPoint = "lame_encode_flush")]
 	private static partial int EncodeFlush(nint gfp, nint mp3buf, int size);
 
+	/// <summary>
+	/// Closes the encoder handle.
+	/// </summary>
+	/// <param name="gfp">The encoder handle.</param>
+	/// <returns>The resulting integer value.</returns>
 	[LibraryImport("libmp3lame", EntryPoint = "lame_close")]
 	private static partial int Close(nint gfp);
 
+	/// <summary>
+	/// Checks the Lame Result.
+	/// </summary>
+	/// <param name="result">The result map.</param>
+	/// <param name="function">The function name.</param>
+	[ExcludeFromCodeCoverage]
 	private static void CheckLameResult(int result, string function)
 	{
 		if (result < 0)
@@ -334,6 +473,13 @@ internal static partial class LameEncoder
 		}
 	}
 
+	/// <summary>
+	/// Encodes PCM audio to MP3.
+	/// </summary>
+	/// <param name="pcmData">The PCM data.</param>
+	/// <param name="sampleRate">The sample rate.</param>
+	/// <param name="channels">The channel count.</param>
+	/// <returns>The resulting bytes.</returns>
 	public static byte[] EncodePcmToMp3(byte[] pcmData, int sampleRate, int channels)
 	{
 		NativeExtractor.EnsureAvailable(DllGroup.Lame);
@@ -396,6 +542,11 @@ internal static partial class LameEncoder
 	}
 }
 
+/// <summary>
+/// Represents audio metadata.
+/// </summary>
+/// <param name="VoiceName">The voice name.</param>
+/// <param name="SpokenText">The spoken text.</param>
 internal sealed record AudioMetadata(string VoiceName, string SpokenText);
 
 /// <summary>
@@ -403,6 +554,14 @@ internal sealed record AudioMetadata(string VoiceName, string SpokenText);
 /// </summary>
 internal static class OggOpusEncoder
 {
+	/// <summary>
+	/// Encodes audio to a file.
+	/// </summary>
+	/// <param name="pcmBytes">The PCM bytes.</param>
+	/// <param name="sampleRate">The sample rate.</param>
+	/// <param name="channels">The channel count.</param>
+	/// <param name="outputPath">The output path.</param>
+	/// <param name="metadata">The metadata.</param>
 	public static void EncodeToFile
 	(
 			byte[] pcmBytes,
@@ -443,6 +602,12 @@ internal static class OggOpusEncoder
 			oggStream.Finish();
 	}
 
+	/// <summary>
+	/// Truncates the value.
+	/// </summary>
+	/// <param name="value">The value.</param>
+	/// <param name="maxLength">The maximum length.</param>
+	/// <returns>The resulting string.</returns>
 	private static string Truncate(string value, int maxLength)
 	{
 			return value.Length <= maxLength ? value : value[..maxLength] + "...";
@@ -454,6 +619,11 @@ internal static class OggOpusEncoder
 /// </summary>
 internal static class Id3Writer
 {
+	/// <summary>
+	/// Creates an ID3 tag.
+	/// </summary>
+	/// <param name="metadata">The metadata.</param>
+	/// <returns>The resulting bytes.</returns>
 	public static byte[] CreateTag(AudioMetadata metadata)
 	{
 			using var ms = new MemoryStream();
@@ -480,6 +650,12 @@ internal static class Id3Writer
 			return ms.ToArray();
 	}
 
+	/// <summary>
+	/// Writes a text frame.
+	/// </summary>
+	/// <param name="writer">The writer.</param>
+	/// <param name="frameId">The frame ID.</param>
+	/// <param name="text">The text.</param>
 	private static void WriteTextFrame(BinaryWriter writer, string frameId, string text)
 	{
 			var textBytes = System.Text.Encoding.UTF8.GetBytes(text);
@@ -493,6 +669,11 @@ internal static class Id3Writer
 			writer.Write(textBytes);
 	}
 
+	/// <summary>
+	/// Writes a sync-safe integer.
+	/// </summary>
+	/// <param name="writer">The writer.</param>
+	/// <param name="value">The value.</param>
 	private static void WriteSyncsafeInt(BinaryWriter writer, int value)
 	{
 			writer.Write((byte)((value >> 21) & 0x7F));
@@ -501,6 +682,11 @@ internal static class Id3Writer
 			writer.Write((byte)(value & 0x7F));
 	}
 
+	/// <summary>
+	/// Writes a big-endian integer.
+	/// </summary>
+	/// <param name="writer">The writer.</param>
+	/// <param name="value">The value.</param>
 	private static void WriteBigEndianInt(BinaryWriter writer, int value)
 	{
 			writer.Write((byte)((value >> 24) & 0xFF));
@@ -509,6 +695,12 @@ internal static class Id3Writer
 			writer.Write((byte)(value & 0xFF));
 	}
 
+	/// <summary>
+	/// Truncates the value.
+	/// </summary>
+	/// <param name="value">The value.</param>
+	/// <param name="maxLength">The maximum length.</param>
+	/// <returns>The resulting string.</returns>
 	private static string Truncate(string value, int maxLength)
 	{
 			return value.Length <= maxLength ? value : value[..maxLength] + "...";

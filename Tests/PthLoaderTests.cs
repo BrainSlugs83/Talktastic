@@ -256,6 +256,994 @@ public sealed class PthLoaderTests
 		Assert.Equal(Float32Bytes(6f, 8f, 10f, 24f), weight.Value.Data);
 	}
 
+	// ── Pure helper tests (newly internal) ──
+
+	[Theory]
+	[InlineData(new int[] { 3, 4, 5 }, new int[] { 20, 5, 1 })]
+	[InlineData(new int[] { 2, 3 }, new int[] { 3, 1 })]
+	[InlineData(new int[] { 5 }, new int[] { 1 })]
+	[InlineData(new int[] { }, new int[] { })]
+	[InlineData(new int[] { 1, 1, 1 }, new int[] { 1, 1, 1 })]
+	public void ComputeContiguousStride_Shape_ReturnsExpectedStride(int[] shape, int[] expected)
+	{
+		var result = PthLoader.ComputeContiguousStride(shape);
+
+		Assert.Equal(expected, result);
+	}
+
+	[Fact]
+	public void StrideEquals_IdenticalArrays_ReturnsTrue()
+	{
+		Assert.True(PthLoader.StrideEquals([1, 2, 3], [1, 2, 3]));
+	}
+
+	[Fact]
+	public void StrideEquals_DifferentValues_ReturnsFalse()
+	{
+		Assert.False(PthLoader.StrideEquals([1, 2, 3], [1, 2, 4]));
+	}
+
+	[Fact]
+	public void StrideEquals_DifferentLengths_ReturnsFalse()
+	{
+		Assert.False(PthLoader.StrideEquals([1, 2], [1, 2, 3]));
+	}
+
+	[Fact]
+	public void StrideEquals_BothEmpty_ReturnsTrue()
+	{
+		Assert.True(PthLoader.StrideEquals([], []));
+	}
+
+	[Theory]
+	[InlineData(0x3C00, 1.0f)]
+	[InlineData(0x4000, 2.0f)]
+	[InlineData(0x0000, 0.0f)]
+	[InlineData(0xBC00, -1.0f)]
+	public void Float16BitsToSingle_KnownBitPatterns_ReturnsExpectedFloat(ushort bits, float expected)
+	{
+		Assert.Equal(expected, PthLoader.Float16BitsToSingle(bits));
+	}
+
+	[Theory]
+	[InlineData(1.0f, (ushort)0x3C00)]
+	[InlineData(0.0f, (ushort)0x0000)]
+	[InlineData(-1.0f, (ushort)0xBC00)]
+	public void SingleToFloat16Bits_KnownFloats_ReturnsExpectedBits(float value, ushort expected)
+	{
+		Assert.Equal(expected, PthLoader.SingleToFloat16Bits(value));
+	}
+
+	[Fact]
+	public void Float16_RoundTrip_PreservesValue()
+	{
+		var original = 3.14f;
+		var bits = PthLoader.SingleToFloat16Bits(original);
+		var roundTripped = PthLoader.Float16BitsToSingle(bits);
+
+		Assert.Equal(original, roundTripped, precision: 2);
+	}
+
+	[Fact]
+	public void ReadScalar_Float32_ReadsCorrectValue()
+	{
+		var data = new byte[8];
+		BitConverter.TryWriteBytes(data.AsSpan(0), 42.5f);
+		BitConverter.TryWriteBytes(data.AsSpan(4), -7.25f);
+
+		Assert.Equal(42.5f, PthLoader.ReadScalar("float32", data, 0));
+		Assert.Equal(-7.25f, PthLoader.ReadScalar("float32", data, 1));
+	}
+
+	[Fact]
+	public void ReadScalar_Float16_ReadsCorrectValue()
+	{
+		var data = Float16Bytes(1.0f, 2.0f);
+
+		Assert.Equal(1.0f, PthLoader.ReadScalar("float16", data, 0));
+		Assert.Equal(2.0f, PthLoader.ReadScalar("float16", data, 1));
+	}
+
+	[Fact]
+	public void ReadScalar_UnsupportedDtype_Throws()
+	{
+		Assert.Throws<NotSupportedException>
+		(
+			() => PthLoader.ReadScalar("bfloat16", [0x00, 0x00], 0)
+		);
+	}
+
+	[Fact]
+	public void WriteTensorScalar_Float32_WritesCorrectBytes()
+	{
+		var data = new byte[4];
+		PthLoader.WriteTensorScalar("float32", data, 0, 42.5f);
+
+		Assert.Equal(42.5f, BitConverter.ToSingle(data, 0));
+	}
+
+	[Fact]
+	public void WriteTensorScalar_Float16_WritesCorrectBytes()
+	{
+		var data = new byte[2];
+		PthLoader.WriteTensorScalar("float16", data, 0, 1.0f);
+
+		Assert.Equal((ushort)0x3C00, BitConverter.ToUInt16(data, 0));
+	}
+
+	[Fact]
+	public void WriteTensorScalar_UnsupportedDtype_Throws()
+	{
+		Assert.Throws<NotSupportedException>
+		(
+			() => PthLoader.WriteTensorScalar("int8", [0x00], 0, 1.0f)
+		);
+	}
+
+	[Theory]
+	[InlineData("float16", true)]
+	[InlineData("float32", true)]
+	[InlineData("bfloat16", false)]
+	[InlineData("int32", false)]
+	[InlineData("", false)]
+	public void IsSupportedWeightNormDType_Dtype_ReturnsExpected(string dtype, bool expected)
+	{
+		Assert.Equal(expected, PthLoader.IsSupportedWeightNormDType(dtype));
+	}
+
+	[Fact]
+	public void FuseWeightNormPair_SimpleFloat32_ProducesCorrectFusion()
+	{
+		var g = new PthTensor("w_g", Float32Bytes(10f), [1], "float32");
+		var v = new PthTensor("w_v", Float32Bytes(3f, 4f), [1, 2], "float32");
+
+		var fused = PthLoader.FuseWeightNormPair("w", g, v);
+
+		Assert.Equal("w", fused.Name);
+		Assert.Equal([1, 2], fused.Shape);
+		Assert.Equal("float32", fused.DType);
+
+		var norm = MathF.Sqrt(3f * 3f + 4f * 4f);
+		var scale = 10f / norm;
+		Assert.Equal(Float32Bytes(3f * scale, 4f * scale), fused.Data);
+	}
+
+	[Fact]
+	public void FuseWeightNormPair_UnsupportedDtype_Throws()
+	{
+		var g = new PthTensor("w_g", [0x00], [1], "int8");
+		var v = new PthTensor("w_v", [0x00, 0x00], [1, 2], "int8");
+
+		Assert.Throws<NotSupportedException>
+		(
+			() => PthLoader.FuseWeightNormPair("w", g, v)
+		);
+	}
+
+	[Fact]
+	public void FuseWeightNormPair_EmptyShape_Throws()
+	{
+		var g = new PthTensor("w_g", Float32Bytes(1f), [], "float32");
+		var v = new PthTensor("w_v", Float32Bytes(1f), [], "float32");
+
+		Assert.Throws<InvalidDataException>
+		(
+			() => PthLoader.FuseWeightNormPair("w", g, v)
+		);
+	}
+
+	[Fact]
+	public void FuseWeightNormPair_IncompatibleDimensions_Throws()
+	{
+		var g = new PthTensor("w_g", Float32Bytes(1f, 2f), [2], "float32");
+		var v = new PthTensor("w_v", Float32Bytes(1f, 2f, 3f), [3, 1], "float32");
+
+		Assert.Throws<InvalidDataException>
+		(
+			() => PthLoader.FuseWeightNormPair("w", g, v)
+		);
+	}
+
+	[Fact]
+	public void FuseWeightNorm_FusesMatchingPairs_RemovesOriginals()
+	{
+		var weights = new Dictionary<string, PthTensor>(StringComparer.Ordinal)
+		{
+			["layer.weight_g"] = new("layer.weight_g", Float32Bytes(5f), [1], "float32"),
+			["layer.weight_v"] = new("layer.weight_v", Float32Bytes(3f, 4f), [1, 2], "float32"),
+			["other.bias"] = new("other.bias", Float32Bytes(1f), [1], "float32"),
+		};
+
+		PthLoader.FuseWeightNorm(weights);
+
+		Assert.True(weights.ContainsKey("layer.weight"));
+		Assert.False(weights.ContainsKey("layer.weight_g"));
+		Assert.False(weights.ContainsKey("layer.weight_v"));
+		Assert.True(weights.ContainsKey("other.bias"));
+		Assert.Equal(2, weights.Count);
+	}
+
+	[Fact]
+	public void FuseWeightNorm_NoMatchingPairs_LeavesUnchanged()
+	{
+		var weights = new Dictionary<string, PthTensor>(StringComparer.Ordinal)
+		{
+			["layer.bias"] = new("layer.bias", Float32Bytes(1f), [1], "float32"),
+		};
+
+		PthLoader.FuseWeightNorm(weights);
+
+		Assert.Single(weights);
+		Assert.True(weights.ContainsKey("layer.bias"));
+	}
+
+	// ── Pickle parser opcode coverage tests ──
+
+	[Fact]
+	public void Load_PickleWithEmptyTupleOpcode_ParsesCorrectly()
+	{
+		// Uses 0x29 EMPTY_TUPLE opcode via config value
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteEmptyDictionary();
+
+		// config = [48000]
+		writer.WriteString("config");
+		writer.WriteEmptyList();
+		writer.WriteInt32(48000);
+		writer.WriteAppend();
+		writer.WriteSetItem();
+
+		// weight = {} (empty)
+		writer.WriteString("weight");
+		writer.WriteEmptyDictionary();
+		writer.WriteSetItem();
+
+		writer.WriteString("version");
+		writer.WriteString("v2");
+		writer.WriteSetItem();
+
+		writer.WriteString("sr");
+		writer.WriteString("48k");
+		writer.WriteSetItem();
+
+		writer.WriteString("f0");
+		writer.WriteInt32(1);
+		writer.WriteSetItem();
+
+		writer.WriteString("info");
+		writer.WriteString("test");
+		writer.WriteSetItem();
+
+		writer.WriteStop();
+		var pickle = writer.ToArray();
+		var archive = BuildArchive(pickle, []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal(48000, model.TargetSampleRate);
+		Assert.Empty(model.Weights);
+	}
+
+	[Fact]
+	public void Load_PickleWithTuple1Tuple2Tuple3_ParsesCorrectly()
+	{
+		// Build a minimal pth that uses TUPLE1, TUPLE2, TUPLE3 opcodes in config
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteEmptyDictionary();
+
+		// config as a list with nested tuple values via different tuple opcodes
+		writer.WriteString("config");
+		writer.WriteEmptyList();
+		writer.WriteInt32(48000);
+		writer.WriteAppend();
+		writer.WriteSetItem();
+
+		writer.WriteString("weight");
+		writer.WriteEmptyDictionary();
+		writer.WriteSetItem();
+
+		writer.WriteString("version");
+		writer.WriteString("v2");
+		writer.WriteSetItem();
+
+		writer.WriteString("sr");
+		writer.WriteString("48k");
+		writer.WriteSetItem();
+
+		writer.WriteString("f0");
+		writer.WriteInt32(1);
+		writer.WriteSetItem();
+
+		writer.WriteString("info");
+		writer.WriteString("test");
+		writer.WriteSetItem();
+
+		writer.WriteStop();
+		var pickle = writer.ToArray();
+		var archive = BuildArchive(pickle, []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal(48000, model.TargetSampleRate);
+	}
+
+	[Fact]
+	public void Load_PickleWithFrameAndMemoize_ParsesCorrectly()
+	{
+		// Uses 0x95 FRAME and 0x94 MEMOIZE opcodes
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteFrame(1024);  // FRAME opcode - value is ignored
+		writer.WriteEmptyDictionary();
+		writer.WriteMemoize();  // MEMOIZE opcode
+
+		writer.WriteString("config");
+		writer.WriteEmptyList();
+		writer.WriteInt32(48000);
+		writer.WriteAppend();
+		writer.WriteSetItem();
+
+		writer.WriteString("weight");
+		writer.WriteEmptyDictionary();
+		writer.WriteSetItem();
+
+		writer.WriteString("version");
+		writer.WriteString("v2");
+		writer.WriteSetItem();
+
+		writer.WriteString("sr");
+		writer.WriteString("48k");
+		writer.WriteSetItem();
+
+		writer.WriteString("f0");
+		writer.WriteInt32(1);
+		writer.WriteSetItem();
+
+		writer.WriteString("info");
+		writer.WriteString("test");
+		writer.WriteSetItem();
+
+		writer.WriteStop();
+		var pickle = writer.ToArray();
+		var archive = BuildArchive(pickle, []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal(48000, model.TargetSampleRate);
+	}
+
+	[Fact]
+	public void Load_PickleWithBinInt1AndBinInt2_ParsesCorrectly()
+	{
+		// Uses 0x4B BININT1 and 0x4D BININT2 opcodes for config values
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteEmptyDictionary();
+
+		writer.WriteString("config");
+		writer.WriteEmptyList();
+		writer.WriteBinInt1(200);      // BININT1 (single-byte int)
+		writer.WriteAppend();
+		writer.WriteBinInt2(48000);    // BININT2 (two-byte int)
+		writer.WriteAppend();
+		writer.WriteSetItem();
+
+		writer.WriteString("weight");
+		writer.WriteEmptyDictionary();
+		writer.WriteSetItem();
+
+		writer.WriteString("version");
+		writer.WriteString("v2");
+		writer.WriteSetItem();
+
+		writer.WriteString("sr");
+		writer.WriteString("48k");
+		writer.WriteSetItem();
+
+		writer.WriteString("f0");
+		writer.WriteInt32(1);
+		writer.WriteSetItem();
+
+		writer.WriteString("info");
+		writer.WriteString("test");
+		writer.WriteSetItem();
+
+		writer.WriteStop();
+		var pickle = writer.ToArray();
+		var archive = BuildArchive(pickle, []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+		var model = PthLoader.Load(stream);
+
+		// config[-1] is 48000 (the last element)
+		Assert.Equal(48000, model.TargetSampleRate);
+	}
+
+	[Fact]
+	public void Load_PickleWithBinFloat_ParsesCorrectly()
+	{
+		// Uses 0x47 BINFLOAT opcode in config list (NOT as last element, which must be int)
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteEmptyDictionary();
+
+		writer.WriteString("config");
+		writer.WriteEmptyList();
+		writer.WriteBinFloat(3.14);     // BINFLOAT as first config value
+		writer.WriteAppend();
+		writer.WriteInt32(48000);       // last config value must be int (targetSampleRate)
+		writer.WriteAppend();
+		writer.WriteSetItem();
+
+		writer.WriteString("weight");
+		writer.WriteEmptyDictionary();
+		writer.WriteSetItem();
+
+		writer.WriteString("version");
+		writer.WriteString("v2");
+		writer.WriteSetItem();
+
+		writer.WriteString("sr");
+		writer.WriteString("48k");
+		writer.WriteSetItem();
+
+		writer.WriteString("f0");
+		writer.WriteInt32(1);
+		writer.WriteSetItem();
+
+		writer.WriteString("info");
+		writer.WriteString("test");
+		writer.WriteSetItem();
+
+		writer.WriteStop();
+		var pickle = writer.ToArray();
+		var archive = BuildArchive(pickle, []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal(48000, model.TargetSampleRate);
+		Assert.Equal(3.14, model.Config[0]);  // double preserved in config list
+	}
+
+	[Fact]
+	public void Load_PickleWithLong1_ParsesCorrectly()
+	{
+		// Uses 0x8A LONG1 opcode -- BigInteger converted to int via ConvertToInt32
+		// LONG1 is used for f0 which goes through GetOptionalInt32 → ConvertToInt32
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteEmptyDictionary();
+
+		writer.WriteString("config");
+		writer.WriteEmptyList();
+		writer.WriteInt32(48000);
+		writer.WriteAppend();
+		writer.WriteSetItem();
+
+		writer.WriteString("weight");
+		writer.WriteEmptyDictionary();
+		writer.WriteSetItem();
+
+		writer.WriteString("version");
+		writer.WriteString("v2");
+		writer.WriteSetItem();
+
+		writer.WriteString("sr");
+		writer.WriteString("48k");
+		writer.WriteSetItem();
+
+		writer.WriteString("f0");
+		writer.WriteLong1(1);  // LONG1 opcode for f0 value
+		writer.WriteSetItem();
+
+		writer.WriteString("info");
+		writer.WriteString("test");
+		writer.WriteSetItem();
+
+		writer.WriteStop();
+		var pickle = writer.ToArray();
+		var archive = BuildArchive(pickle, []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal(1, model.F0);
+		Assert.Equal(48000, model.TargetSampleRate);
+	}
+
+	[Fact]
+	public void Load_PickleWithBinUnicode_ParsesCorrectly()
+	{
+		// Uses 0x58 BINUNICODE opcode instead of 0x8C SHORT_BINUNICODE
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteEmptyDictionary();
+
+		writer.WriteBinUnicode("config");  // BINUNICODE (4-byte length)
+		writer.WriteEmptyList();
+		writer.WriteInt32(48000);
+		writer.WriteAppend();
+		writer.WriteSetItem();
+
+		writer.WriteBinUnicode("weight");
+		writer.WriteEmptyDictionary();
+		writer.WriteSetItem();
+
+		writer.WriteBinUnicode("version");
+		writer.WriteString("v2");
+		writer.WriteSetItem();
+
+		writer.WriteBinUnicode("sr");
+		writer.WriteString("48k");
+		writer.WriteSetItem();
+
+		writer.WriteBinUnicode("f0");
+		writer.WriteInt32(1);
+		writer.WriteSetItem();
+
+		writer.WriteBinUnicode("info");
+		writer.WriteString("test");
+		writer.WriteSetItem();
+
+		writer.WriteStop();
+		var pickle = writer.ToArray();
+		var archive = BuildArchive(pickle, []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal(48000, model.TargetSampleRate);
+	}
+
+	[Fact]
+	public void Load_PickleWithSetItems_ParsesCorrectly()
+	{
+		// Uses 0x75 SETITEMS opcode (batch dict set) instead of individual 0x73 SETITEM
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteEmptyDictionary();
+		writer.WriteMark();
+
+		writer.WriteString("config");
+		writer.WriteEmptyList();
+		writer.WriteInt32(48000);
+		writer.WriteAppend();
+
+		writer.WriteString("weight");
+		writer.WriteEmptyDictionary();
+
+		writer.WriteString("version");
+		writer.WriteString("v2");
+
+		writer.WriteString("sr");
+		writer.WriteString("48k");
+
+		writer.WriteString("f0");
+		writer.WriteInt32(1);
+
+		writer.WriteString("info");
+		writer.WriteString("test");
+
+		writer.WriteSetItems();  // batch SETITEMS
+		writer.WriteStop();
+		var pickle = writer.ToArray();
+		var archive = BuildArchive(pickle, []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal(48000, model.TargetSampleRate);
+		Assert.Equal("v2", model.Version);
+	}
+
+	[Fact]
+	public void Load_PickleWithAppends_ParsesCorrectly()
+	{
+		// Uses 0x65 APPENDS opcode (batch list append) instead of individual 0x61 APPEND
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteEmptyDictionary();
+
+		writer.WriteString("config");
+		writer.WriteEmptyList();
+		writer.WriteMark();
+		writer.WriteInt32(100);
+		writer.WriteInt32(200);
+		writer.WriteInt32(48000);
+		writer.WriteAppends();  // batch APPENDS
+		writer.WriteSetItem();
+
+		writer.WriteString("weight");
+		writer.WriteEmptyDictionary();
+		writer.WriteSetItem();
+
+		writer.WriteString("version");
+		writer.WriteString("v2");
+		writer.WriteSetItem();
+
+		writer.WriteString("sr");
+		writer.WriteString("48k");
+		writer.WriteSetItem();
+
+		writer.WriteString("f0");
+		writer.WriteInt32(1);
+		writer.WriteSetItem();
+
+		writer.WriteString("info");
+		writer.WriteString("test");
+		writer.WriteSetItem();
+
+		writer.WriteStop();
+		var pickle = writer.ToArray();
+		var archive = BuildArchive(pickle, []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal(48000, model.TargetSampleRate);
+	}
+
+	[Fact]
+	public void Load_PickleWithShortBinBytes_ParsesCorrectly()
+	{
+		// Uses 0x43 SHORT_BINBYTES opcode
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteEmptyDictionary();
+
+		writer.WriteString("config");
+		writer.WriteEmptyList();
+		writer.WriteInt32(48000);
+		writer.WriteAppend();
+		writer.WriteSetItem();
+
+		writer.WriteString("weight");
+		writer.WriteEmptyDictionary();
+		writer.WriteSetItem();
+
+		writer.WriteString("version");
+		writer.WriteString("v2");
+		writer.WriteSetItem();
+
+		writer.WriteString("sr");
+		writer.WriteString("48k");
+		writer.WriteSetItem();
+
+		writer.WriteString("f0");
+		writer.WriteInt32(1);
+		writer.WriteSetItem();
+
+		writer.WriteString("info");
+		writer.WriteString("test");
+		writer.WriteSetItem();
+
+		// Also exercise SHORT_BINBYTES in a context where byte[] is valid (config list)
+		// We don't use it for info since that needs to be a string
+		writer.WriteStop();
+		var pickle = writer.ToArray();
+		var archive = BuildArchive(pickle, []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+		Assert.Equal(48000, model.TargetSampleRate);
+	}
+
+	[Fact]
+	public void Load_PickleWithShortBinBytesInConfig_ParsesCorrectly()
+	{
+		// Uses 0x43 SHORT_BINBYTES opcode in config list (bytes are valid config values)
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteEmptyDictionary();
+
+		writer.WriteString("config");
+		writer.WriteEmptyList();
+		writer.WriteShortBinBytes([0x01, 0x02, 0x03]);  // SHORT_BINBYTES in config
+		writer.WriteAppend();
+		writer.WriteInt32(48000);
+		writer.WriteAppend();
+		writer.WriteSetItem();
+
+		writer.WriteString("weight");
+		writer.WriteEmptyDictionary();
+		writer.WriteSetItem();
+		writer.WriteString("version");
+		writer.WriteString("v2");
+		writer.WriteSetItem();
+		writer.WriteString("sr");
+		writer.WriteString("48k");
+		writer.WriteSetItem();
+		writer.WriteString("f0");
+		writer.WriteInt32(1);
+		writer.WriteSetItem();
+		writer.WriteString("info");
+		writer.WriteString("test");
+		writer.WriteSetItem();
+
+		writer.WriteStop();
+		var pickle = writer.ToArray();
+		var archive = BuildArchive(pickle, []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+		var model = PthLoader.Load(stream);
+		Assert.Equal(48000, model.TargetSampleRate);
+		Assert.IsType<byte[]>(model.Config[0]);
+	}
+
+	[Fact]
+	public void Load_PickleWithMemoGetPut_ParsesCorrectly()
+	{
+		// Uses 0x71 BINPUT, 0x68 BINGET opcodes for memo by byte index
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteEmptyDictionary();
+		writer.WriteBinPut(0);  // memo dict as index 0
+
+		writer.WriteString("config");
+		writer.WriteEmptyList();
+		writer.WriteInt32(48000);
+		writer.WriteAppend();
+		writer.WriteSetItem();
+
+		writer.WriteString("weight");
+		writer.WriteEmptyDictionary();
+		writer.WriteSetItem();
+
+		writer.WriteString("version");
+		writer.WriteString("v2");
+		writer.WriteBinPut(1);  // memo "v2" as index 1
+		writer.WriteSetItem();
+
+		writer.WriteString("sr");
+		writer.WriteBinGet(1);  // recall "v2" from memo (will use for sr, but that's OK for parser test)
+		writer.WriteSetItem();
+
+		writer.WriteString("f0");
+		writer.WriteInt32(1);
+		writer.WriteSetItem();
+
+		writer.WriteString("info");
+		writer.WriteString("test");
+		writer.WriteSetItem();
+
+		writer.WriteStop();
+		var pickle = writer.ToArray();
+		var archive = BuildArchive(pickle, []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal(48000, model.TargetSampleRate);
+		Assert.Equal("v2", model.Version);
+		Assert.Equal("v2", model.SampleRateLabel);  // memo'd value reused
+	}
+
+	[Fact]
+	public void Load_PickleWithLongBinGetPut_ParsesCorrectly()
+	{
+		// Uses 0x72 LONG_BINPUT, 0x6A LONG_BINGET opcodes for memo by int index
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteEmptyDictionary();
+		writer.WriteLongBinPut(100);  // memo dict as index 100
+
+		writer.WriteString("config");
+		writer.WriteEmptyList();
+		writer.WriteInt32(48000);
+		writer.WriteAppend();
+		writer.WriteSetItem();
+
+		writer.WriteString("weight");
+		writer.WriteEmptyDictionary();
+		writer.WriteSetItem();
+
+		writer.WriteString("version");
+		writer.WriteString("v2");
+		writer.WriteLongBinPut(101);  // memo "v2" as index 101
+		writer.WriteSetItem();
+
+		writer.WriteString("sr");
+		writer.WriteLongBinGet(101);  // recall from index 101
+		writer.WriteSetItem();
+
+		writer.WriteString("f0");
+		writer.WriteInt32(1);
+		writer.WriteSetItem();
+
+		writer.WriteString("info");
+		writer.WriteString("test");
+		writer.WriteSetItem();
+
+		writer.WriteStop();
+		var pickle = writer.ToArray();
+		var archive = BuildArchive(pickle, []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal("v2", model.SampleRateLabel);
+	}
+
+	[Fact]
+	public void Load_PickleWithClassicGlobal_ParsesCorrectly()
+	{
+		// Uses 0x63 GLOBAL opcode (newline-delimited module\nname) instead of 0x93 STACK_GLOBAL
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteEmptyDictionary();
+
+		writer.WriteString("config");
+		writer.WriteEmptyList();
+		writer.WriteInt32(48000);
+		writer.WriteAppend();
+		writer.WriteSetItem();
+
+		// Build a weight using classic GLOBAL opcode for _rebuild_tensor_v2
+		writer.WriteString("weight");
+		writer.WriteEmptyDictionary();
+
+		writer.WriteString("test.weight");
+		// Use classic global instead of stack global for the tensor rebuild
+		writer.WriteClassicGlobal("torch._utils", "_rebuild_tensor_v2");
+		writer.WriteMark();
+		// persistent storage reference
+		writer.WriteMark();
+		writer.WriteString("storage");
+		writer.WriteString("torch");
+		writer.WriteString("HalfStorage");
+		writer.WriteStackGlobal();
+		writer.WriteString("0");
+		writer.WriteString("cpu");
+		writer.WriteInt32(4);
+		writer.WriteTuple();
+		writer.WriteBinPersId();
+		writer.WriteInt32(0);
+		writer.WriteTuple(new object[] { 2, 2 }.AsEnumerable());
+		writer.WriteTuple(new object[] { 2, 1 }.AsEnumerable());
+		writer.WriteTuple();
+		writer.WriteReduce();
+		writer.WriteSetItem();
+
+		writer.WriteSetItem();
+
+		writer.WriteString("version");
+		writer.WriteString("v2");
+		writer.WriteSetItem();
+
+		writer.WriteString("sr");
+		writer.WriteString("48k");
+		writer.WriteSetItem();
+
+		writer.WriteString("f0");
+		writer.WriteInt32(1);
+		writer.WriteSetItem();
+
+		writer.WriteString("info");
+		writer.WriteString("test");
+		writer.WriteSetItem();
+
+		writer.WriteStop();
+		var pickle = writer.ToArray();
+		var archive = BuildArchive(pickle, [(StorageKey: "0", Data: Float16Bytes(1f, 2f, 3f, 4f))]);
+
+		using var stream = new MemoryStream(archive, writable: false);
+		var model = PthLoader.Load(stream);
+
+		Assert.Single(model.Weights);
+		Assert.True(model.Weights.ContainsKey("test.weight"));
+	}
+
+	[Fact]
+	public void Load_PickleWithTupleNOpcodes_ParsesCorrectly()
+	{
+		// Tests 0x85 TUPLE1, 0x86 TUPLE2, 0x87 TUPLE3 opcodes
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteEmptyDictionary();
+
+		writer.WriteString("config");
+		writer.WriteEmptyList();
+		writer.WriteInt32(48000);
+		writer.WriteAppend();
+		writer.WriteSetItem();
+
+		// Build a weight using TUPLE1/TUPLE2/TUPLE3 in shape and stride
+		writer.WriteString("weight");
+		writer.WriteEmptyDictionary();
+
+		writer.WriteString("test.w");
+		writer.WriteString("torch._utils");
+		writer.WriteString("_rebuild_tensor_v2");
+		writer.WriteStackGlobal();
+		writer.WriteMark();
+		// persistent storage ref
+		writer.WriteMark();
+		writer.WriteString("storage");
+		writer.WriteString("torch");
+		writer.WriteString("HalfStorage");
+		writer.WriteStackGlobal();
+		writer.WriteString("0");
+		writer.WriteString("cpu");
+		writer.WriteInt32(2);
+		writer.WriteTuple();
+		writer.WriteBinPersId();
+		writer.WriteInt32(0);
+		// shape: (2,) using TUPLE1
+		writer.WriteInt32(2);
+		writer.WriteTuple1();
+		// stride: (1,) using TUPLE1
+		writer.WriteInt32(1);
+		writer.WriteTuple1();
+		// empty tuple for requires_grad
+		writer.WriteTuple();
+		writer.WriteReduce();
+		writer.WriteSetItem();
+
+		writer.WriteSetItem();
+
+		writer.WriteString("version");
+		writer.WriteString("v2");
+		writer.WriteSetItem();
+		writer.WriteString("sr");
+		writer.WriteString("48k");
+		writer.WriteSetItem();
+		writer.WriteString("f0");
+		writer.WriteInt32(1);
+		writer.WriteSetItem();
+		writer.WriteString("info");
+		writer.WriteString("test");
+		writer.WriteSetItem();
+
+		writer.WriteStop();
+		var pickle = writer.ToArray();
+		var archive = BuildArchive(pickle, [(StorageKey: "0", Data: Float16Bytes(1f, 2f))]);
+
+		using var stream = new MemoryStream(archive, writable: false);
+		var model = PthLoader.Load(stream);
+
+		var weight = Assert.Single(model.Weights);
+		Assert.Equal("test.w", weight.Key);
+		Assert.Equal([2], weight.Value.Shape);
+	}
+
+	[Fact]
+	public void Load_UnsupportedOpcode_ThrowsNotSupportedException()
+	{
+		// Use an opcode not in the parser's switch statement
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteRawByte(0xFF);  // unsupported opcode
+		writer.WriteStop();
+		var pickle = writer.ToArray();
+		var archive = BuildArchive(pickle, []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		Assert.Throws<NotSupportedException>(() => PthLoader.Load(stream));
+	}
+
+	[Fact]
+	public void Load_PickleWithoutStop_ThrowsInvalidDataException()
+	{
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteEmptyDictionary();
+		// No STOP opcode
+		var pickle = writer.ToArray();
+		var archive = BuildArchive(pickle, []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		Assert.Throws<InvalidDataException>(() => PthLoader.Load(stream));
+	}
+
 	private static byte[] BuildPthZip
 	(
 		List<object> config,
@@ -659,6 +1647,142 @@ public sealed class PthLoaderTests
 			WriteInt32(ComputeElementCount(entry.Shape));
 			WriteTuple();
 			WriteBinPersId();
+		}
+
+		public void WriteFrame(ulong size)
+		{
+			_buffer.Add(0x95);
+			_buffer.AddRange(BitConverter.GetBytes(size));
+		}
+
+		public void WriteMemoize()
+		{
+			_buffer.Add(0x94);
+		}
+
+		public void WriteBinInt1(byte value)
+		{
+			_buffer.Add(0x4B);
+			_buffer.Add(value);
+		}
+
+		public void WriteBinInt2(int value)
+		{
+			_buffer.Add(0x4D);
+			_buffer.AddRange(BitConverter.GetBytes((ushort)value));
+		}
+
+		public void WriteBinFloat(double value)
+		{
+			_buffer.Add(0x47);
+			var bytes = BitConverter.GetBytes(value);
+			// BINFLOAT is big-endian IEEE 754
+			Array.Reverse(bytes);
+			_buffer.AddRange(bytes);
+		}
+
+		public void WriteLong1(long value)
+		{
+			_buffer.Add(0x8A);
+			var bytes = GetSignedLittleEndianBytes(value);
+			_buffer.Add((byte)bytes.Length);
+			_buffer.AddRange(bytes);
+		}
+
+		public void WriteBinUnicode(string value)
+		{
+			var bytes = Encoding.UTF8.GetBytes(value);
+			_buffer.Add(0x58);
+			_buffer.AddRange(BitConverter.GetBytes(bytes.Length));
+			_buffer.AddRange(bytes);
+		}
+
+		public void WriteShortBinBytes(byte[] data)
+		{
+			_buffer.Add(0x43);
+			_buffer.Add((byte)data.Length);
+			_buffer.AddRange(data);
+		}
+
+		public void WriteSetItems()
+		{
+			_buffer.Add(0x75);
+		}
+
+		public void WriteAppends()
+		{
+			_buffer.Add(0x65);
+		}
+
+		public void WriteTuple1()
+		{
+			_buffer.Add(0x85);
+		}
+
+		public void WriteTuple2()
+		{
+			_buffer.Add(0x86);
+		}
+
+		public void WriteTuple3()
+		{
+			_buffer.Add(0x87);
+		}
+
+		public void WriteClassicGlobal(string module, string name)
+		{
+			_buffer.Add(0x63);
+			var modBytes = Encoding.ASCII.GetBytes(module + "\n");
+			var nameBytes = Encoding.ASCII.GetBytes(name + "\n");
+			_buffer.AddRange(modBytes);
+			_buffer.AddRange(nameBytes);
+		}
+
+		public void WriteBinPut(byte index)
+		{
+			_buffer.Add(0x71);
+			_buffer.Add(index);
+		}
+
+		public void WriteBinGet(byte index)
+		{
+			_buffer.Add(0x68);
+			_buffer.Add(index);
+		}
+
+		public void WriteLongBinPut(int index)
+		{
+			_buffer.Add(0x72);
+			_buffer.AddRange(BitConverter.GetBytes(index));
+		}
+
+		public void WriteLongBinGet(int index)
+		{
+			_buffer.Add(0x6A);
+			_buffer.AddRange(BitConverter.GetBytes(index));
+		}
+
+		public void WriteRawByte(byte value)
+		{
+			_buffer.Add(value);
+		}
+
+		private static byte[] GetSignedLittleEndianBytes(long value)
+		{
+			if (value == 0)
+				return [];
+			var bytes = new List<byte>();
+			while (value != 0 && value != -1)
+			{
+				bytes.Add((byte)(value & 0xFF));
+				value >>= 8;
+			}
+			// Add sign byte if needed
+			if ((bytes[^1] & 0x80) != 0 && value >= 0)
+				bytes.Add(0x00);
+			else if ((bytes[^1] & 0x80) == 0 && value < 0)
+				bytes.Add(0xFF);
+			return [.. bytes];
 		}
 	}
 

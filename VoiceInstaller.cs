@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 
 namespace Talktastic;
@@ -7,6 +8,7 @@ namespace Talktastic;
 /// Opens the Windows "Add a voice" dialog via UI Automation COM (raw vtable, AOT-safe).
 /// No [ComImport], no reflection, no managed UIAutomation assemblies -- just raw COM pointers.
 /// </summary>
+[ExcludeFromCodeCoverage]
 static partial class VoiceInstaller
 {
 	// COM CLSIDs / IIDs

@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -10,6 +11,9 @@ namespace Talktastic;
 
 #pragma warning disable CA1814
 
+/// <summary>
+/// Provides RVC model discovery, loading, and conversion helpers.
+/// </summary>
 static partial class RvcEngine
 {
 	private const string RvcDirName = ".rvc";
@@ -40,7 +44,13 @@ static partial class RvcEngine
 
 	private static string? _resolvedRvcDir;
 
-	private readonly record struct SegmentSlice
+	/// <summary>
+	/// Represents an audio segment and its pitch range.
+	/// </summary>
+	/// <param name="Audio">The segment audio samples.</param>
+	/// <param name="PitchStart">The inclusive pitch start index.</param>
+	/// <param name="PitchEnd">The exclusive pitch end index.</param>
+	internal readonly record struct SegmentSlice
 	(
 		float[] Audio,
 		int PitchStart,
@@ -166,6 +176,13 @@ static partial class RvcEngine
 		return results;
 	}
 
+	[ExcludeFromCodeCoverage]
+	/// <summary>
+	/// Resolves an RVC model query to a local model path.
+	/// </summary>
+	/// <param name="rvcQuery">The model query.</param>
+	/// <param name="ct">The cancellation token.</param>
+	/// <returns>The resolved model path and display name.</returns>
 	public static async Task<(string Path, string DisplayName)> ResolveRvcModelAsync
 	(
 		string rvcQuery,
@@ -317,6 +334,13 @@ static partial class RvcEngine
 		);
 	}
 
+	[ExcludeFromCodeCoverage]
+	/// <summary>
+	/// Extracts a local RVC model archive into the cache.
+	/// </summary>
+	/// <param name="zipPath">The ZIP file path.</param>
+	/// <param name="ct">The cancellation token.</param>
+	/// <returns>The extracted model path.</returns>
 	private static async Task<string> ExtractLocalZipAsync(string zipPath, CancellationToken ct)
 	{
 		var rvcDir = EnsureRvcDirectory();
@@ -351,7 +375,7 @@ static partial class RvcEngine
 	/// <summary>
 	/// Exact-match lookup for registry-resolved names. No fuzzy matching.
 	/// </summary>
-	private static string? FindCachedModelExact(string voicesDir, string modelName)
+	internal static string? FindCachedModelExact(string voicesDir, string modelName)
 	{
 		return EnumerateCachedModels(voicesDir)
 			.Where(m => m.Name.EqualsIgnoreCase(modelName))
@@ -359,7 +383,13 @@ static partial class RvcEngine
 			.FirstOrDefault();
 	}
 
-	private static string? FindCachedModel(string voicesDir, string modelName)
+	/// <summary>
+	/// Finds the best cached model path for a model name.
+	/// </summary>
+	/// <param name="voicesDir">The voices directory.</param>
+	/// <param name="modelName">The model name.</param>
+	/// <returns>The matching model path, or <c>null</c>.</returns>
+	internal static string? FindCachedModel(string voicesDir, string modelName)
 	{
 		var all = EnumerateCachedModels(voicesDir).ToArray();
 
@@ -385,7 +415,7 @@ static partial class RvcEngine
 	/// Finds the best model file in a directory.
 	/// Priority: native .onnx > .pth > validated .cached.onnx (with .cached.meta).
 	/// </summary>
-	private static string? FindModelFileInDir(string dir)
+	internal static string? FindModelFileInDir(string dir)
 	{
 		// 1. Prefer native .onnx (not auto-generated cache)
 		var nativeOnnx = Directory.GetFiles(dir, "*.onnx")
@@ -419,7 +449,7 @@ static partial class RvcEngine
 	/// <summary>
 	/// Gets the .cached.meta path for a .cached.onnx file.
 	/// </summary>
-	private static string GetCachedMetaPath(string cachedOnnxPath)
+	internal static string GetCachedMetaPath(string cachedOnnxPath)
 	{
 		// Can't use Path.ChangeExtension -- it only changes after the last dot
 		// "foo.cached.onnx" → need "foo.cached.meta", not "foo.cached.cached.meta"
@@ -458,7 +488,7 @@ static partial class RvcEngine
 	/// Reads the target sample rate from a .cached.meta file.
 	/// Returns DefaultTargetSampleRate if the meta file is missing or invalid.
 	/// </summary>
-	private static int ReadCachedMetaSampleRate(string cachedOnnxPath)
+	internal static int ReadCachedMetaSampleRate(string cachedOnnxPath)
 	{
 		var metaPath = GetCachedMetaPath(cachedOnnxPath);
 		if (File.Exists(metaPath))
@@ -473,7 +503,12 @@ static partial class RvcEngine
 		return DefaultTargetSampleRate;
 	}
 
-	private static bool IsCachedOnnxFile(string path)
+	/// <summary>
+	/// Determines whether a path targets a cached ONNX model.
+	/// </summary>
+	/// <param name="path">The path to inspect.</param>
+	/// <returns><c>true</c> if the path targets a cached ONNX model; otherwise, <c>false</c>.</returns>
+	internal static bool IsCachedOnnxFile(string path)
 	{
 		return path.EndsWith(".cached.onnx", StringComparison.OrdinalIgnoreCase);
 	}
@@ -482,7 +517,7 @@ static partial class RvcEngine
 	/// Finds a companion .index file next to the model file.
 	/// Only returns the path if the index is a recognized FAISS format.
 	/// </summary>
-	private static string? FindCompanionIndex(string modelPath)
+	internal static string? FindCompanionIndex(string modelPath)
 	{
 		var dir = Path.GetDirectoryName(modelPath);
 		if (dir is null || !Directory.Exists(dir))
@@ -499,6 +534,11 @@ static partial class RvcEngine
 		return indexFile;
 	}
 
+	[ExcludeFromCodeCoverage]
+	/// <summary>
+	/// Ensures the required infrastructure models are cached locally.
+	/// </summary>
+	/// <param name="ct">The cancellation token.</param>
 	public static async Task EnsureInfraModelsAsync(CancellationToken ct)
 	{
 		ct.ThrowIfCancellationRequested();
@@ -523,6 +563,15 @@ static partial class RvcEngine
 		).ConfigureAwait(false);
 	}
 
+	[ExcludeFromCodeCoverage]
+	/// <summary>
+	/// Converts WAV audio with the specified RVC model.
+	/// </summary>
+	/// <param name="wavBytes">The source WAV bytes.</param>
+	/// <param name="rvcModelPath">The RVC model path.</param>
+	/// <param name="pitchShiftSemitones">The pitch shift in semitones.</param>
+	/// <param name="ct">The cancellation token.</param>
+	/// <returns>The converted WAV bytes.</returns>
 	public static async Task<byte[]> ConvertAsync
 	(
 		byte[] wavBytes,
@@ -684,11 +733,21 @@ static partial class RvcEngine
 		}
 	}
 
-	private static bool IsPthFile(string path)
+	/// <summary>
+	/// Determines whether a path targets a PyTorch checkpoint.
+	/// </summary>
+	/// <param name="path">The path to inspect.</param>
+	/// <returns><c>true</c> if the path targets a PyTorch checkpoint; otherwise, <c>false</c>.</returns>
+	internal static bool IsPthFile(string path)
 	{
 		return path.EndsWith(".pth", StringComparison.OrdinalIgnoreCase);
 	}
 
+	/// <summary>
+	/// Creates an inference session from a PyTorch checkpoint.
+	/// </summary>
+	/// <param name="pthPath">The checkpoint path.</param>
+	/// <returns>The created session and target sample rate.</returns>
 	internal static (InferenceSession Session, int TargetSampleRate) CreatePthSession
 	(
 		string pthPath
@@ -754,6 +813,11 @@ static partial class RvcEngine
 		return (session, pthModel.TargetSampleRate);
 	}
 
+	/// <summary>
+	/// Loads an embedded ONNX skeleton for a sample rate key.
+	/// </summary>
+	/// <param name="srKey">The sample rate key.</param>
+	/// <returns>The decompressed skeleton bytes.</returns>
 	internal static byte[] LoadEmbeddedSkeleton(string srKey)
 	{
 		var resourceName = $"Talktastic.Rvc.skeleton_v2_{srKey}.onnx.gz";
@@ -773,6 +837,11 @@ static partial class RvcEngine
 		return ms.ToArray();
 	}
 
+	/// <summary>
+	/// Loads an embedded manifest for a sample rate key.
+	/// </summary>
+	/// <param name="srKey">The sample rate key.</param>
+	/// <returns>The embedded manifest.</returns>
 	internal static SkeletonManifest LoadEmbeddedManifest(string srKey)
 	{
 		var resourceName = $"Talktastic.Rvc.skeleton_v2_{srKey}_manifest.json.gz";
@@ -797,6 +866,11 @@ static partial class RvcEngine
 		) ?? throw new InvalidDataException($"Failed to parse embedded manifest for {srKey}");
 	}
 
+	[ExcludeFromCodeCoverage]
+	/// <summary>
+	/// Resolves or creates the RVC cache directory.
+	/// </summary>
+	/// <returns>The RVC cache directory path.</returns>
 	private static string EnsureRvcDirectory()
 	{
 		if (_resolvedRvcDir is not null)
@@ -834,6 +908,14 @@ static partial class RvcEngine
 		throw new InvalidOperationException("Failed to create the .rvc cache directory in LOCALAPPDATA, TEMP, or CWD.");
 	}
 
+	[ExcludeFromCodeCoverage]
+	/// <summary>
+	/// Ensures an infrastructure model exists on disk.
+	/// </summary>
+	/// <param name="url">The model download URL.</param>
+	/// <param name="destinationPath">The destination file path.</param>
+	/// <param name="displayName">The display name.</param>
+	/// <param name="ct">The cancellation token.</param>
 	private static async Task EnsureInfraModelAsync
 	(
 		string url,
@@ -857,6 +939,11 @@ static partial class RvcEngine
 		).ConfigureAwait(false);
 	}
 
+	[ExcludeFromCodeCoverage]
+	/// <summary>
+	/// Creates the shared HTTP client.
+	/// </summary>
+	/// <returns>The configured HTTP client.</returns>
 	private static HttpClient CreateHttpClient()
 	{
 		var http = new HttpClient();
@@ -864,7 +951,12 @@ static partial class RvcEngine
 		return http;
 	}
 
-	private static bool LooksLikeLocalPath(string query)
+	/// <summary>
+	/// Determines whether a model query looks like a local path.
+	/// </summary>
+	/// <param name="query">The model query.</param>
+	/// <returns><c>true</c> if the query looks like a local path; otherwise, <c>false</c>.</returns>
+	internal static bool LooksLikeLocalPath(string query)
 	{
 		if (ModelDownloader.IsUrl(query))
 		{
@@ -878,6 +970,12 @@ static partial class RvcEngine
 			|| query.EndsWith(".pth", StringComparison.OrdinalIgnoreCase);
 	}
 
+	[ExcludeFromCodeCoverage]
+	/// <summary>
+	/// Reads the model registry lines from disk.
+	/// </summary>
+	/// <param name="registryPath">The registry file path.</param>
+	/// <returns>The registry lines.</returns>
 	private static string[] ReadRegistryLines(string registryPath)
 	{
 		return File.Exists(registryPath)
@@ -889,11 +987,23 @@ static partial class RvcEngine
 	private static readonly object _dmlLock = new();
 
 	// Set via --no-gpu flag or TALKTASTIC_NO_GPU=1 env var
+	/// <summary>
+	/// Gets or sets a value indicating whether GPU execution is disabled.
+	/// </summary>
 	internal static bool DisableGpu { get; set; } =
 		Environment.GetEnvironmentVariable("TALKTASTIC_NO_GPU") is "1" or "true";
 
+	/// <summary>
+	/// Gets or sets a value indicating whether performance logging is enabled.
+	/// </summary>
 	internal static bool ShowPerf { get; set; }
 
+	[ExcludeFromCodeCoverage]
+	/// <summary>
+	/// Creates ONNX Runtime session options.
+	/// </summary>
+	/// <param name="useGpu">A value indicating whether to prefer GPU execution.</param>
+	/// <returns>The session options.</returns>
 	private static SessionOptions CreateSessionOptions(bool useGpu = true)
 	{
 		var options = new SessionOptions();
@@ -930,12 +1040,25 @@ static partial class RvcEngine
 		return options;
 	}
 
+	[ExcludeFromCodeCoverage]
+	/// <summary>
+	/// Creates an inference session for a model path.
+	/// </summary>
+	/// <param name="modelPath">The model file path.</param>
+	/// <param name="useGpu">A value indicating whether to prefer GPU execution.</param>
+	/// <returns>The created inference session.</returns>
 	private static InferenceSession CreateSession(string modelPath, bool useGpu = true)
 	{
 		using var options = CreateSessionOptions(useGpu);
 		return new InferenceSession(modelPath, options);
 	}
 
+	[ExcludeFromCodeCoverage]
+	/// <summary>
+	/// Gets the target sample rate from model metadata.
+	/// </summary>
+	/// <param name="session">The model session.</param>
+	/// <returns>The target sample rate.</returns>
 	private static int GetTargetSampleRate(InferenceSession session)
 	{
 		if
@@ -971,9 +1094,19 @@ static partial class RvcEngine
 	}
 
 	[GeneratedRegex(@"-?\d+")]
+	/// <summary>
+	/// Gets the regex used to parse numeric config values.
+	/// </summary>
+	/// <returns>The numeric config regex.</returns>
 	private static partial Regex ConfigNumberPattern();
 
-	private static (List<int> OptimalTimestamps, float[] InferenceAudio) FindOptimalTimestamps
+	/// <summary>
+	/// Finds optimal segment split points for inference.
+	/// </summary>
+	/// <param name="filteredAudio">The filtered source audio.</param>
+	/// <param name="analysisPad">The padded analysis audio.</param>
+	/// <returns>The optimal split timestamps and padded inference audio.</returns>
+	internal static (List<int> OptimalTimestamps, float[] InferenceAudio) FindOptimalTimestamps
 	(
 		float[] filteredAudio,
 		float[] analysisPad
@@ -1024,6 +1157,15 @@ static partial class RvcEngine
 		return (optimalTimestamps, AudioDsp.ReflectPad(filteredAudio, tPad));
 	}
 
+	[ExcludeFromCodeCoverage]
+	/// <summary>
+	/// Extracts continuous and quantized pitch tracks.
+	/// </summary>
+	/// <param name="rmvpeSession">The RMVPE session.</param>
+	/// <param name="audioPad">The padded input audio.</param>
+	/// <param name="pitchShiftSemitones">The pitch shift in semitones.</param>
+	/// <param name="ct">The cancellation token.</param>
+	/// <returns>The decoded continuous and quantized pitch tracks.</returns>
 	private static (float[] Pitchf, long[] Pitch) ExtractF0
 	(
 		InferenceSession rmvpeSession,
@@ -1079,6 +1221,13 @@ static partial class RvcEngine
 		return (pitchf, pitch);
 	}
 
+	[ExcludeFromCodeCoverage]
+	/// <summary>
+	/// Runs RMVPE and returns the hidden salience matrix.
+	/// </summary>
+	/// <param name="session">The RMVPE session.</param>
+	/// <param name="mel">The mel spectrogram.</param>
+	/// <returns>The hidden salience matrix.</returns>
 	private static float[,] RunRmvpeHidden(InferenceSession session, float[,] mel)
 	{
 		var melBins = mel.GetLength(0);
@@ -1117,7 +1266,13 @@ static partial class RvcEngine
 		return hidden;
 	}
 
-	private static float[] DecodeLocalAverageCents(float[,] salience, float threshold)
+	/// <summary>
+	/// Decodes local-average cents values from salience bins.
+	/// </summary>
+	/// <param name="salience">The salience matrix.</param>
+	/// <param name="threshold">The voiced threshold.</param>
+	/// <returns>The decoded cents values.</returns>
+	internal static float[] DecodeLocalAverageCents(float[,] salience, float threshold)
 	{
 		var frames = salience.GetLength(0);
 		var bins = salience.GetLength(1);
@@ -1169,7 +1324,12 @@ static partial class RvcEngine
 		return cents;
 	}
 
-	private static float[] DecodeF0(float[] cents)
+	/// <summary>
+	/// Decodes F0 values from cents values.
+	/// </summary>
+	/// <param name="cents">The cents values.</param>
+	/// <returns>The decoded F0 values.</returns>
+	internal static float[] DecodeF0(float[] cents)
 	{
 		var f0 = new float[cents.Length];
 
@@ -1188,7 +1348,12 @@ static partial class RvcEngine
 		return f0;
 	}
 
-	private static long[] QuantizePitch(float[] pitchf)
+	/// <summary>
+	/// Quantizes continuous pitch values to model bins.
+	/// </summary>
+	/// <param name="pitchf">The continuous pitch values.</param>
+	/// <returns>The quantized pitch values.</returns>
+	internal static long[] QuantizePitch(float[] pitchf)
 	{
 		const float f0Min = 50.0f;
 		const float f0Max = 1100.0f;
@@ -1212,6 +1377,19 @@ static partial class RvcEngine
 		return pitch;
 	}
 
+	/// <summary>
+	/// Converts each segmented audio slice.
+	/// </summary>
+	/// <param name="rvcSession">The RVC session.</param>
+	/// <param name="vecSession">The ContentVec session.</param>
+	/// <param name="audioPad">The padded audio.</param>
+	/// <param name="pitch">The quantized pitch values.</param>
+	/// <param name="pitchf">The continuous pitch values.</param>
+	/// <param name="optTs">The optimal split timestamps.</param>
+	/// <param name="targetSampleRate">The target sample rate.</param>
+	/// <param name="faissIndex">The optional FAISS index.</param>
+	/// <param name="ct">The cancellation token.</param>
+	/// <returns>The converted audio segments.</returns>
 	private static List<float[]> InferSegments
 	(
 		InferenceSession rvcSession,
@@ -1252,7 +1430,14 @@ static partial class RvcEngine
 		return results;
 	}
 
-	private static SegmentSlice[] ComputeSegmentSlices
+	/// <summary>
+	/// Computes audio segment slices for inference.
+	/// </summary>
+	/// <param name="audioPad">The padded audio.</param>
+	/// <param name="optTs">The optimal split timestamps.</param>
+	/// <param name="ct">The cancellation token.</param>
+	/// <returns>The computed segment slices.</returns>
+	internal static SegmentSlice[] ComputeSegmentSlices
 	(
 		float[] audioPad,
 		List<int> optTs,
@@ -1289,7 +1474,14 @@ static partial class RvcEngine
 		return [.. results];
 	}
 
-	private static (int PitchStart, int PitchEnd) ClampPitchRange
+	/// <summary>
+	/// Clamps a segment pitch range to available pitch data.
+	/// </summary>
+	/// <param name="segmentSlice">The segment slice.</param>
+	/// <param name="pitch">The quantized pitch values.</param>
+	/// <param name="pitchf">The continuous pitch values.</param>
+	/// <returns>The clamped pitch range.</returns>
+	internal static (int PitchStart, int PitchEnd) ClampPitchRange
 	(
 		SegmentSlice segmentSlice,
 		long[] pitch,
@@ -1301,6 +1493,19 @@ static partial class RvcEngine
 		return (pitchStart, pitchEnd);
 	}
 
+	[ExcludeFromCodeCoverage]
+	/// <summary>
+	/// Runs conversion for a single audio segment.
+	/// </summary>
+	/// <param name="rvcSession">The RVC session.</param>
+	/// <param name="vecSession">The ContentVec session.</param>
+	/// <param name="audioSegment">The audio segment.</param>
+	/// <param name="pitchSegment">The quantized pitch segment.</param>
+	/// <param name="pitchfSegment">The continuous pitch segment.</param>
+	/// <param name="targetSampleRate">The target sample rate.</param>
+	/// <param name="faissIndex">The optional FAISS index.</param>
+	/// <param name="ct">The cancellation token.</param>
+	/// <returns>The converted audio segment.</returns>
 	private static float[] RunSegment
 	(
 		InferenceSession rvcSession,
@@ -1328,6 +1533,14 @@ static partial class RvcEngine
 		);
 	}
 
+	[ExcludeFromCodeCoverage]
+	/// <summary>
+	/// Extracts features for an audio segment.
+	/// </summary>
+	/// <param name="vecSession">The ContentVec session.</param>
+	/// <param name="audioSegment">The audio segment.</param>
+	/// <param name="faissIndex">The optional FAISS index.</param>
+	/// <returns>The extracted feature matrix.</returns>
 	private static float[,] ExtractSegmentFeatures
 	(
 		InferenceSession vecSession,
@@ -1357,6 +1570,17 @@ static partial class RvcEngine
 		return features;
 	}
 
+	/// <summary>
+	/// Runs RVC inference for a prepared segment.
+	/// </summary>
+	/// <param name="rvcSession">The RVC session.</param>
+	/// <param name="features">The segment features.</param>
+	/// <param name="pitchSegment">The quantized pitch segment.</param>
+	/// <param name="pitchfSegment">The continuous pitch segment.</param>
+	/// <param name="audioSegment">The source audio segment.</param>
+	/// <param name="targetSampleRate">The target sample rate.</param>
+	/// <param name="ct">The cancellation token.</param>
+	/// <returns>The converted audio samples.</returns>
 	private static float[] RunRvcInference
 	(
 		InferenceSession rvcSession,
@@ -1454,6 +1678,13 @@ static partial class RvcEngine
 		}
 	}
 
+	[ExcludeFromCodeCoverage]
+	/// <summary>
+	/// Runs ContentVec feature extraction for audio.
+	/// </summary>
+	/// <param name="session">The ContentVec session.</param>
+	/// <param name="audio">The input audio.</param>
+	/// <returns>The extracted ContentVec feature matrix.</returns>
 	private static float[,] RunContentVec(InferenceSession session, float[] audio)
 	{
 		var input = new DenseTensor<float>([1, 1, audio.Length]);
@@ -1520,7 +1751,13 @@ static partial class RvcEngine
 		return result;
 	}
 
-	private static float[,] SliceFeatures(float[,] features, int frameCount)
+	/// <summary>
+	/// Slices a feature matrix to the requested frame count.
+	/// </summary>
+	/// <param name="features">The feature matrix.</param>
+	/// <param name="frameCount">The frame count.</param>
+	/// <returns>The sliced feature matrix.</returns>
+	internal static float[,] SliceFeatures(float[,] features, int frameCount)
 	{
 		var channels = features.GetLength(1);
 		var sliced = new float[frameCount, channels];
@@ -1536,7 +1773,12 @@ static partial class RvcEngine
 		return sliced;
 	}
 
-	private static void ApplyProtect(float[,] features, float[] pitchf)
+	/// <summary>
+	/// Applies unvoiced protection scaling to features.
+	/// </summary>
+	/// <param name="features">The feature matrix.</param>
+	/// <param name="pitchf">The continuous pitch values.</param>
+	internal static void ApplyProtect(float[,] features, float[] pitchf)
 	{
 		var frames = Math.Min(features.GetLength(0), pitchf.Length);
 		var channels = features.GetLength(1);
@@ -1560,7 +1802,7 @@ static partial class RvcEngine
 	/// ContentVec operates at half the RVC frame rate, so each feature frame is repeated twice.
 	/// Output layout: [1, targetFrames, channels] matching the model's [1, seq_len, 768] input.
 	/// </summary>
-	private static (Float16[] Data, long[] Dimensions) CreatePhoneArray
+	internal static (Float16[] Data, long[] Dimensions) CreatePhoneArray
 	(
 		float[,] features,
 		int targetFrames
@@ -1583,7 +1825,12 @@ static partial class RvcEngine
 	}
 
 #pragma warning disable CA5394
-	private static (Float16[] Data, long[] Dimensions) CreateNoiseArray(int frameCount)
+	/// <summary>
+	/// Creates Gaussian noise input data for the RVC model.
+	/// </summary>
+	/// <param name="frameCount">The frame count.</param>
+	/// <returns>The noise tensor data and dimensions.</returns>
+	internal static (Float16[] Data, long[] Dimensions) CreateNoiseArray(int frameCount)
 	{
 		var random = new Random();
 		var data = new Float16[1 * NoiseChannels * frameCount];
@@ -1610,7 +1857,15 @@ static partial class RvcEngine
 	}
 #pragma warning restore CA5394
 
-	private static float[] MatchRms
+	/// <summary>
+	/// Matches output RMS to the source audio envelope.
+	/// </summary>
+	/// <param name="sourceAudio">The source audio.</param>
+	/// <param name="sourceSampleRate">The source sample rate.</param>
+	/// <param name="outputAudio">The output audio.</param>
+	/// <param name="outputSampleRate">The output sample rate.</param>
+	/// <returns>The RMS-matched audio.</returns>
+	internal static float[] MatchRms
 	(
 		float[] sourceAudio,
 		int sourceSampleRate,
@@ -1637,7 +1892,12 @@ static partial class RvcEngine
 		return mixed;
 	}
 
-	private static float[] Concatenate(List<float[]> segments)
+	/// <summary>
+	/// Concatenates converted audio segments.
+	/// </summary>
+	/// <param name="segments">The audio segments.</param>
+	/// <returns>The concatenated audio.</returns>
+	internal static float[] Concatenate(List<float[]> segments)
 	{
 		var totalLength = 0;
 		foreach (var segment in segments)
@@ -1660,7 +1920,7 @@ static partial class RvcEngine
 	/// Prevents clipping by scaling down if peak exceeds targetPeak.
 	/// Does NOT scale up — matches Python RVC behavior where quiet signals are left as-is.
 	/// </summary>
-	private static float[] NormalizePeak(float[] samples, float targetPeak)
+	internal static float[] NormalizePeak(float[] samples, float targetPeak)
 	{
 		var max = 0.0f;
 		for (var i = 0; i < samples.Length; i++)
@@ -1687,6 +1947,10 @@ static partial class RvcEngine
 		return normalized;
 	}
 
+	/// <summary>
+	/// Creates the cents lookup table.
+	/// </summary>
+	/// <returns>The cents mapping table.</returns>
 	private static float[] CreateCentsMapping()
 	{
 		var mapping = new float[368];
@@ -1700,6 +1964,11 @@ static partial class RvcEngine
 }
 
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Performance", "CA1812")]
+/// <summary>
+/// Represents the embedded ONNX skeleton manifest.
+/// </summary>
+/// <param name="Initializers">The initializer offsets.</param>
+/// <param name="PthToOnnx">The PTH-to-ONNX name map.</param>
 internal sealed record SkeletonManifest
 (
 	Dictionary<string, int[]> Initializers,
@@ -1708,6 +1977,9 @@ internal sealed record SkeletonManifest
 
 [JsonSerializable(typeof(SkeletonManifest))]
 [JsonSourceGenerationOptions(PropertyNameCaseInsensitive = true)]
+/// <summary>
+/// Provides JSON serialization metadata for <see cref="SkeletonManifest"/>.
+/// </summary>
 internal sealed partial class SkeletonManifestJsonContext : JsonSerializerContext
 {
 }

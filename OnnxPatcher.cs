@@ -109,6 +109,12 @@ internal static class OnnxPatcher
 		);
 	}
 
+	/// <summary>
+	/// Transposes the And Copy.
+	/// </summary>
+	/// <param name="tensor">The tensor.</param>
+	/// <param name="dest">The destination buffer.</param>
+	/// <param name="destOffset">The destination offset.</param>
 	private static void TransposeAndCopy(PthTensor tensor, byte[] dest, int destOffset)
 	{
 		// Transpose a 2D float16 tensor in-place during copy
@@ -128,6 +134,13 @@ internal static class OnnxPatcher
 		}
 	}
 
+	/// <summary>
+	/// Parses the Graph.
+	/// </summary>
+	/// <param name="data">The data.</param>
+	/// <param name="start">The start offset.</param>
+	/// <param name="end">The end offset.</param>
+	/// <param name="result">The result map.</param>
 	private static void ParseGraph
 	(
 		byte[] data,
@@ -157,6 +170,13 @@ internal static class OnnxPatcher
 		}
 	}
 
+	/// <summary>
+	/// Parses the Tensor Proto.
+	/// </summary>
+	/// <param name="data">The data.</param>
+	/// <param name="start">The start offset.</param>
+	/// <param name="end">The end offset.</param>
+	/// <param name="result">The result map.</param>
 	private static void ParseTensorProto
 	(
 		byte[] data,
@@ -201,11 +221,23 @@ internal static class OnnxPatcher
 		}
 	}
 
+	/// <summary>
+	/// Reads the Tag.
+	/// </summary>
+	/// <param name="data">The data.</param>
+	/// <param name="pos">The current position.</param>
+	/// <returns>The resulting integer value.</returns>
 	private static int ReadTag(byte[] data, ref int pos)
 	{
 		return (int)ReadVarint(data, ref pos);
 	}
 
+	/// <summary>
+	/// Reads the Varint.
+	/// </summary>
+	/// <param name="data">The data.</param>
+	/// <param name="pos">The current position.</param>
+	/// <returns>The resulting integer value.</returns>
 	private static long ReadVarint(byte[] data, ref int pos)
 	{
 		long result = 0;
@@ -224,6 +256,12 @@ internal static class OnnxPatcher
 		throw new InvalidDataException("Unexpected end of varint");
 	}
 
+	/// <summary>
+	/// Skips the Field.
+	/// </summary>
+	/// <param name="data">The data.</param>
+	/// <param name="pos">The current position.</param>
+	/// <param name="wireType">The wire type.</param>
 	private static void SkipField(byte[] data, ref int pos, int wireType)
 	{
 		switch (wireType)

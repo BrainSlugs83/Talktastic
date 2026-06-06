@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Security;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
@@ -7,8 +8,20 @@ using Microsoft.CognitiveServices.Speech.Audio;
 
 namespace Talktastic;
 
+/// <summary>
+/// Provides speech synthesis operations.
+/// </summary>
 internal static partial class SpeechEngine
 {
+	/// <summary>
+	/// Synthesizes speech from a request.
+	/// </summary>
+	/// <param name="request">The synthesis request.</param>
+	/// <param name="voice">The voice.</param>
+	/// <param name="rvc">The RVC model.</param>
+	/// <param name="cancellationToken">The cancellation token.</param>
+	/// <returns>A task that represents the asynchronous operation.</returns>
+	[ExcludeFromCodeCoverage]
 	public static async Task<string> SynthesizeAsync
 	(
 		SynthesisRequest request,
@@ -26,6 +39,12 @@ internal static partial class SpeechEngine
 		};
 	}
 
+	/// <summary>
+	/// Resolves the synthesis route.
+	/// </summary>
+	/// <param name="voice">The voice.</param>
+	/// <param name="useRvc">Whether to use RVC.</param>
+	/// <returns>The resolved route.</returns>
 	internal static SynthesisRoute ResolveSynthesisRoute(InstalledVoice voice, bool useRvc)
 	{
 		if (useRvc)
@@ -45,6 +64,7 @@ internal static partial class SpeechEngine
 	/// Synthesizes text with any TTS engine, then applies RVC voice conversion.
 	/// All engines produce WAV bytes first, then RVC converts, then output to file/device.
 	/// </summary>
+	[ExcludeFromCodeCoverage]
 	private static async Task<string> SynthesizeWithRvcAsync
 	(
 		SynthesisRequest request,
@@ -120,6 +140,7 @@ internal static partial class SpeechEngine
 	/// <summary>
 	/// Synthesizes text using a legacy (SAPI/WinRT) voice and returns raw WAV bytes.
 	/// </summary>
+	[ExcludeFromCodeCoverage]
 	private static async Task<byte[]> SynthesizeLegacyToWavAsync(SynthesisRequest request, InstalledVoice voice)
 	{
 		using var synth = new Windows.Media.SpeechSynthesis.SpeechSynthesizer();
@@ -154,6 +175,7 @@ internal static partial class SpeechEngine
 	/// <summary>
 	/// Synthesizes text using a neural (embedded) voice and returns raw WAV bytes.
 	/// </summary>
+	[ExcludeFromCodeCoverage]
 	private static async Task<byte[]> SynthesizeNeuralToWavAsync
 	(
 		SynthesisRequest request,
@@ -180,6 +202,13 @@ internal static partial class SpeechEngine
 		return result.AudioData;
 	}
 
+	/// <summary>
+	/// Synthesizes the Legacy.
+	/// </summary>
+	/// <param name="request">The synthesis request.</param>
+	/// <param name="voice">The voice.</param>
+	/// <returns>A task that represents the asynchronous operation.</returns>
+	[ExcludeFromCodeCoverage]
 	private static async Task<string> SynthesizeLegacyAsync(SynthesisRequest request, InstalledVoice voice)
 	{
 		using var synth = new Windows.Media.SpeechSynthesis.SpeechSynthesizer();
@@ -252,6 +281,14 @@ internal static partial class SpeechEngine
 		throw new InvalidOperationException($"Unsupported output file extension for '{request.OutputPath}'. Use .wav, .mp3, or .ogg.");
 	}
 
+	/// <summary>
+	/// Synthesizes the Piper.
+	/// </summary>
+	/// <param name="request">The synthesis request.</param>
+	/// <param name="voice">The voice.</param>
+	/// <param name="cancellationToken">The cancellation token.</param>
+	/// <returns>A task that represents the asynchronous operation.</returns>
+	[ExcludeFromCodeCoverage]
 	private static async Task<string> SynthesizePiperAsync
 	(
 		SynthesisRequest request,
@@ -320,6 +357,7 @@ internal static partial class SpeechEngine
 	/// <summary>
 	/// Synthesizes text using a neural (embedded) voice with direct output routing.
 	/// </summary>
+	[ExcludeFromCodeCoverage]
 	private static async Task<string> SynthesizeNeuralAsync(SynthesisRequest request, InstalledVoice voice)
 	{
 		var license = LicenseProvider.GetLicenseText();
@@ -342,9 +380,19 @@ internal static partial class SpeechEngine
 		return StripTagsRegex().Replace(ssml, "").Trim();
 	}
 
+	/// <summary>
+	/// Creates the tag-stripping regex.
+	/// </summary>
+	/// <returns>The generated regex.</returns>
 	[GeneratedRegex(@"<[^>]+>")]
 	private static partial Regex StripTagsRegex();
 
+	/// <summary>
+	/// Reads the Stream.
+	/// </summary>
+	/// <param name="stream">The stream.</param>
+	/// <returns>A task that represents the asynchronous operation.</returns>
+	[ExcludeFromCodeCoverage]
 	private static async Task<byte[]> ReadStreamAsync(Windows.Media.SpeechSynthesis.SpeechSynthesisStream stream)
 	{
 		using var ms = new MemoryStream();
@@ -353,6 +401,14 @@ internal static partial class SpeechEngine
 		return ms.ToArray();
 	}
 
+	/// <summary>
+	/// Speaks the To Device.
+	/// </summary>
+	/// <param name="request">The synthesis request.</param>
+	/// <param name="voice">The voice.</param>
+	/// <param name="license">The license text.</param>
+	/// <returns>A task that represents the asynchronous operation.</returns>
+	[ExcludeFromCodeCoverage]
 	private static async Task<string> SpeakToDeviceAsync
 	(
 		SynthesisRequest request,
@@ -374,6 +430,14 @@ internal static partial class SpeechEngine
 		return $"Spoke {result.AudioData.Length} bytes with {voice.Name}.";
 	}
 
+	/// <summary>
+	/// Speaks the To Specific Device.
+	/// </summary>
+	/// <param name="request">The synthesis request.</param>
+	/// <param name="voice">The voice.</param>
+	/// <param name="license">The license text.</param>
+	/// <returns>A task that represents the asynchronous operation.</returns>
+	[ExcludeFromCodeCoverage]
 	private static async Task<string> SpeakToSpecificDeviceAsync
 	(
 		SynthesisRequest request,
@@ -393,6 +457,15 @@ internal static partial class SpeechEngine
 		return $"Spoke {result.AudioData.Length} bytes with {voice.Name}.";
 	}
 
+	/// <summary>
+	/// Writes the Wave.
+	/// </summary>
+	/// <param name="outputPath">The output path.</param>
+	/// <param name="request">The synthesis request.</param>
+	/// <param name="voice">The voice.</param>
+	/// <param name="license">The license text.</param>
+	/// <returns>A task that represents the asynchronous operation.</returns>
+	[ExcludeFromCodeCoverage]
 	private static async Task<string> WriteWaveAsync
 	(
 		string outputPath,
@@ -412,6 +485,15 @@ internal static partial class SpeechEngine
 		return $"Wrote WAV file '{outputPath}' with {voice.Name}.";
 	}
 
+	/// <summary>
+	/// Writes MP3 audio.
+	/// </summary>
+	/// <param name="outputPath">The output path.</param>
+	/// <param name="request">The synthesis request.</param>
+	/// <param name="voice">The voice.</param>
+	/// <param name="license">The license text.</param>
+	/// <returns>A task that represents the asynchronous operation.</returns>
+	[ExcludeFromCodeCoverage]
 	private static async Task<string> WriteMp3Async
 	(
 		string outputPath,
@@ -433,6 +515,15 @@ internal static partial class SpeechEngine
 		return $"Wrote MP3 file '{outputPath}' with {voice.Name}.";
 	}
 
+	/// <summary>
+	/// Writes the OGG.
+	/// </summary>
+	/// <param name="outputPath">The output path.</param>
+	/// <param name="request">The synthesis request.</param>
+	/// <param name="voice">The voice.</param>
+	/// <param name="license">The license text.</param>
+	/// <returns>A task that represents the asynchronous operation.</returns>
+	[ExcludeFromCodeCoverage]
 	private static async Task<string> WriteOggAsync
 	(
 		string outputPath,
@@ -454,6 +545,13 @@ internal static partial class SpeechEngine
 		return $"Wrote OGG file '{outputPath}' with {voice.Name}.";
 	}
 
+	/// <summary>
+	/// Creates the embedded speech configuration.
+	/// </summary>
+	/// <param name="request">The synthesis request.</param>
+	/// <param name="voice">The voice.</param>
+	/// <param name="license">The license text.</param>
+	/// <returns>The embedded speech configuration.</returns>
 	private static EmbeddedSpeechConfig CreateConfig
 	(
 		SynthesisRequest request,
@@ -467,6 +565,14 @@ internal static partial class SpeechEngine
 		return config;
 	}
 
+	/// <summary>
+	/// Speaks the request.
+	/// </summary>
+	/// <param name="synthesizer">The synthesizer.</param>
+	/// <param name="request">The synthesis request.</param>
+	/// <param name="voice">The voice.</param>
+	/// <returns>A task that represents the asynchronous operation.</returns>
+	[ExcludeFromCodeCoverage]
 	private static async Task<SpeechSynthesisResult> SpeakAsync
 	(
 		SpeechSynthesizer synthesizer,
@@ -490,6 +596,11 @@ internal static partial class SpeechEngine
 		return await synthesizer.SpeakSsmlAsync(ssmlText).ConfigureAwait(false);
 	}
 
+	/// <summary>
+	/// Ensures the synthesis result succeeded.
+	/// </summary>
+	/// <param name="result">The result map.</param>
+	[ExcludeFromCodeCoverage]
 	private static void EnsureSuccess(SpeechSynthesisResult result)
 	{
 		if (result.Reason == ResultReason.SynthesizingAudioCompleted)
@@ -509,6 +620,14 @@ internal static partial class SpeechEngine
 		throw new InvalidOperationException($"Speech synthesis failed: {result.Reason}.");
 	}
 
+	/// <summary>
+	/// Builds SSML.
+	/// </summary>
+	/// <param name="text">The text.</param>
+	/// <param name="voice">The voice.</param>
+	/// <param name="rate">The rate.</param>
+	/// <param name="pitch">The pitch.</param>
+	/// <returns>The resulting string.</returns>
 	private static string BuildSsml(string text, InstalledVoice voice, string? rate, string? pitch)
 	{
 		var escapedText = SecurityElement.Escape(text) ?? string.Empty;
@@ -540,6 +659,12 @@ internal static partial class SpeechEngine
 			""";
 	}
 
+	/// <summary>
+	/// Builds the prosody attributes.
+	/// </summary>
+	/// <param name="rate">The rate.</param>
+	/// <param name="pitch">The pitch.</param>
+	/// <returns>The resulting string.</returns>
 	private static string BuildProsodyAttributes(string? rate, string? pitch)
 	{
 		var attrs = "";
@@ -550,6 +675,11 @@ internal static partial class SpeechEngine
 		return attrs;
 	}
 
+	/// <summary>
+	/// Normalizes the rate.
+	/// </summary>
+	/// <param name="rate">The rate.</param>
+	/// <returns>The resulting string.</returns>
 	private static string NormalizeRate(string? rate)
 	{
 		if (string.IsNullOrWhiteSpace(rate))
@@ -705,6 +835,12 @@ internal static partial class SpeechEngine
 		BitConverter.TryWriteBytes(wav.AsSpan(28), newByteRate);
 	}
 
+	/// <summary>
+	/// Determines whether the path has the specified extension.
+	/// </summary>
+	/// <param name="path">The path.</param>
+	/// <param name="extension">The extension.</param>
+	/// <returns><c>true</c> if the condition is met; otherwise, <c>false</c>.</returns>
 	internal static bool HasExtension(string path, string extension)
 	{
 		return string.Equals(Path.GetExtension(path), extension, StringComparison.OrdinalIgnoreCase);
@@ -726,6 +862,19 @@ internal static partial class SpeechEngine
 	}
 }
 
+/// <summary>
+/// Represents a synthesis request.
+/// </summary>
+/// <param name="Text">The text.</param>
+/// <param name="VoiceQuery">The voice query.</param>
+/// <param name="OutputPath">The output path.</param>
+/// <param name="DeviceQuery">The device query.</param>
+/// <param name="Rate">The rate.</param>
+/// <param name="Pitch">The pitch.</param>
+/// <param name="RvcModel">The RVC model.</param>
+/// <param name="RvcPitchShift">The RVC pitch shift.</param>
+/// <param name="OutputFormat">The output format.</param>
+/// <param name="TreatInputAsSsml">Whether to treat the input as SSML.</param>
 internal sealed record SynthesisRequest
 (
 	string Text,
@@ -740,6 +889,9 @@ internal sealed record SynthesisRequest
 	bool TreatInputAsSsml
 );
 
+/// <summary>
+/// Defines synthesis route values.
+/// </summary>
 internal enum SynthesisRoute
 {
 	Neural,

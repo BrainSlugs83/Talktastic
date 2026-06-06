@@ -36,7 +36,7 @@ public sealed class AudioOutputTests : IDisposable
 		bool expectedHasRiffHeader
 	)
 	{
-		var result = InvokePrivateStatic<PcmFormatInfo>(typeof(AudioOutput), "GetFormatInfo", outputFormat);
+		var result = AudioOutput.GetFormatInfo(outputFormat);
 
 		Assert.Equal(expectedSampleRate, result.SampleRate);
 		Assert.Equal(expectedHasRiffHeader, result.HasRiffHeader);
@@ -47,7 +47,7 @@ public sealed class AudioOutputTests : IDisposable
 	{
 		var exception = Assert.Throws<InvalidOperationException>
 		(
-			() => InvokePrivateStatic<PcmFormatInfo>(typeof(AudioOutput), "GetFormatInfo", (SpeechSynthesisOutputFormat)int.MaxValue)
+			() => AudioOutput.GetFormatInfo((SpeechSynthesisOutputFormat)int.MaxValue)
 		);
 
 		Assert.Contains("16-bit mono PCM", exception.Message, StringComparison.Ordinal);
@@ -59,7 +59,7 @@ public sealed class AudioOutputTests : IDisposable
 		var expectedPayload = BuildPcm16Bytes(0, 16384, -16384);
 		var wavBytes = BuildWavBytes(16000, 1, 16, expectedPayload);
 
-		var actual = InvokePrivateStatic<byte[]>(typeof(AudioOutput), "StripWaveHeader", wavBytes);
+		var actual = AudioOutput.StripWaveHeader(wavBytes);
 
 		Assert.Equal(expectedPayload, actual);
 	}
@@ -69,7 +69,7 @@ public sealed class AudioOutputTests : IDisposable
 	{
 		var wavBytes = BuildWavBytes(16000, 1, 16, []);
 
-		var actual = InvokePrivateStatic<byte[]>(typeof(AudioOutput), "StripWaveHeader", wavBytes);
+		var actual = AudioOutput.StripWaveHeader(wavBytes);
 
 		Assert.Empty(actual);
 	}
@@ -79,7 +79,7 @@ public sealed class AudioOutputTests : IDisposable
 	{
 		Assert.Throws<InvalidOperationException>
 		(
-			() => InvokePrivateStatic<byte[]>(typeof(AudioOutput), "StripWaveHeader", new byte[43])
+			() => AudioOutput.StripWaveHeader(new byte[43])
 		);
 	}
 
@@ -102,7 +102,7 @@ public sealed class AudioOutputTests : IDisposable
 
 		Assert.Throws<InvalidOperationException>
 		(
-			() => InvokePrivateStatic<byte[]>(typeof(AudioOutput), "StripWaveHeader", wavBytes)
+			() => AudioOutput.StripWaveHeader(wavBytes)
 		);
 	}
 
@@ -173,26 +173,6 @@ public sealed class AudioOutputTests : IDisposable
 		if (Directory.Exists(_artifactRoot))
 		{
 			Directory.Delete(_artifactRoot, recursive: true);
-		}
-	}
-
-	private static T InvokePrivateStatic<T>(Type declaringType, string methodName, params object?[] parameters)
-	{
-		return (T)InvokePrivateStatic(declaringType, methodName, parameters)!;
-	}
-
-	private static object? InvokePrivateStatic(Type declaringType, string methodName, params object?[] parameters)
-	{
-		try
-		{
-			var method = declaringType.GetMethod(methodName, BindingFlags.NonPublic | BindingFlags.Static);
-			Assert.NotNull(method);
-			return method.Invoke(null, parameters);
-		}
-		catch (TargetInvocationException exception) when (exception.InnerException is not null)
-		{
-			ExceptionDispatchInfo.Capture(exception.InnerException).Throw();
-			throw;
 		}
 	}
 

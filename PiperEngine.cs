@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Text.RegularExpressions;
@@ -108,7 +109,7 @@ static partial class PiperEngine
 	/// For direct .onnx URLs: extract filename.
 	/// For folder/release URLs: uses a placeholder until resolved.
 	/// </summary>
-	private static string GetModelNameFromUrl(string url)
+	internal static string GetModelNameFromUrl(string url)
 	{
 		var uri = new Uri(url);
 		var filename = Path.GetFileName(uri.LocalPath);
@@ -201,6 +202,7 @@ static partial class PiperEngine
 		return modelPath;
 	}
 
+	[ExcludeFromCodeCoverage]
 	private static async Task<string> DownloadAndExtractZipVoiceAsync
 	(
 		HttpClient http,
@@ -279,6 +281,7 @@ static partial class PiperEngine
 	/// Looks up a URL in the voice registry and returns the local .onnx path if cached,
 	/// or null if not found.
 	/// </summary>
+	[ExcludeFromCodeCoverage]
 	private static string? LookupRegistry(string piperDir, string url)
 	{
 		var registryPath = Path.Combine(piperDir, RegistryFileName);
@@ -315,6 +318,7 @@ static partial class PiperEngine
 	/// <summary>
 	/// Registers a URL → model name mapping in voices.json.
 	/// </summary>
+	[ExcludeFromCodeCoverage]
 	private static void WriteRegistry(string piperDir, string url, string modelName)
 	{
 		var registryPath = Path.Combine(piperDir, RegistryFileName);
@@ -351,7 +355,7 @@ static partial class PiperEngine
 	/// <summary>
 	/// Normalizes a URL for registry lookup: trims trailing slashes, lowercases scheme+host.
 	/// </summary>
-	private static string NormalizeUrl(string url)
+	internal static string NormalizeUrl(string url)
 	{
 		var uri = new Uri(url.TrimEnd('/'));
 #pragma warning disable CA1308 // URLs are conventionally lowercase
@@ -363,7 +367,7 @@ static partial class PiperEngine
 	/// Resolves a "piper:en_US-ryan-high" or "piper:Cori" shorthand to HuggingFace download URLs.
 	/// Friendly names (no locale/quality) are looked up in the built-in voice catalog.
 	/// </summary>
-	private static (string OnnxUrl, string ConfigUrl, string ModelName) ResolvePiperShorthand
+	internal static (string OnnxUrl, string ConfigUrl, string ModelName) ResolvePiperShorthand
 	(
 		string voiceQuery
 	)
@@ -405,7 +409,7 @@ static partial class PiperEngine
 	/// Resolves a friendly voice name (e.g. "Cori", "Alan", "Amy") to a full model name.
 	/// Prefers highest quality available. Returns null if not found.
 	/// </summary>
-	private static string? ResolveFriendlyName(string friendlyName)
+	internal static string? ResolveFriendlyName(string friendlyName)
 	{
 		// Case-insensitive search through the catalog
 		foreach (var (name, modelName) in VoiceCatalog)
@@ -460,6 +464,7 @@ static partial class PiperEngine
 	/// Resolves a URL voice query to concrete download URLs.
 	/// Handles: direct .onnx URLs, HuggingFace folder/tree URLs, GitHub release URLs.
 	/// </summary>
+	[ExcludeFromCodeCoverage]
 	private static async Task<(string OnnxUrl, string ConfigUrl, string ModelName)> ResolveUrlVoiceAsync
 	(
 		HttpClient http,
@@ -504,6 +509,7 @@ static partial class PiperEngine
 	/// Works with any HuggingFace repo structure (rhasspy/piper-voices subfolders,
 	/// standalone model repos, etc.)
 	/// </summary>
+	[ExcludeFromCodeCoverage]
 	private static async Task<(string OnnxUrl, string ConfigUrl, string ModelName)> ResolveHuggingFaceFolderAsync
 	(
 		HttpClient http,
@@ -572,6 +578,7 @@ static partial class PiperEngine
 	/// Resolves a GitHub releases URL to the .onnx asset download URL.
 	/// Supports: /releases/tag/{tag} and /releases/download/{tag}/{file}
 	/// </summary>
+	[ExcludeFromCodeCoverage]
 	private static async Task<(string OnnxUrl, string ConfigUrl, string ModelName)> ResolveGitHubReleaseAsync
 	(
 		HttpClient http,
@@ -638,7 +645,7 @@ static partial class PiperEngine
 	[GeneratedRegex(@"(?:vits-)?piper-(.+)$", RegexOptions.IgnoreCase)]
 	private static partial Regex RepoNamePattern();
 
-	private static string DeriveModelNameFromRepo(string repo, string subPath)
+	internal static string DeriveModelNameFromRepo(string repo, string subPath)
 	{
 		// If there's a subpath (e.g. en/en_US/amy/medium), derive from the last segments
 		if (!string.IsNullOrEmpty(subPath))
@@ -675,7 +682,7 @@ static partial class PiperEngine
 	/// Finds the first .onnx file path in a HuggingFace API JSON response.
 	/// Excludes .onnx.json matches.
 	/// </summary>
-	private static string? FindOnnxPathInJson(string json)
+	internal static string? FindOnnxPathInJson(string json)
 	{
 		foreach (Match m in HfOnnxPathPattern().Matches(json))
 		{
@@ -690,7 +697,7 @@ static partial class PiperEngine
 	/// Finds the config file path in a HuggingFace API JSON response.
 	/// Checks for "{onnxName}.json" first (standard piper naming), then "config.json" (speaches-ai naming).
 	/// </summary>
-	private static string? FindConfigPathInJson(string json, string onnxPath)
+	internal static string? FindConfigPathInJson(string json, string onnxPath)
 	{
 		// First: look for the standard "{name}.onnx.json" companion
 		var onnxJsonPath = onnxPath + ".json";
@@ -710,7 +717,7 @@ static partial class PiperEngine
 	/// Finds the first .onnx asset download URL in a GitHub releases API JSON response.
 	/// Excludes .onnx.json matches.
 	/// </summary>
-	private static string? FindGitHubOnnxAssetUrl(string json)
+	internal static string? FindGitHubOnnxAssetUrl(string json)
 	{
 		foreach (Match m in GhAssetUrlPattern().Matches(json))
 		{
@@ -724,6 +731,7 @@ static partial class PiperEngine
 	/// <summary>
 	/// Synthesizes text to WAV bytes using a Piper ONNX model via sherpa-onnx (in-process).
 	/// </summary>
+	[ExcludeFromCodeCoverage]
 	public static Task<byte[]> SynthesizeToWavAsync
 	(
 		string text,
@@ -756,6 +764,7 @@ static partial class PiperEngine
 
 	// ── Internals ──
 
+	[ExcludeFromCodeCoverage]
 	private static async Task DownloadFileAsync
 	(
 		HttpClient http,

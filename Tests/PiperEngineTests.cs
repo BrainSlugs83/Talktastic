@@ -127,6 +127,149 @@ public sealed class PiperEngineTests : IDisposable
 		Assert.Empty(voices);
 	}
 
+	[Theory]
+	[InlineData("https://example.com/voices/en_US-ryan-high.onnx", "en_US-ryan-high")]
+	[InlineData("https://example.com/voices/en_US-ryan-high.onnx.json", "en_US-ryan-high")]
+	[InlineData("https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_US/ryan/high", "ryan-high")]
+	[InlineData("https://example.com/model", "model")]
+	[InlineData("https://example.com/a/b/c", "b-c")]
+	public void GetModelNameFromUrl_ExtractsModelName(string url, string expected)
+	{
+		var result = PiperEngine.GetModelNameFromUrl(url);
+
+		Assert.Equal(expected, result);
+	}
+
+	[Theory]
+	[InlineData("https://Example.COM/path/to/file", "https://example.com/path/to/file")]
+	[InlineData("https://huggingface.co/model/", "https://huggingface.co/model")]
+	public void NormalizeUrl_NormalizesSchemeHostAndTrailingSlash(string input, string expected)
+	{
+		var result = PiperEngine.NormalizeUrl(input);
+
+		Assert.Equal(expected, result);
+	}
+
+	[Fact]
+	public void ResolvePiperShorthand_FullModelName_ReturnsHuggingFaceUrls()
+	{
+		var result = PiperEngine.ResolvePiperShorthand("piper:en_US-ryan-high");
+
+		Assert.Equal("en_US-ryan-high", result.ModelName);
+		Assert.Equal
+		(
+			"https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/ryan/high/en_US-ryan-high.onnx",
+			result.OnnxUrl
+		);
+		Assert.Equal(result.OnnxUrl + ".json", result.ConfigUrl);
+	}
+
+	[Fact]
+	public void ResolvePiperShorthand_FriendlyName_ResolvesFromCatalog()
+	{
+		var result = PiperEngine.ResolvePiperShorthand("piper:Amy");
+
+		Assert.Equal("en_US-amy-medium", result.ModelName);
+		Assert.Contains("/en/en_US/amy/medium/en_US-amy-medium.onnx", result.OnnxUrl, StringComparison.Ordinal);
+		Assert.Equal(result.OnnxUrl + ".json", result.ConfigUrl);
+	}
+
+	[Fact]
+	public void ResolvePiperShorthand_UnknownFriendlyName_ThrowsArgumentException()
+	{
+		Assert.Throws<ArgumentException>(() => PiperEngine.ResolvePiperShorthand("piper:DefinitelyNotARealVoice"));
+	}
+
+	[Theory]
+	[InlineData("Amy", "en_US-amy-medium")]
+	[InlineData("NonexistentVoice", null)]
+	public void ResolveFriendlyName_LooksUpCatalog(string name, string? expected)
+	{
+		var result = PiperEngine.ResolveFriendlyName(name);
+
+		Assert.Equal(expected, result);
+	}
+
+	[Theory]
+	[InlineData("rhasspy/piper-voices", "en/en_US/amy/medium", "en_US-amy-medium")]
+	[InlineData("rhasspy/piper-voices", "", "voices")]
+	public void DeriveModelNameFromRepo_DerivesCorrectly(string repo, string subPath, string expected)
+	{
+		var result = PiperEngine.DeriveModelNameFromRepo(repo, subPath);
+
+		Assert.Equal(expected, result);
+	}
+
+	[Fact]
+	public void FindOnnxPathInJson_ValidJson_ReturnsOnnxPath()
+	{
+		const string json = """[{"path":"en_US-ryan-high.onnx","size":123}]""";
+
+		var result = PiperEngine.FindOnnxPathInJson(json);
+
+		Assert.Equal("en_US-ryan-high.onnx", result);
+	}
+
+	[Fact]
+	public void FindOnnxPathInJson_NoOnnxFile_ReturnsNull()
+	{
+		const string json = """[{"path":"README.md","size":123}]""";
+
+		var result = PiperEngine.FindOnnxPathInJson(json);
+
+		Assert.Null(result);
+	}
+
+	[Fact]
+	public void FindOnnxPathInJson_ExcludesOnnxJson()
+	{
+		const string json = """[{"path":"en_US-ryan-high.onnx.json","size":123}]""";
+
+		var result = PiperEngine.FindOnnxPathInJson(json);
+
+		Assert.Null(result);
+	}
+
+	[Fact]
+	public void FindConfigPathInJson_StandardCompanion_ReturnsCompanionPath()
+	{
+		const string json = """[{"path":"en_US-ryan-high.onnx","size":123},{"path":"en_US-ryan-high.onnx.json","size":456}]""";
+
+		var result = PiperEngine.FindConfigPathInJson(json, "en_US-ryan-high.onnx");
+
+		Assert.Equal("en_US-ryan-high.onnx.json", result);
+	}
+
+	[Fact]
+	public void FindConfigPathInJson_FallsBackToConfigJson()
+	{
+		const string json = """[{"path":"models/model.onnx","size":123},{"path":"models/config.json","size":456}]""";
+
+		var result = PiperEngine.FindConfigPathInJson(json, "models/model.onnx");
+
+		Assert.Equal("models/config.json", result);
+	}
+
+	[Fact]
+	public void FindGitHubOnnxAssetUrl_ValidJson_ReturnsUrl()
+	{
+		const string json = """{"assets":[{"browser_download_url":"https://example.com/en_US-ryan-high.onnx","size":123}]}""";
+
+		var result = PiperEngine.FindGitHubOnnxAssetUrl(json);
+
+		Assert.Equal("https://example.com/en_US-ryan-high.onnx", result);
+	}
+
+	[Fact]
+	public void FindGitHubOnnxAssetUrl_NoOnnxAsset_ReturnsNull()
+	{
+		const string json = """{"assets":[{"browser_download_url":"https://example.com/en_US-ryan-high.onnx.json","size":123}]}""";
+
+		var result = PiperEngine.FindGitHubOnnxAssetUrl(json);
+
+		Assert.Null(result);
+	}
+
 	private static string[] GetSearchBases()
 	{
 		return AppPaths.SearchBases;

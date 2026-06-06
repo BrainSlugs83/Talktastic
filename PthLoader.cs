@@ -13,6 +13,9 @@ namespace Talktastic;
 	"CA1812:Avoid uninstantiated internal classes",
 	Justification = "Requested API surface is an internal sealed utility type with static entry points."
 )]
+/// <summary>
+/// Loads RVC checkpoint archives into <see cref="PthModel"/> instances.
+/// </summary>
 internal sealed class PthLoader
 {
 	private const string ConfigKey = "config";
@@ -25,6 +28,11 @@ internal sealed class PthLoader
 	private const string WeightGSuffix = "_g";
 	private const string WeightVSuffix = "_v";
 
+	/// <summary>
+	/// Loads a checkpoint model from a file path.
+	/// </summary>
+	/// <param name="pthFilePath">The checkpoint file path.</param>
+	/// <returns>The loaded checkpoint model.</returns>
 	public static PthModel Load(string pthFilePath)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(pthFilePath);
@@ -33,6 +41,11 @@ internal sealed class PthLoader
 		return Load(stream);
 	}
 
+	/// <summary>
+	/// Loads a checkpoint model from a stream.
+	/// </summary>
+	/// <param name="pthStream">The checkpoint stream.</param>
+	/// <returns>The loaded checkpoint model.</returns>
 	public static PthModel Load(Stream pthStream)
 	{
 		ArgumentNullException.ThrowIfNull(pthStream);
@@ -48,6 +61,12 @@ internal sealed class PthLoader
 		return LoadArchive(pthStream, leaveOpen: true);
 	}
 
+	/// <summary>
+	/// Loads a checkpoint model from an archive stream.
+	/// </summary>
+	/// <param name="stream">The archive stream.</param>
+	/// <param name="leaveOpen">A value indicating whether to leave <paramref name="stream"/> open.</param>
+	/// <returns>The loaded checkpoint model.</returns>
 	private static PthModel LoadArchive(Stream stream, bool leaveOpen)
 	{
 		using var archive = new ZipArchive(stream, ZipArchiveMode.Read, leaveOpen);
@@ -76,6 +95,11 @@ internal sealed class PthLoader
 		);
 	}
 
+	/// <summary>
+	/// Resolves the archive entry prefix for the checkpoint payload.
+	/// </summary>
+	/// <param name="archive">The checkpoint archive.</param>
+	/// <returns>The archive entry prefix.</returns>
 	private static string ResolvePrefix(ZipArchive archive)
 	{
 		foreach (var entry in archive.Entries)
@@ -91,6 +115,12 @@ internal sealed class PthLoader
 		throw new InvalidDataException("Checkpoint archive does not contain a data.pkl entry.");
 	}
 
+	/// <summary>
+	/// Gets a required archive entry.
+	/// </summary>
+	/// <param name="archive">The checkpoint archive.</param>
+	/// <param name="entryName">The archive entry name.</param>
+	/// <returns>The required archive entry.</returns>
 	private static ZipArchiveEntry GetRequiredEntry(ZipArchive archive, string entryName)
 	{
 		var entry = archive.GetEntry(entryName);
@@ -102,6 +132,11 @@ internal sealed class PthLoader
 		return entry;
 	}
 
+	/// <summary>
+	/// Parses checkpoint metadata and tensor manifests.
+	/// </summary>
+	/// <param name="root">The parsed checkpoint root.</param>
+	/// <returns>The parsed checkpoint model.</returns>
 	private static ParsedModel ParseModel(object root)
 	{
 		var rootMap = ExpectDictionary(root, "checkpoint root");
@@ -147,6 +182,13 @@ internal sealed class PthLoader
 		);
 	}
 
+	/// <summary>
+	/// Loads tensor data for the specified manifests.
+	/// </summary>
+	/// <param name="archive">The checkpoint archive.</param>
+	/// <param name="prefix">The archive entry prefix.</param>
+	/// <param name="manifests">The tensor manifests.</param>
+	/// <returns>The loaded tensors keyed by checkpoint name.</returns>
 	private static Dictionary<string, PthTensor> LoadWeights
 	(
 		ZipArchive archive,
@@ -181,6 +223,12 @@ internal sealed class PthLoader
 		return weights;
 	}
 
+	/// <summary>
+	/// Extracts contiguous tensor bytes from backing storage.
+	/// </summary>
+	/// <param name="storageBytes">The backing storage bytes.</param>
+	/// <param name="manifest">The tensor manifest.</param>
+	/// <returns>The extracted tensor bytes.</returns>
 	private static byte[] ExtractTensorBytes(byte[] storageBytes, TensorManifest manifest)
 	{
 		var byteCount = checked(manifest.ElementCount * manifest.ElementSize);
@@ -244,6 +292,11 @@ internal sealed class PthLoader
 		return output;
 	}
 
+	/// <summary>
+	/// Advances a multidimensional index vector.
+	/// </summary>
+	/// <param name="indices">The indices to advance.</param>
+	/// <param name="shape">The tensor shape.</param>
 	private static void IncrementIndices(int[] indices, int[] shape)
 	{
 		for (var dimension = indices.Length - 1; dimension >= 0; dimension--)
@@ -258,7 +311,12 @@ internal sealed class PthLoader
 		}
 	}
 
-	private static int[] ComputeContiguousStride(int[] shape)
+	/// <summary>
+	/// Computes contiguous strides for a tensor shape.
+	/// </summary>
+	/// <param name="shape">The tensor shape.</param>
+	/// <returns>The contiguous stride values.</returns>
+	internal static int[] ComputeContiguousStride(int[] shape)
 	{
 		if (shape.Length == 0)
 		{
@@ -276,7 +334,13 @@ internal sealed class PthLoader
 		return stride;
 	}
 
-	private static bool StrideEquals(int[] left, int[] right)
+	/// <summary>
+	/// Determines whether two stride vectors are equal.
+	/// </summary>
+	/// <param name="left">The left stride vector.</param>
+	/// <param name="right">The right stride vector.</param>
+	/// <returns><c>true</c> if the stride vectors are equal; otherwise, <c>false</c>.</returns>
+	internal static bool StrideEquals(int[] left, int[] right)
 	{
 		if (left.Length != right.Length)
 		{
@@ -294,7 +358,11 @@ internal sealed class PthLoader
 		return true;
 	}
 
-	private static void FuseWeightNorm(Dictionary<string, PthTensor> weights)
+	/// <summary>
+	/// Fuses weight-normalized tensor pairs in place.
+	/// </summary>
+	/// <param name="weights">The tensors to update.</param>
+	internal static void FuseWeightNorm(Dictionary<string, PthTensor> weights)
 	{
 		var gKeys = weights.Keys
 			.Where(static key => key.EndsWith(WeightGSuffix, StringComparison.Ordinal))
@@ -321,7 +389,14 @@ internal sealed class PthLoader
 		}
 	}
 
-	private static PthTensor FuseWeightNormPair(string outputName, PthTensor gTensor, PthTensor vTensor)
+	/// <summary>
+	/// Fuses a weight-normalized tensor pair.
+	/// </summary>
+	/// <param name="outputName">The output tensor name.</param>
+	/// <param name="gTensor">The gain tensor.</param>
+	/// <param name="vTensor">The value tensor.</param>
+	/// <returns>The fused tensor.</returns>
+	internal static PthTensor FuseWeightNormPair(string outputName, PthTensor gTensor, PthTensor vTensor)
 	{
 		if (!IsSupportedWeightNormDType(gTensor.DType) || !IsSupportedWeightNormDType(vTensor.DType))
 		{
@@ -375,18 +450,36 @@ internal sealed class PthLoader
 		return new PthTensor(outputName, output, vTensor.Shape, vTensor.DType);
 	}
 
-	private static bool IsSupportedWeightNormDType(string dtype)
+	/// <summary>
+	/// Determines whether a tensor dtype supports weight normalization fusion.
+	/// </summary>
+	/// <param name="dtype">The tensor dtype.</param>
+	/// <returns><c>true</c> if the dtype is supported; otherwise, <c>false</c>.</returns>
+	internal static bool IsSupportedWeightNormDType(string dtype)
 	{
 		return string.Equals(dtype, "float16", StringComparison.Ordinal)
 			|| string.Equals(dtype, "float32", StringComparison.Ordinal);
 	}
 
+	/// <summary>
+	/// Reads a scalar value from a tensor element.
+	/// </summary>
+	/// <param name="tensor">The tensor to read.</param>
+	/// <param name="elementIndex">The element index.</param>
+	/// <returns>The scalar value.</returns>
 	private static float ReadTensorScalar(PthTensor tensor, int elementIndex)
 	{
 		return ReadScalar(tensor.DType, tensor.Data, elementIndex);
 	}
 
-	private static float ReadScalar(string dtype, byte[] data, int elementIndex)
+	/// <summary>
+	/// Reads a scalar value from tensor bytes.
+	/// </summary>
+	/// <param name="dtype">The tensor dtype.</param>
+	/// <param name="data">The tensor bytes.</param>
+	/// <param name="elementIndex">The element index.</param>
+	/// <returns>The scalar value.</returns>
+	internal static float ReadScalar(string dtype, byte[] data, int elementIndex)
 	{
 		return dtype switch
 		{
@@ -396,7 +489,14 @@ internal sealed class PthLoader
 		};
 	}
 
-	private static void WriteTensorScalar(string dtype, byte[] data, int elementIndex, float value)
+	/// <summary>
+	/// Writes a scalar value to tensor bytes.
+	/// </summary>
+	/// <param name="dtype">The tensor dtype.</param>
+	/// <param name="data">The destination bytes.</param>
+	/// <param name="elementIndex">The element index.</param>
+	/// <param name="value">The scalar value.</param>
+	internal static void WriteTensorScalar(string dtype, byte[] data, int elementIndex, float value)
 	{
 		switch (dtype)
 		{
@@ -413,36 +513,76 @@ internal sealed class PthLoader
 		}
 	}
 
+	/// <summary>
+	/// Reads a little-endian 16-bit unsigned integer from a byte array.
+	/// </summary>
+	/// <param name="data">The source bytes.</param>
+	/// <param name="offset">The byte offset.</param>
+	/// <returns>The 16-bit value.</returns>
 	private static ushort ReadUInt16LittleEndian(byte[] data, int offset)
 	{
 		return BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(offset, sizeof(ushort)));
 	}
 
+	/// <summary>
+	/// Reads a little-endian 32-bit integer from a byte array.
+	/// </summary>
+	/// <param name="data">The source bytes.</param>
+	/// <param name="offset">The byte offset.</param>
+	/// <returns>The 32-bit value.</returns>
 	private static int ReadInt32LittleEndian(byte[] data, int offset)
 	{
 		return BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(offset, sizeof(int)));
 	}
 
+	/// <summary>
+	/// Writes a little-endian 16-bit unsigned integer to a byte array.
+	/// </summary>
+	/// <param name="data">The destination bytes.</param>
+	/// <param name="offset">The byte offset.</param>
+	/// <param name="value">The value to write.</param>
 	private static void WriteUInt16LittleEndian(byte[] data, int offset, ushort value)
 	{
 		BinaryPrimitives.WriteUInt16LittleEndian(data.AsSpan(offset, sizeof(ushort)), value);
 	}
 
+	/// <summary>
+	/// Writes a little-endian 32-bit integer to a byte array.
+	/// </summary>
+	/// <param name="data">The destination bytes.</param>
+	/// <param name="offset">The byte offset.</param>
+	/// <param name="value">The value to write.</param>
 	private static void WriteInt32LittleEndian(byte[] data, int offset, int value)
 	{
 		BinaryPrimitives.WriteInt32LittleEndian(data.AsSpan(offset, sizeof(int)), value);
 	}
 
-	private static float Float16BitsToSingle(ushort bits)
+	/// <summary>
+	/// Converts Float16 bits to a single-precision value.
+	/// </summary>
+	/// <param name="bits">The Float16 bit pattern.</param>
+	/// <returns>The converted single-precision value.</returns>
+	internal static float Float16BitsToSingle(ushort bits)
 	{
 		return (float)BitConverter.UInt16BitsToHalf(bits);
 	}
 
-	private static ushort SingleToFloat16Bits(float value)
+	/// <summary>
+	/// Converts a single-precision value to Float16 bits.
+	/// </summary>
+	/// <param name="value">The value to convert.</param>
+	/// <returns>The Float16 bit pattern.</returns>
+	internal static ushort SingleToFloat16Bits(float value)
 	{
 		return BitConverter.HalfToUInt16Bits((Half)value);
 	}
 
+	/// <summary>
+	/// Validates that a value is a string-keyed dictionary.
+	/// </summary>
+	/// <param name="value">The value to validate.</param>
+	/// <param name="context">The validation context.</param>
+	/// <returns>The validated dictionary.</returns>
 	private static Dictionary<string, object?> ExpectDictionary(object? value, string context)
 	{
 		if (value is Dictionary<string, object?> dictionary)
@@ -453,6 +593,12 @@ internal sealed class PthLoader
 		throw new InvalidDataException($"Expected {context} to be a dictionary.");
 	}
 
+	/// <summary>
+	/// Gets a required dictionary value.
+	/// </summary>
+	/// <param name="dictionary">The source dictionary.</param>
+	/// <param name="key">The dictionary key.</param>
+	/// <returns>The dictionary value.</returns>
 	private static object GetRequiredValue(Dictionary<string, object?> dictionary, string key)
 	{
 		if (!dictionary.TryGetValue(key, out var value) || value is null)
@@ -463,6 +609,13 @@ internal sealed class PthLoader
 		return value;
 	}
 
+	/// <summary>
+	/// Gets an optional string value.
+	/// </summary>
+	/// <param name="dictionary">The source dictionary.</param>
+	/// <param name="key">The dictionary key.</param>
+	/// <param name="fallback">The fallback value.</param>
+	/// <returns>The string value.</returns>
 	private static string GetOptionalString(Dictionary<string, object?> dictionary, string key, string fallback)
 	{
 		if (!dictionary.TryGetValue(key, out var value) || value is null)
@@ -473,6 +626,13 @@ internal sealed class PthLoader
 		return ConvertToString(value, key);
 	}
 
+	/// <summary>
+	/// Gets an optional 32-bit integer value.
+	/// </summary>
+	/// <param name="dictionary">The source dictionary.</param>
+	/// <param name="key">The dictionary key.</param>
+	/// <param name="fallback">The fallback value.</param>
+	/// <returns>The integer value.</returns>
 	private static int GetOptionalInt32(Dictionary<string, object?> dictionary, string key, int fallback)
 	{
 		if (!dictionary.TryGetValue(key, out var value) || value is null)
@@ -483,6 +643,11 @@ internal sealed class PthLoader
 		return ConvertToInt32(value, key);
 	}
 
+	/// <summary>
+	/// Converts a public config sequence to a normalized list.
+	/// </summary>
+	/// <param name="value">The value to convert.</param>
+	/// <returns>The normalized list.</returns>
 	private static List<object> ConvertPublicList(object value)
 	{
 		var sequence = value switch
@@ -501,6 +666,11 @@ internal sealed class PthLoader
 		return result;
 	}
 
+	/// <summary>
+	/// Converts a public config value to a supported CLR value.
+	/// </summary>
+	/// <param name="value">The value to convert.</param>
+	/// <returns>The converted value.</returns>
 	private static object ConvertPublicValue(object? value)
 	{
 		return value switch
@@ -516,12 +686,21 @@ internal sealed class PthLoader
 			int intValue => intValue,
 			long longValue when longValue is >= int.MinValue and <= int.MaxValue => (int)longValue,
 			long longValue => longValue,
+			BigInteger bigInt when bigInt >= int.MinValue && bigInt <= int.MaxValue => (int)bigInt,
+			BigInteger bigInt when bigInt >= long.MinValue && bigInt <= long.MaxValue => (long)bigInt,
+			BigInteger bigInt => bigInt,
 			double doubleValue => doubleValue,
 			float floatValue => floatValue,
 			_ => throw new InvalidDataException($"Unsupported config value type '{value.GetType().FullName}'."),
 		};
 	}
 
+	/// <summary>
+	/// Converts a checkpoint value to a string.
+	/// </summary>
+	/// <param name="value">The value to convert.</param>
+	/// <param name="context">The conversion context.</param>
+	/// <returns>The string value.</returns>
 	private static string ConvertToString(object value, string context)
 	{
 		return value switch
@@ -535,6 +714,12 @@ internal sealed class PthLoader
 		};
 	}
 
+	/// <summary>
+	/// Converts a checkpoint value to a 32-bit integer.
+	/// </summary>
+	/// <param name="value">The value to convert.</param>
+	/// <param name="context">The conversion context.</param>
+	/// <returns>The integer value.</returns>
 	private static int ConvertToInt32(object value, string context)
 	{
 		return value switch
@@ -548,8 +733,21 @@ internal sealed class PthLoader
 		};
 	}
 
+	/// <summary>
+	/// Stores parsed checkpoint metadata before tensor loading.
+	/// </summary>
 	private sealed class ParsedModel
 	{
+		/// <summary>
+		/// Initializes a new instance of the <see cref="ParsedModel"/> class.
+		/// </summary>
+		/// <param name="config">The parsed config values.</param>
+		/// <param name="targetSampleRate">The target sample rate.</param>
+		/// <param name="version">The model version.</param>
+		/// <param name="sampleRateLabel">The sample rate label.</param>
+		/// <param name="f0">The F0 flag.</param>
+		/// <param name="info">The model info text.</param>
+		/// <param name="weightManifests">The tensor manifests.</param>
 		public ParsedModel
 		(
 			List<object> config,
@@ -570,21 +768,45 @@ internal sealed class PthLoader
 			WeightManifests = weightManifests;
 		}
 
+		/// <summary>
+		/// Gets the parsed config values.
+		/// </summary>
 		public List<object> Config { get; }
 
+		/// <summary>
+		/// Gets the target sample rate.
+		/// </summary>
 		public int TargetSampleRate { get; }
 
+		/// <summary>
+		/// Gets the model version.
+		/// </summary>
 		public string Version { get; }
 
+		/// <summary>
+		/// Gets the sample rate label.
+		/// </summary>
 		public string SampleRateLabel { get; }
 
+		/// <summary>
+		/// Gets the F0 flag.
+		/// </summary>
 		public int F0 { get; }
 
+		/// <summary>
+		/// Gets the model info text.
+		/// </summary>
 		public string Info { get; }
 
+		/// <summary>
+		/// Gets the tensor manifests keyed by weight name.
+		/// </summary>
 		public Dictionary<string, TensorManifest> WeightManifests { get; }
 	}
 
+	/// <summary>
+	/// Parses the pickle payload stored in checkpoint archives.
+	/// </summary>
 	private sealed class PickleParser
 	{
 		private static readonly object Mark = new();
@@ -595,6 +817,11 @@ internal sealed class PthLoader
 		private int _index;
 
 		#pragma warning disable CA1502 // TODO: Refactor binary parser to reduce complexity
+		/// <summary>
+		/// Parses a pickle stream.
+		/// </summary>
+		/// <param name="stream">The pickle stream.</param>
+		/// <returns>The parsed pickle root value.</returns>
 		public object Parse(Stream stream)
 		{
 			ArgumentNullException.ThrowIfNull(stream);
@@ -805,6 +1032,10 @@ internal sealed class PthLoader
 		}
 		#pragma warning restore CA1502
 
+		/// <summary>
+		/// Returns the value at the top of the pickle stack.
+		/// </summary>
+		/// <returns>The value at the top of the stack.</returns>
 		private object? Peek()
 		{
 			if (_stack.Count == 0)
@@ -815,6 +1046,10 @@ internal sealed class PthLoader
 			return _stack[^1];
 		}
 
+		/// <summary>
+		/// Removes and returns the value at the top of the pickle stack.
+		/// </summary>
+		/// <returns>The removed stack value.</returns>
 		private object? Pop()
 		{
 			if (_stack.Count == 0)
@@ -827,6 +1062,10 @@ internal sealed class PthLoader
 			return value;
 		}
 
+		/// <summary>
+		/// Removes and returns the items above the last pickle mark.
+		/// </summary>
+		/// <returns>The removed stack items.</returns>
 		private List<object?> PopMarkedItems()
 		{
 			var markIndex = _stack.LastIndexOf(Mark);
@@ -841,6 +1080,10 @@ internal sealed class PthLoader
 			return values;
 		}
 
+		/// <summary>
+		/// Appends an item to the list at the top of the stack.
+		/// </summary>
+		/// <param name="item">The item to append.</param>
 		private void AppendToList(object? item)
 		{
 			var target = Peek();
@@ -852,6 +1095,9 @@ internal sealed class PthLoader
 			list.Add(item);
 		}
 
+		/// <summary>
+		/// Appends the items above the last mark to the target list.
+		/// </summary>
 		private void AppendMarkedItemsToList()
 		{
 			var markIndex = _stack.LastIndexOf(Mark);
@@ -865,6 +1111,9 @@ internal sealed class PthLoader
 			_stack.RemoveRange(markIndex, _stack.Count - markIndex);
 		}
 
+		/// <summary>
+		/// Assigns a single key-value pair to the target dictionary.
+		/// </summary>
 		private void SetSingleItem()
 		{
 			var value = Pop();
@@ -878,6 +1127,9 @@ internal sealed class PthLoader
 			dictionary[key] = value;
 		}
 
+		/// <summary>
+		/// Assigns the marked key-value pairs to the target dictionary.
+		/// </summary>
 		private void SetMarkedItems()
 		{
 			var markIndex = _stack.LastIndexOf(Mark);
@@ -905,6 +1157,11 @@ internal sealed class PthLoader
 			_stack.RemoveRange(markIndex, _stack.Count - markIndex);
 		}
 
+		/// <summary>
+		/// Gets a memoized pickle value.
+		/// </summary>
+		/// <param name="index">The memo slot index.</param>
+		/// <returns>The memoized value.</returns>
 		private object? GetMemoValue(int index)
 		{
 			if (!_memo.TryGetValue(index, out var value))
@@ -915,6 +1172,12 @@ internal sealed class PthLoader
 			return value;
 		}
 
+		/// <summary>
+		/// Applies a supported pickle REDUCE operation.
+		/// </summary>
+		/// <param name="callable">The callable reference.</param>
+		/// <param name="args">The callable arguments.</param>
+		/// <returns>The reduced value.</returns>
 		private static object ApplyReduce(object? callable, object? args)
 		{
 			var global = callable as GlobalReference
@@ -934,6 +1197,12 @@ internal sealed class PthLoader
 			};
 		}
 
+		/// <summary>
+		/// Applies a supported pickle BUILD operation.
+		/// </summary>
+		/// <param name="instance">The instance to update.</param>
+		/// <param name="state">The serialized state.</param>
+		/// <returns>The built value.</returns>
 		private static object ApplyBuild(object? instance, object? state)
 		{
 			if (state is null)
@@ -959,6 +1228,11 @@ internal sealed class PthLoader
 			throw new NotSupportedException($"Unsupported BUILD state type '{state.GetType().FullName}'.");
 		}
 
+		/// <summary>
+		/// Builds a tensor manifest from a rebuild tuple.
+		/// </summary>
+		/// <param name="tuple">The rebuild tuple.</param>
+		/// <returns>The tensor manifest.</returns>
 		private static TensorManifest BuildTensor(object?[] tuple)
 		{
 			if (tuple.Length < 4 || tuple[0] is not StorageReference storage)
@@ -987,6 +1261,11 @@ internal sealed class PthLoader
 			);
 		}
 
+		/// <summary>
+		/// Resolves a persistent storage identifier.
+		/// </summary>
+		/// <param name="persistentId">The persistent identifier.</param>
+		/// <returns>The resolved storage reference.</returns>
 		private static StorageReference ResolvePersistentId(object? persistentId)
 		{
 			var tuple = AsTuple(persistentId);
@@ -1010,6 +1289,11 @@ internal sealed class PthLoader
 			return new StorageReference(key, dtype, elementSize);
 		}
 
+		/// <summary>
+		/// Maps a pickle storage type to tensor metadata.
+		/// </summary>
+		/// <param name="storageType">The storage type reference.</param>
+		/// <returns>The tensor dtype and element size.</returns>
 		private static (string DType, int ElementSize) MapStorageType(GlobalReference storageType)
 		{
 			return storageType.Name switch
@@ -1028,6 +1312,11 @@ internal sealed class PthLoader
 			};
 		}
 
+		/// <summary>
+		/// Converts a pickle sequence value to a tuple array.
+		/// </summary>
+		/// <param name="value">The value to convert.</param>
+		/// <returns>The tuple array.</returns>
 		private static object?[] AsTuple(object? value)
 		{
 			return value switch
@@ -1038,6 +1327,12 @@ internal sealed class PthLoader
 			};
 		}
 
+		/// <summary>
+		/// Converts a pickle sequence to a 32-bit integer array.
+		/// </summary>
+		/// <param name="value">The value to convert.</param>
+		/// <param name="context">The conversion context.</param>
+		/// <returns>The integer array.</returns>
 		private static int[] ToInt32Array(object? value, string context)
 		{
 			var tuple = AsTuple(value);
@@ -1054,6 +1349,10 @@ internal sealed class PthLoader
 			return result;
 		}
 
+		/// <summary>
+		/// Removes and returns a string from the pickle stack.
+		/// </summary>
+		/// <returns>The string value.</returns>
 		private string PopString()
 		{
 			var value = Pop();
@@ -1065,6 +1364,10 @@ internal sealed class PthLoader
 			return stringValue;
 		}
 
+		/// <summary>
+		/// Reads the next byte from the pickle buffer.
+		/// </summary>
+		/// <returns>The next byte.</returns>
 		private byte ReadByte()
 		{
 			if (_index >= _buffer.Length)
@@ -1075,6 +1378,10 @@ internal sealed class PthLoader
 			return _buffer[_index++];
 		}
 
+		/// <summary>
+		/// Reads the next little-endian 16-bit unsigned integer from the pickle buffer.
+		/// </summary>
+		/// <returns>The next 16-bit value.</returns>
 		private ushort ReadUInt16LittleEndian()
 		{
 			var value = BinaryPrimitives.ReadUInt16LittleEndian(_buffer.AsSpan(_index, sizeof(ushort)));
@@ -1082,6 +1389,10 @@ internal sealed class PthLoader
 			return value;
 		}
 
+		/// <summary>
+		/// Reads the next little-endian 32-bit integer from the pickle buffer.
+		/// </summary>
+		/// <returns>The next 32-bit value.</returns>
 		private int ReadInt32LittleEndian()
 		{
 			var value = BinaryPrimitives.ReadInt32LittleEndian(_buffer.AsSpan(_index, sizeof(int)));
@@ -1089,6 +1400,10 @@ internal sealed class PthLoader
 			return value;
 		}
 
+		/// <summary>
+		/// Reads the next little-endian 64-bit unsigned integer from the pickle buffer.
+		/// </summary>
+		/// <returns>The next 64-bit value.</returns>
 		private ulong ReadUInt64LittleEndian()
 		{
 			var value = BinaryPrimitives.ReadUInt64LittleEndian(_buffer.AsSpan(_index, sizeof(ulong)));
@@ -1096,6 +1411,10 @@ internal sealed class PthLoader
 			return value;
 		}
 
+		/// <summary>
+		/// Reads a 64-bit pickle length as a 32-bit integer.
+		/// </summary>
+		/// <returns>The length value.</returns>
 		private int ReadLength64()
 		{
 			var length = ReadUInt64LittleEndian();
@@ -1107,11 +1426,22 @@ internal sealed class PthLoader
 			return (int)length;
 		}
 
+		/// <summary>
+		/// Reads an encoded string from the pickle buffer.
+		/// </summary>
+		/// <param name="length">The encoded byte length.</param>
+		/// <param name="encoding">The string encoding.</param>
+		/// <returns>The decoded string.</returns>
 		private string ReadEncodedString(int length, Encoding encoding)
 		{
 			return encoding.GetString(ReadBytes(length));
 		}
 
+		/// <summary>
+		/// Reads a byte range from the pickle buffer.
+		/// </summary>
+		/// <param name="length">The byte count.</param>
+		/// <returns>The requested bytes.</returns>
 		private byte[] ReadBytes(int length)
 		{
 			if (length < 0)
@@ -1124,6 +1454,10 @@ internal sealed class PthLoader
 			return bytes;
 		}
 
+		/// <summary>
+		/// Reads a UTF-8 line from the pickle buffer.
+		/// </summary>
+		/// <returns>The line text.</returns>
 		private string ReadLine()
 		{
 			var start = _index;
@@ -1142,6 +1476,10 @@ internal sealed class PthLoader
 			return line;
 		}
 
+		/// <summary>
+		/// Reads a LONG1 integer from the pickle buffer.
+		/// </summary>
+		/// <returns>The decoded integer.</returns>
 		private BigInteger ReadLong1()
 		{
 			var length = ReadByte();
@@ -1149,6 +1487,10 @@ internal sealed class PthLoader
 			return new BigInteger(bytes);
 		}
 
+		/// <summary>
+		/// Reads a big-endian binary floating-point value from the pickle buffer.
+		/// </summary>
+		/// <returns>The decoded floating-point value.</returns>
 		private double ReadBinaryFloat()
 		{
 			var bits = BinaryPrimitives.ReadInt64BigEndian(_buffer.AsSpan(_index, sizeof(long)));
@@ -1157,21 +1499,44 @@ internal sealed class PthLoader
 		}
 	}
 
+	/// <summary>
+	/// Represents a referenced pickle global.
+	/// </summary>
 	private sealed class GlobalReference
 	{
+		/// <summary>
+		/// Initializes a new instance of the <see cref="GlobalReference"/> class.
+		/// </summary>
+		/// <param name="module">The module name.</param>
+		/// <param name="name">The global name.</param>
 		public GlobalReference(string module, string name)
 		{
 			Module = module;
 			Name = name;
 		}
 
+		/// <summary>
+		/// Gets the module name.
+		/// </summary>
 		public string Module { get; }
 
+		/// <summary>
+		/// Gets the global name.
+		/// </summary>
 		public string Name { get; }
 	}
 
+	/// <summary>
+	/// Represents a referenced tensor storage.
+	/// </summary>
 	private sealed class StorageReference
 	{
+		/// <summary>
+		/// Initializes a new instance of the <see cref="StorageReference"/> class.
+		/// </summary>
+		/// <param name="key">The storage key.</param>
+		/// <param name="dType">The tensor dtype.</param>
+		/// <param name="elementSize">The element size in bytes.</param>
 		public StorageReference(string key, string dType, int elementSize)
 		{
 			Key = key;
@@ -1179,15 +1544,37 @@ internal sealed class PthLoader
 			ElementSize = elementSize;
 		}
 
+		/// <summary>
+		/// Gets the storage key.
+		/// </summary>
 		public string Key { get; }
 
+		/// <summary>
+		/// Gets the tensor dtype.
+		/// </summary>
 		public string DType { get; }
 
+		/// <summary>
+		/// Gets the element size in bytes.
+		/// </summary>
 		public int ElementSize { get; }
 	}
 
+	/// <summary>
+	/// Describes tensor storage and shape metadata.
+	/// </summary>
 	private sealed class TensorManifest
 	{
+		/// <summary>
+		/// Initializes a new instance of the <see cref="TensorManifest"/> class.
+		/// </summary>
+		/// <param name="name">The tensor name.</param>
+		/// <param name="storageKey">The storage key.</param>
+		/// <param name="dType">The tensor dtype.</param>
+		/// <param name="elementSize">The element size in bytes.</param>
+		/// <param name="shape">The tensor shape.</param>
+		/// <param name="stride">The tensor stride.</param>
+		/// <param name="storageOffset">The storage offset.</param>
 		public TensorManifest
 		(
 			string name,
@@ -1209,22 +1596,51 @@ internal sealed class PthLoader
 			ElementCount = ComputeElementCount(shape);
 		}
 
+		/// <summary>
+		/// Gets the tensor name.
+		/// </summary>
 		public string Name { get; }
 
+		/// <summary>
+		/// Gets the backing storage key.
+		/// </summary>
 		public string StorageKey { get; }
 
+		/// <summary>
+		/// Gets the tensor dtype.
+		/// </summary>
 		public string DType { get; }
 
+		/// <summary>
+		/// Gets the element size in bytes.
+		/// </summary>
 		public int ElementSize { get; }
 
+		/// <summary>
+		/// Gets the tensor shape.
+		/// </summary>
 		public int[] Shape { get; }
 
+		/// <summary>
+		/// Gets the tensor stride.
+		/// </summary>
 		public int[] Stride { get; }
 
+		/// <summary>
+		/// Gets the storage offset.
+		/// </summary>
 		public int StorageOffset { get; }
 
+		/// <summary>
+		/// Gets the number of tensor elements.
+		/// </summary>
 		public int ElementCount { get; }
 
+		/// <summary>
+		/// Creates a copy with a different tensor name.
+		/// </summary>
+		/// <param name="name">The tensor name.</param>
+		/// <returns>The renamed manifest.</returns>
 		public TensorManifest WithName(string name)
 		{
 			return new TensorManifest
@@ -1239,6 +1655,11 @@ internal sealed class PthLoader
 			);
 		}
 
+		/// <summary>
+		/// Computes the number of elements in a tensor shape.
+		/// </summary>
+		/// <param name="shape">The tensor shape.</param>
+		/// <returns>The element count.</returns>
 		private static int ComputeElementCount(int[] shape)
 		{
 			if (shape.Length == 0)
@@ -1257,8 +1678,21 @@ internal sealed class PthLoader
 	}
 }
 
+/// <summary>
+/// Represents a loaded checkpoint model.
+/// </summary>
 internal sealed class PthModel
 {
+	/// <summary>
+	/// Initializes a new instance of the <see cref="PthModel"/> class.
+	/// </summary>
+	/// <param name="config">The raw config values.</param>
+	/// <param name="targetSampleRate">The target sample rate.</param>
+	/// <param name="version">The model version.</param>
+	/// <param name="sampleRateLabel">The sample rate label.</param>
+	/// <param name="f0">The F0 flag.</param>
+	/// <param name="info">The model info text.</param>
+	/// <param name="weights">The loaded tensors.</param>
 	public PthModel
 	(
 		IReadOnlyList<object> config,
@@ -1279,23 +1713,54 @@ internal sealed class PthModel
 		Weights = weights;
 	}
 
+	/// <summary>
+	/// Gets the raw config values.
+	/// </summary>
 	public IReadOnlyList<object> Config { get; }
 
+	/// <summary>
+	/// Gets the target sample rate.
+	/// </summary>
 	public int TargetSampleRate { get; }
 
+	/// <summary>
+	/// Gets the model version.
+	/// </summary>
 	public string Version { get; }
 
+	/// <summary>
+	/// Gets the sample rate label.
+	/// </summary>
 	public string SampleRateLabel { get; }
 
+	/// <summary>
+	/// Gets the F0 flag.
+	/// </summary>
 	public int F0 { get; }
 
+	/// <summary>
+	/// Gets the model info text.
+	/// </summary>
 	public string Info { get; }
 
+	/// <summary>
+	/// Gets the loaded tensors keyed by name.
+	/// </summary>
 	public IReadOnlyDictionary<string, PthTensor> Weights { get; }
 }
 
+/// <summary>
+/// Represents a tensor loaded from a checkpoint.
+/// </summary>
 internal sealed class PthTensor
 {
+	/// <summary>
+	/// Initializes a new instance of the <see cref="PthTensor"/> class.
+	/// </summary>
+	/// <param name="name">The tensor name.</param>
+	/// <param name="data">The tensor bytes.</param>
+	/// <param name="shape">The tensor shape.</param>
+	/// <param name="dType">The tensor dtype.</param>
 	public PthTensor(string name, byte[] data, int[] shape, string dType)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(name);
@@ -1310,16 +1775,36 @@ internal sealed class PthTensor
 		ElementCount = ComputeElementCount(shape);
 	}
 
+	/// <summary>
+	/// Gets the tensor name.
+	/// </summary>
 	public string Name { get; }
 
+	/// <summary>
+	/// Gets the tensor bytes.
+	/// </summary>
 	public byte[] Data { get; }
 
+	/// <summary>
+	/// Gets the tensor shape.
+	/// </summary>
 	public int[] Shape { get; }
 
+	/// <summary>
+	/// Gets the tensor dtype.
+	/// </summary>
 	public string DType { get; }
 
+	/// <summary>
+	/// Gets the number of tensor elements.
+	/// </summary>
 	public int ElementCount { get; }
 
+	/// <summary>
+	/// Computes the number of elements in a tensor shape.
+	/// </summary>
+	/// <param name="shape">The tensor shape.</param>
+	/// <returns>The element count.</returns>
 	private static int ComputeElementCount(int[] shape)
 	{
 		if (shape.Length == 0)

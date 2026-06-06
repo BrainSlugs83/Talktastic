@@ -378,6 +378,75 @@ public sealed class RvcEngineTests : IDisposable
 		Assert.Equal("LooseModel", displayName);
 	}
 
+	[Theory]
+	[InlineData(@"C:\models\voice.onnx", true)]
+	[InlineData(@"models\voice.pth", true)]
+	[InlineData("voice.onnx", true)]
+	[InlineData("voice.pth", true)]
+	[InlineData("just-a-name", false)]
+	[InlineData("https://example.com/model.onnx", false)]
+	[InlineData("bart simpson", false)]
+	public void LooksLikeLocalPath_ClassifiesCorrectly(string query, bool expected)
+	{
+		var result = RvcEngine.LooksLikeLocalPath(query);
+
+		Assert.Equal(expected, result);
+	}
+
+	[Fact]
+	public void FindCachedModelExact_ExactNameMatch_ReturnsModelFile()
+	{
+		var voicesDir = CreateVoicesDir(Path.Combine(_tempDir, "cached-exact"));
+		var modelDir = Path.Combine(voicesDir, "BartSimpson_e230_s7360");
+		Directory.CreateDirectory(modelDir);
+		var modelPath = Path.Combine(modelDir, "BartSimpson_e230_s7360.pth");
+		File.WriteAllBytes(modelPath, [0x80]);
+
+		var result = RvcEngine.FindCachedModelExact(voicesDir, "BartSimpson_e230_s7360");
+
+		Assert.Equal(modelPath, result);
+	}
+
+	[Fact]
+	public void FindCachedModelExact_NoMatch_ReturnsNull()
+	{
+		var voicesDir = CreateVoicesDir(Path.Combine(_tempDir, "cached-exact-miss"));
+		var modelDir = Path.Combine(voicesDir, "alpha");
+		Directory.CreateDirectory(modelDir);
+		File.WriteAllBytes(Path.Combine(modelDir, "alpha.pth"), [0x80]);
+
+		var result = RvcEngine.FindCachedModelExact(voicesDir, "missing");
+
+		Assert.Null(result);
+	}
+
+	[Fact]
+	public void FindCachedModel_FuzzyMatch_FindsModel()
+	{
+		var voicesDir = CreateVoicesDir(Path.Combine(_tempDir, "cached-fuzzy"));
+		var modelDir = Path.Combine(voicesDir, "en_US-ryan-high");
+		Directory.CreateDirectory(modelDir);
+		var modelPath = Path.Combine(modelDir, "en_US-ryan-high.onnx");
+		File.WriteAllBytes(modelPath, [0x08]);
+
+		var result = RvcEngine.FindCachedModel(voicesDir, "ryan");
+
+		Assert.Equal(modelPath, result);
+	}
+
+	[Fact]
+	public void FindCachedModel_NoMatch_ReturnsNull()
+	{
+		var voicesDir = CreateVoicesDir(Path.Combine(_tempDir, "cached-fuzzy-miss"));
+		var modelDir = Path.Combine(voicesDir, "en_US-ryan-high");
+		Directory.CreateDirectory(modelDir);
+		File.WriteAllBytes(Path.Combine(modelDir, "en_US-ryan-high.onnx"), [0x08]);
+
+		var result = RvcEngine.FindCachedModel(voicesDir, "definitely-not-here");
+
+		Assert.Null(result);
+	}
+
 	[Fact]
 	public void FindModelFileInDir_PrefersOnnxOverPth()
 	{
@@ -388,7 +457,7 @@ public sealed class RvcEngineTests : IDisposable
 		File.WriteAllBytes(onnxPath, [0x08]);
 		File.WriteAllBytes(pthPath, [0x80]);
 
-		var result = InvokePrivateStaticNullable<string>("FindModelFileInDir", modelDir);
+		var result = RvcEngine.FindModelFileInDir(modelDir);
 
 		Assert.Equal(onnxPath, result);
 	}
@@ -401,7 +470,7 @@ public sealed class RvcEngineTests : IDisposable
 		File.WriteAllBytes(Path.Combine(modelDir, "voice.cached.onnx"), [0x08]);
 		File.WriteAllBytes(Path.Combine(modelDir, "voice.pth"), [0x80]);
 
-		var result = InvokePrivateStaticNullable<string>("FindModelFileInDir", modelDir);
+		var result = RvcEngine.FindModelFileInDir(modelDir);
 
 		// .pth preferred over .cached.onnx when both exist
 		Assert.Equal(Path.Combine(modelDir, "voice.pth"), result);
@@ -415,7 +484,7 @@ public sealed class RvcEngineTests : IDisposable
 		File.WriteAllBytes(Path.Combine(modelDir, "voice.cached.onnx"), [0x08]);
 		File.WriteAllText(Path.Combine(modelDir, "voice.cached.meta"), "32000");
 
-		var result = InvokePrivateStaticNullable<string>("FindModelFileInDir", modelDir);
+		var result = RvcEngine.FindModelFileInDir(modelDir);
 
 		Assert.Equal(Path.Combine(modelDir, "voice.cached.onnx"), result);
 	}
@@ -427,7 +496,7 @@ public sealed class RvcEngineTests : IDisposable
 		Directory.CreateDirectory(modelDir);
 		File.WriteAllBytes(Path.Combine(modelDir, "voice.cached.onnx"), [0x08]);
 
-		var result = InvokePrivateStaticNullable<string>("FindModelFileInDir", modelDir);
+		var result = RvcEngine.FindModelFileInDir(modelDir);
 
 		Assert.Null(result);
 	}
@@ -440,7 +509,7 @@ public sealed class RvcEngineTests : IDisposable
 		File.WriteAllBytes(Path.Combine(modelDir, "voice.cached.onnx"), [0x08]);
 		File.WriteAllText(Path.Combine(modelDir, "voice.cached.meta"), "garbage");
 
-		var result = InvokePrivateStaticNullable<string>("FindModelFileInDir", modelDir);
+		var result = RvcEngine.FindModelFileInDir(modelDir);
 
 		Assert.Null(result);
 	}
@@ -452,7 +521,7 @@ public sealed class RvcEngineTests : IDisposable
 		Directory.CreateDirectory(modelDir);
 		File.WriteAllText(Path.Combine(modelDir, "readme.txt"), "hi");
 
-		var result = InvokePrivateStaticNullable<string>("FindModelFileInDir", modelDir);
+		var result = RvcEngine.FindModelFileInDir(modelDir);
 
 		Assert.Null(result);
 	}
@@ -467,7 +536,7 @@ public sealed class RvcEngineTests : IDisposable
 		File.WriteAllBytes(modelPath, [0x80]);
 		File.WriteAllBytes(indexPath, BuildValidIndexBytes());
 
-		var result = InvokePrivateStaticNullable<string>("FindCompanionIndex", modelPath);
+		var result = RvcEngine.FindCompanionIndex(modelPath);
 
 		Assert.Equal(indexPath, result);
 	}
@@ -482,7 +551,7 @@ public sealed class RvcEngineTests : IDisposable
 		File.WriteAllBytes(modelPath, [0x80]);
 		File.WriteAllBytes(indexPath, [0xDE, 0xAD, 0xBE, 0xEF]);
 
-		var result = InvokePrivateStaticNullable<string>("FindCompanionIndex", modelPath);
+		var result = RvcEngine.FindCompanionIndex(modelPath);
 
 		Assert.Null(result);
 	}
@@ -492,7 +561,7 @@ public sealed class RvcEngineTests : IDisposable
 	{
 		var modelPath = Path.Combine(_tempDir, "missing", "ghost.onnx");
 
-		var result = InvokePrivateStaticNullable<string>("FindCompanionIndex", modelPath);
+		var result = RvcEngine.FindCompanionIndex(modelPath);
 
 		Assert.Null(result);
 	}
@@ -573,7 +642,7 @@ public sealed class RvcEngineTests : IDisposable
 	[InlineData("voice.pth.bak", false)]
 	public void IsPthFile_MatchesExpectedPaths(string path, bool expected)
 	{
-		var result = InvokePrivateStatic<bool>("IsPthFile", path);
+		var result = RvcEngine.IsPthFile(path);
 
 		Assert.Equal(expected, result);
 	}
@@ -586,7 +655,17 @@ public sealed class RvcEngineTests : IDisposable
 	[InlineData("cached.onnx", false)]
 	public void IsCachedOnnxFile_MatchesExpectedPaths(string path, bool expected)
 	{
-		var result = InvokePrivateStatic<bool>("IsCachedOnnxFile", path);
+		var result = RvcEngine.IsCachedOnnxFile(path);
+
+		Assert.Equal(expected, result);
+	}
+
+	[Theory]
+	[InlineData(@"C:\models\voice.cached.onnx", @"C:\models\voice.cached.meta")]
+	[InlineData(@"D:\foo\bar.cached.onnx", @"D:\foo\bar.cached.meta")]
+	public void GetCachedMetaPath_ReturnsCorrectPath(string input, string expected)
+	{
+		var result = RvcEngine.GetCachedMetaPath(input);
 
 		Assert.Equal(expected, result);
 	}
@@ -635,7 +714,7 @@ public sealed class RvcEngineTests : IDisposable
 		File.WriteAllBytes(onnxPath, [0x00]);
 		File.WriteAllText(metaPath, "48000");
 
-		var sr = InvokePrivateStatic<int>("ReadCachedMetaSampleRate", onnxPath);
+		var sr = RvcEngine.ReadCachedMetaSampleRate(onnxPath);
 
 		Assert.Equal(48000, sr);
 	}
@@ -646,7 +725,7 @@ public sealed class RvcEngineTests : IDisposable
 		var onnxPath = Path.Combine(_tempDir, "no-meta.cached.onnx");
 		File.WriteAllBytes(onnxPath, [0x00]);
 
-		var sr = InvokePrivateStatic<int>("ReadCachedMetaSampleRate", onnxPath);
+		var sr = RvcEngine.ReadCachedMetaSampleRate(onnxPath);
 
 		Assert.Equal(40000, sr); // DefaultTargetSampleRate
 	}
@@ -693,7 +772,7 @@ public sealed class RvcEngineTests : IDisposable
 	{
 		var samples = new[] { -0.4f, 0.2f, 0.4f };
 
-		var normalized = InvokePrivateStatic<float[]>("NormalizePeak", samples, 0.95f);
+		var normalized = RvcEngine.NormalizePeak(samples, 0.95f);
 
 		Assert.Same(samples, normalized);
 		Assert.Equal(samples, normalized);
@@ -704,7 +783,7 @@ public sealed class RvcEngineTests : IDisposable
 	{
 		var samples = new[] { -2.0f, 0.5f, 1.0f };
 
-		var normalized = InvokePrivateStatic<float[]>("NormalizePeak", samples, 0.5f);
+		var normalized = RvcEngine.NormalizePeak(samples, 0.5f);
 
 		Assert.NotSame(samples, normalized);
 		AssertEqualWithin([-0.5f, 0.125f, 0.25f], normalized);
@@ -715,7 +794,7 @@ public sealed class RvcEngineTests : IDisposable
 	{
 		var samples = Array.Empty<float>();
 
-		var normalized = InvokePrivateStatic<float[]>("NormalizePeak", samples, 0.75f);
+		var normalized = RvcEngine.NormalizePeak(samples, 0.75f);
 
 		Assert.Same(samples, normalized);
 		Assert.Empty(normalized);
@@ -732,7 +811,7 @@ public sealed class RvcEngineTests : IDisposable
 		var outputAudio = Enumerable.Repeat(0.2f, outputLength).ToArray();
 		var expectedValue = 0.2f * MathF.Pow(4.0f, 1.0f - 0.25f);
 
-		var matched = InvokePrivateStatic<float[]>("MatchRms", sourceAudio, sourceSampleRate, outputAudio, outputSampleRate);
+		var matched = RvcEngine.MatchRms(sourceAudio, sourceSampleRate, outputAudio, outputSampleRate);
 
 		Assert.All
 		(
@@ -744,7 +823,7 @@ public sealed class RvcEngineTests : IDisposable
 	[Fact]
 	public void MatchRms_EmptyOutput_ReturnsEmpty()
 	{
-		var matched = InvokePrivateStatic<float[]>("MatchRms", new float[] { 1.0f, 1.0f }, 16000, Array.Empty<float>(), 16000);
+		var matched = RvcEngine.MatchRms(new float[] { 1.0f, 1.0f }, 16000, Array.Empty<float>(), 16000);
 
 		Assert.Empty(matched);
 	}
@@ -756,7 +835,7 @@ public sealed class RvcEngineTests : IDisposable
 	[InlineData(-1200.0f, 5.0f)]
 	public void DecodeF0_ConvertsCentsToExpectedHz(float centsValue, float expectedHz)
 	{
-		var decoded = InvokePrivateStatic<float[]>("DecodeF0", new[] { centsValue });
+		var decoded = RvcEngine.DecodeF0([centsValue]);
 
 		AssertEqualWithin([expectedHz], decoded);
 	}
@@ -764,7 +843,7 @@ public sealed class RvcEngineTests : IDisposable
 	[Fact]
 	public void DecodeF0_EmptyInput_ReturnsEmpty()
 	{
-		var decoded = InvokePrivateStatic<float[]>("DecodeF0", Array.Empty<float>());
+		var decoded = RvcEngine.DecodeF0(Array.Empty<float>());
 
 		Assert.Empty(decoded);
 	}
@@ -777,7 +856,7 @@ public sealed class RvcEngineTests : IDisposable
 			{ 0.01f, 0.02f, 0.03f },
 		};
 
-		var cents = InvokePrivateStatic<float[]>("DecodeLocalAverageCents", salience, 0.03f);
+		var cents = RvcEngine.DecodeLocalAverageCents(salience, 0.03f);
 
 		AssertEqualWithin([0.0f], cents);
 	}
@@ -791,7 +870,7 @@ public sealed class RvcEngineTests : IDisposable
 		};
 		var expected = ((0.2f * MapCents(9)) + (1.0f * MapCents(10)) + (0.8f * MapCents(11))) / 2.0f;
 
-		var cents = InvokePrivateStatic<float[]>("DecodeLocalAverageCents", salience, 0.03f);
+		var cents = RvcEngine.DecodeLocalAverageCents(salience, 0.03f);
 
 		AssertEqualWithin([expected], cents);
 	}
@@ -799,7 +878,7 @@ public sealed class RvcEngineTests : IDisposable
 	[Fact]
 	public void QuantizePitch_ClampsAndRoundsToExpectedBuckets()
 	{
-		var quantized = InvokePrivateStatic<long[]>("QuantizePitch", new float[] { 0.0f, 50.0f, 440.0f, 1100.0f, 5000.0f });
+		var quantized = RvcEngine.QuantizePitch([0.0f, 50.0f, 440.0f, 1100.0f, 5000.0f]);
 
 		Assert.Equal([1L, 1L, QuantizeExpected(440.0f), 255L, 255L], quantized);
 	}
@@ -883,7 +962,7 @@ public sealed class RvcEngineTests : IDisposable
 			{ 5.0f, 6.0f },
 		};
 
-		var sliced = InvokePrivateStatic<float[,]>("SliceFeatures", features, 2);
+		var sliced = RvcEngine.SliceFeatures(features, 2);
 
 		Assert.Equal(2, sliced.GetLength(0));
 		Assert.Equal(2, sliced.GetLength(1));
@@ -901,7 +980,7 @@ public sealed class RvcEngineTests : IDisposable
 			{ 5.0f, 6.0f },
 		};
 
-		InvokePrivateStatic("ApplyProtect", features, new[] { 120.0f, 0.0f });
+		RvcEngine.ApplyProtect(features, [120.0f, 0.0f]);
 
 		Assert.Equal(1.0f, features[0, 0]);
 		Assert.Equal(2.0f, features[0, 1]);
@@ -920,7 +999,7 @@ public sealed class RvcEngineTests : IDisposable
 			{ 3.0f, 4.0f },
 		};
 
-		var result = InvokePrivateStatic<(Float16[] Data, long[] Dimensions)>("CreatePhoneArray", features, 3);
+		var result = RvcEngine.CreatePhoneArray(features, 3);
 
 		Assert.Equal([1L, 3L, 2L], result.Dimensions);
 		Assert.Equal(6, result.Data.Length);
@@ -932,7 +1011,7 @@ public sealed class RvcEngineTests : IDisposable
 	{
 		var features = new float[,] { { 1.0f, 2.0f } };
 
-		var result = InvokePrivateStatic<(Float16[] Data, long[] Dimensions)>("CreatePhoneArray", features, 0);
+		var result = RvcEngine.CreatePhoneArray(features, 0);
 
 		Assert.Equal([1L, 0L, 2L], result.Dimensions);
 		Assert.Empty(result.Data);
@@ -943,7 +1022,7 @@ public sealed class RvcEngineTests : IDisposable
 	[InlineData(3)]
 	public void CreateNoiseArray_ReturnsExpectedShape(int frameCount)
 	{
-		var result = InvokePrivateStatic<(Float16[] Data, long[] Dimensions)>("CreateNoiseArray", frameCount);
+		var result = RvcEngine.CreateNoiseArray(frameCount);
 
 		Assert.Equal([1L, 192L, frameCount], result.Dimensions);
 		Assert.Equal(192 * frameCount, result.Data.Length);
@@ -956,9 +1035,8 @@ public sealed class RvcEngineTests : IDisposable
 	[Fact]
 	public void Concatenate_JoinsAllSegmentsIncludingEmptyOnes()
 	{
-		var combined = InvokePrivateStatic<float[]>
+		var combined = RvcEngine.Concatenate
 		(
-			"Concatenate",
 			new List<float[]>
 			{
 				new float[] { 1.0f, 2.0f },
@@ -973,9 +1051,33 @@ public sealed class RvcEngineTests : IDisposable
 	[Fact]
 	public void Concatenate_WithNoSegments_ReturnsEmpty()
 	{
-		var combined = InvokePrivateStatic<float[]>("Concatenate", new List<float[]>());
+		var combined = RvcEngine.Concatenate(new List<float[]>());
 
 		Assert.Empty(combined);
+	}
+
+	[Fact]
+	public void ClampPitchRange_ClampsToArrayBounds()
+	{
+		var slice = new RvcEngine.SegmentSlice(new float[100], 7, 20);
+		var pitch = new long[5];
+		var pitchf = new float[3];
+
+		var result = RvcEngine.ClampPitchRange(slice, pitch, pitchf);
+
+		Assert.Equal(3, result.PitchStart);
+		Assert.Equal(3, result.PitchEnd);
+	}
+
+	[Fact]
+	public void ClampPitchRange_EmptyArrays_ReturnsZeroRange()
+	{
+		var slice = new RvcEngine.SegmentSlice(new float[100], 4, 10);
+
+		var result = RvcEngine.ClampPitchRange(slice, Array.Empty<long>(), Array.Empty<float>());
+
+		Assert.Equal(0, result.PitchStart);
+		Assert.Equal(0, result.PitchEnd);
 	}
 
 	private static string CreateVoicesDir(string baseDir)
@@ -1079,12 +1181,6 @@ public sealed class RvcEngineTests : IDisposable
 	{
 		return (T)(InvokePrivateStatic(methodName, args)
 			?? throw new InvalidOperationException($"Method '{methodName}' returned null."));
-	}
-
-	private static T? InvokePrivateStaticNullable<T>(string methodName, params object?[]? args)
-		where T : class
-	{
-		return InvokePrivateStatic(methodName, args) as T;
 	}
 
 	private static void AssertEqualWithin(float[] expected, float[] actual, float tolerance = 1.0e-4f)

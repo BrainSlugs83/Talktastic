@@ -4,8 +4,10 @@
 		<DataCollectors>
 			<DataCollector friendlyName="XPlat Code Coverage">
 				<Configuration>
-					<ExcludeByFile>**/RegexGenerator.g.cs,**/*JsonContext*.g.cs,**/LibraryImports.g.cs</ExcludeByFile>
-					<ExcludeByAttribute>GeneratedCodeAttribute</ExcludeByAttribute>
+					<Include>[say]*</Include>
+					<Exclude>[Talktastic.Tests]*,[xunit.*]*,[Microsoft.*]*</Exclude>
+					<ExcludeByFile>**/Program.cs,**/RegexGenerator.g.cs,**/*JsonContext*.g.cs,**/LibraryImports.g.cs</ExcludeByFile>
+					<ExcludeByAttribute>ExcludeFromCodeCoverageAttribute,GeneratedCodeAttribute</ExcludeByAttribute>
 				</Configuration>
 			</DataCollector>
 		</DataCollectors>

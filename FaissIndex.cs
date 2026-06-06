@@ -109,6 +109,11 @@ static partial class FaissIndex
 		return Read(br);
 	}
 
+	/// <summary>
+	/// Reads the index.
+	/// </summary>
+	/// <param name="br">The binary reader.</param>
+	/// <returns>The loaded index.</returns>
 	private static Index Read(BinaryReader br)
 	{
 		var magic = br.ReadUInt32();
@@ -354,6 +359,15 @@ static partial class FaissIndex
 		return result;
 	}
 
+	/// <summary>
+	/// Searches IVF clusters and blends the results.
+	/// </summary>
+	/// <param name="index">The i.</param>
+	/// <param name="queries">The query vectors.</param>
+	/// <param name="frameCount">The frame count.</param>
+	/// <param name="actualK">The neighbor count.</param>
+	/// <param name="indexRate">The index blend rate.</param>
+	/// <param name="result">The result map.</param>
 	private static void SearchAndBlendIvf
 	(
 		Index index,
@@ -465,6 +479,15 @@ static partial class FaissIndex
 			);
 	}
 
+	/// <summary>
+	/// Searches all vectors and blends the results.
+	/// </summary>
+	/// <param name="index">The i.</param>
+	/// <param name="queries">The query vectors.</param>
+	/// <param name="frameCount">The frame count.</param>
+	/// <param name="actualK">The neighbor count.</param>
+	/// <param name="indexRate">The index blend rate.</param>
+	/// <param name="result">The result map.</param>
 	private static void SearchAndBlendBruteForce
 	(
 		Index index,
@@ -509,6 +532,19 @@ static partial class FaissIndex
 			);
 	}
 
+	/// <summary>
+	/// Blends the neighbor results.
+	/// </summary>
+	/// <param name="queries">The query vectors.</param>
+	/// <param name="qOffset">The query offset.</param>
+	/// <param name="vectors">The index vectors.</param>
+	/// <param name="d">The vector dimension.</param>
+	/// <param name="topKIdx">The neighbor indices.</param>
+	/// <param name="topKDist">The neighbor distances.</param>
+	/// <param name="usedK">The number of neighbors used.</param>
+	/// <param name="indexRate">The index blend rate.</param>
+	/// <param name="result">The result map.</param>
+	/// <param name="rOffset">The result offset.</param>
 	private static void BlendResults
 	(
 		float[] queries,
@@ -562,6 +598,15 @@ static partial class FaissIndex
 		}
 	}
 
+	/// <summary>
+	/// Computes the L2 distance.
+	/// </summary>
+	/// <param name="a">The first vector.</param>
+	/// <param name="aOffset">The first vector offset.</param>
+	/// <param name="b">The second vector.</param>
+	/// <param name="bOffset">The second vector offset.</param>
+	/// <param name="d">The vector dimension.</param>
+	/// <returns>The computed distance.</returns>
 	private static float ComputeL2Distance
 	(
 		float[] a,
@@ -602,6 +647,15 @@ static partial class FaissIndex
 		return sum;
 	}
 
+	/// <summary>
+	/// Computes the L2 distances.
+	/// </summary>
+	/// <param name="queries">The query vectors.</param>
+	/// <param name="queryOffset">The query offset.</param>
+	/// <param name="vectors">The index vectors.</param>
+	/// <param name="d">The vector dimension.</param>
+	/// <param name="n">The item count.</param>
+	/// <param name="distances">The distances.</param>
 	private static void ComputeL2Distances
 	(
 		float[] queries,
@@ -688,6 +742,13 @@ static partial class FaissIndex
 		}
 	}
 
+	/// <summary>
+	/// Sifts the Down.
+	/// </summary>
+	/// <param name="dist">The distances.</param>
+	/// <param name="idx">The indices.</param>
+	/// <param name="n">The item count.</param>
+	/// <param name="i">The index.</param>
 	private static void SiftDown(float[] dist, int[] idx, int n, int i)
 	{
 		while (true)
@@ -717,6 +778,11 @@ static partial class FaissIndex
 		}
 	}
 
+	/// <summary>
+	/// Skips the Bytes.
+	/// </summary>
+	/// <param name="br">The binary reader.</param>
+	/// <param name="count">The byte count.</param>
 	private static void SkipBytes(BinaryReader br, long count)
 	{
 		if (br.BaseStream.CanSeek)

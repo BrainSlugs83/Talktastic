@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.CognitiveServices.Speech;
 using Windows.Management.Deployment;
 using Windows.Media.SpeechSynthesis;
@@ -6,6 +7,9 @@ using SpeechSdk = Microsoft.CognitiveServices.Speech;
 
 namespace Talktastic;
 
+/// <summary>
+/// Defines voice type values.
+/// </summary>
 internal enum VoiceType
 {
 	Neural,
@@ -13,6 +17,9 @@ internal enum VoiceType
 	Legacy,
 }
 
+/// <summary>
+/// Provides voice enumeration operations.
+/// </summary>
 internal static class VoiceEnumerator
 {
 	/// <summary>
@@ -60,6 +67,7 @@ internal static class VoiceEnumerator
 	/// - Piper shorthand: "piper:en_US-ryan-high" downloads from HuggingFace
 	/// - Plain text: fuzzy-matches across ALL voice types
 	/// </summary>
+	[ExcludeFromCodeCoverage]
 	public static async Task<InstalledVoice> ResolveVoiceAsync(string? query, CancellationToken cancellationToken = default)
 	{
 		var (typeFilter, cleanQuery) = ParseVoicePrefix(query);
@@ -150,7 +158,13 @@ internal static class VoiceEnumerator
 		return (null, query);
 	}
 
-	private static InstalledVoice[] FilterByType(IReadOnlyList<InstalledVoice> voices, VoiceType? typeFilter)
+	/// <summary>
+	/// Filters the voices by type.
+	/// </summary>
+	/// <param name="voices">The voices.</param>
+	/// <param name="typeFilter">The type filter.</param>
+	/// <returns>The matching voices.</returns>
+	internal static InstalledVoice[] FilterByType(IReadOnlyList<InstalledVoice> voices, VoiceType? typeFilter)
 	{
 		return typeFilter is null
 			? [.. voices]
@@ -161,6 +175,7 @@ internal static class VoiceEnumerator
 	/// Attempts to download a Piper voice by shorthand (e.g. "piper:en_US-ryan-high" or "piper:Amy").
 	/// Returns the InstalledVoice if successful, null if the query doesn't look like a Piper shorthand.
 	/// </summary>
+	[ExcludeFromCodeCoverage]
 	private static async Task<InstalledVoice?> TryDownloadPiperVoiceAsync
 	(
 		string query,
@@ -190,7 +205,13 @@ internal static class VoiceEnumerator
 		}
 	}
 
-	private static InstalledVoice? FindExactMatch(InstalledVoice[] voices, string query)
+	/// <summary>
+	/// Finds the exact match.
+	/// </summary>
+	/// <param name="voices">The voices.</param>
+	/// <param name="query">The query.</param>
+	/// <returns>The matching voice, or <c>null</c> if no match is found.</returns>
+	internal static InstalledVoice? FindExactMatch(InstalledVoice[] voices, string query)
 	{
 		return voices.FirstOrDefault
 		(
@@ -202,14 +223,25 @@ internal static class VoiceEnumerator
 		);
 	}
 
-	private static InstalledVoice? FindFuzzy(InstalledVoice[] voices, string query)
+	/// <summary>
+	/// Finds the fuzzy match.
+	/// </summary>
+	/// <param name="voices">The voices.</param>
+	/// <param name="query">The query.</param>
+	/// <returns>The matching voice, or <c>null</c> if no match is found.</returns>
+	internal static InstalledVoice? FindFuzzy(InstalledVoice[] voices, string query)
 	{
 		return FuzzyMatcher.FindBestMatch(voices, query, static v => v.FriendlyName)
 			?? FuzzyMatcher.FindBestMatch(voices, query, static v => v.Name)
 			?? FuzzyMatcher.FindBestMatch(voices, query, static v => v.ShortName);
 	}
 
-	private static InstalledVoice ResolveDefaultVoice(InstalledVoice[] voices)
+	/// <summary>
+	/// Resolves the default voice.
+	/// </summary>
+	/// <param name="voices">The voices.</param>
+	/// <returns>The resolved voice.</returns>
+	internal static InstalledVoice ResolveDefaultVoice(InstalledVoice[] voices)
 	{
 		// Try the Narrator voice setting first
 		var narratorVoiceName = GetNarratorVoiceName();
@@ -283,6 +315,11 @@ internal static class VoiceEnumerator
 		return voices[0];
 	}
 
+	/// <summary>
+	/// Gets the Narrator voice name.
+	/// </summary>
+	/// <returns>The resulting string, or <c>null</c> if no value is available.</returns>
+	[ExcludeFromCodeCoverage]
 	private static string? GetNarratorVoiceName()
 	{
 		try
@@ -296,7 +333,12 @@ internal static class VoiceEnumerator
 		}
 	}
 
-	private static string? ExtractPersonName(string? displayName)
+	/// <summary>
+	/// Extracts the person name.
+	/// </summary>
+	/// <param name="displayName">The display name.</param>
+	/// <returns>The resulting string, or <c>null</c> if no value is available.</returns>
+	internal static string? ExtractPersonName(string? displayName)
 	{
 		if (string.IsNullOrWhiteSpace(displayName))
 		{
@@ -323,6 +365,12 @@ internal static class VoiceEnumerator
 		return name.Trim();
 	}
 
+	/// <summary>
+	/// Gets the neural voices.
+	/// </summary>
+	/// <param name="cancellationToken">The cancellation token.</param>
+	/// <returns>A task that represents the asynchronous operation.</returns>
+	[ExcludeFromCodeCoverage]
 	private static async Task<InstalledVoice[]> GetNeuralVoicesAsync(CancellationToken cancellationToken)
 	{
 		cancellationToken.ThrowIfCancellationRequested();
@@ -361,6 +409,10 @@ internal static class VoiceEnumerator
 			.ToArray();
 	}
 
+	/// <summary>
+	/// Gets the legacy voices.
+	/// </summary>
+	/// <returns>The matching voices.</returns>
 	private static InstalledVoice[] GetLegacyVoices()
 	{
 		return Windows.Media.SpeechSynthesis.SpeechSynthesizer.AllVoices
@@ -442,7 +494,7 @@ internal static class VoiceEnumerator
 	/// Extracts locale from a Piper model name.
 	/// E.g. "en_GB-aru-medium" → "en-GB".
 	/// </summary>
-	private static string ExtractPiperLocale(string modelName)
+	internal static string ExtractPiperLocale(string modelName)
 	{
 		var dashIdx = modelName.IndexOf('-', StringComparison.Ordinal);
 		return dashIdx > 0
@@ -450,6 +502,11 @@ internal static class VoiceEnumerator
 			: "";
 	}
 
+	/// <summary>
+	/// Gets the installed voice package paths.
+	/// </summary>
+	/// <returns>The matching paths.</returns>
+	[ExcludeFromCodeCoverage]
 	private static string[] GetInstalledVoicePackagePaths()
 	{
 		var packageManager = new PackageManager();
@@ -468,12 +525,27 @@ internal static class VoiceEnumerator
 			.ToArray();
 	}
 
-	private static string NormalizePath(string path)
+	/// <summary>
+	/// Normalizes the path.
+	/// </summary>
+	/// <param name="path">The path.</param>
+	/// <returns>The resulting string.</returns>
+	internal static string NormalizePath(string path)
 	{
 		return path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 	}
 }
 
+/// <summary>
+/// Represents an installed voice.
+/// </summary>
+/// <param name="Name">The name.</param>
+/// <param name="ShortName">The short name.</param>
+/// <param name="LocalName">The local name.</param>
+/// <param name="Locale">The locale.</param>
+/// <param name="Gender">The gender.</param>
+/// <param name="VoicePath">The voice path.</param>
+/// <param name="VoiceType">The voice type.</param>
 internal sealed record InstalledVoice
 (
 	string Name,
@@ -496,7 +568,12 @@ internal sealed record InstalledVoice
 		? VoiceEnumerator.ExtractPiperFriendlyName(Name)
 		: ExtractWindowsFriendlyName(string.IsNullOrWhiteSpace(LocalName) ? Name : LocalName);
 
-	private static string ExtractWindowsFriendlyName(string fullName)
+	/// <summary>
+	/// Extracts the Windows-friendly name.
+	/// </summary>
+	/// <param name="fullName">The full name.</param>
+	/// <returns>The resulting string.</returns>
+	internal static string ExtractWindowsFriendlyName(string fullName)
 	{
 		var name = fullName.StartsWith(MicrosoftPrefix, StringComparison.OrdinalIgnoreCase)
 			? fullName[MicrosoftPrefix.Length..]

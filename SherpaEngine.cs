@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
@@ -20,6 +21,7 @@ internal static class SherpaEngine
 	/// <summary>
 	/// Synthesizes text to WAV bytes using a Piper ONNX model via sherpa-onnx.
 	/// </summary>
+	[ExcludeFromCodeCoverage]
 	public static byte[] SynthesizeToWav
 	(
 		string text,
@@ -140,6 +142,11 @@ internal static class SherpaEngine
 		return ExtractEspeakData();
 	}
 
+	/// <summary>
+	/// Extracts the eSpeak Data.
+	/// </summary>
+	/// <returns>The resulting string.</returns>
+	[ExcludeFromCodeCoverage]
 	private static string ExtractEspeakData()
 	{
 		var assembly = typeof(SherpaEngine).Assembly;
@@ -247,7 +254,7 @@ internal static class SherpaEngine
 	/// Checks if the ONNX model bytes contain a 'model_type' metadata property,
 	/// indicating sherpa-onnx compatibility.
 	/// </summary>
-	private static bool HasSherpaMetadata(byte[] data)
+	internal static bool HasSherpaMetadata(byte[] data)
 	{
 		// Quick scan for the string "model_type" in the file.
 		// This is a heuristic -- protobuf metadata_props contain this as a key.
@@ -255,7 +262,13 @@ internal static class SherpaEngine
 		return ContainsSequence(data, needle);
 	}
 
-	private static bool ContainsSequence(byte[] haystack, byte[] needle)
+	/// <summary>
+	/// Determines whether the source data contains the sequence.
+	/// </summary>
+	/// <param name="haystack">The source data.</param>
+	/// <param name="needle">The sequence to find.</param>
+	/// <returns><c>true</c> if the condition is met; otherwise, <c>false</c>.</returns>
+	internal static bool ContainsSequence(byte[] haystack, byte[] needle)
 	{
 		for (var i = 0; i <= haystack.Length - needle.Length; i++)
 		{
@@ -282,7 +295,7 @@ internal static class SherpaEngine
 	/// Encodes metadata key-value pairs as protobuf StringStringEntryProto
 	/// fields for ModelProto.metadata_props (field 14).
 	/// </summary>
-	private static byte[] EncodeMetadataProps(Dictionary<string, string> metadata)
+	internal static byte[] EncodeMetadataProps(Dictionary<string, string> metadata)
 	{
 		using var ms = new MemoryStream();
 
@@ -315,12 +328,23 @@ internal static class SherpaEngine
 		return ms.ToArray();
 	}
 
-	private static void WriteTag(Stream stream, int fieldNumber, int wireType)
+	/// <summary>
+	/// Writes the Tag.
+	/// </summary>
+	/// <param name="stream">The stream.</param>
+	/// <param name="fieldNumber">The field number.</param>
+	/// <param name="wireType">The wire type.</param>
+	internal static void WriteTag(Stream stream, int fieldNumber, int wireType)
 	{
 		WriteVarint(stream, (fieldNumber << 3) | wireType);
 	}
 
-	private static void WriteVarint(Stream stream, int value)
+	/// <summary>
+	/// Writes the Varint.
+	/// </summary>
+	/// <param name="stream">The stream.</param>
+	/// <param name="value">The value.</param>
+	internal static void WriteVarint(Stream stream, int value)
 	{
 		var v = (uint)value;
 		while (v >= 0x80)
@@ -335,7 +359,7 @@ internal static class SherpaEngine
 	/// <summary>
 	/// Builds a WAV file from raw PCM float samples.
 	/// </summary>
-	private static byte[] BuildWav(float[] samples, int sampleRate)
+	internal static byte[] BuildWav(float[] samples, int sampleRate)
 	{
 		var bitsPerSample = 16;
 		var channels = 1;

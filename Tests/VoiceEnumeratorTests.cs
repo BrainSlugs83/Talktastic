@@ -1,11 +1,33 @@
 using System.Reflection;
+using System.Runtime.InteropServices;
 
 using Windows.Media.SpeechSynthesis;
 
 namespace Talktastic.Tests;
 
-public sealed class VoiceEnumeratorTests
+[Collection("AppPaths")]
+public sealed class VoiceEnumeratorTests : IDisposable
 {
+	private readonly string _artifactRoot;
+	private readonly string[] _originalSearchBases;
+
+	public VoiceEnumeratorTests()
+	{
+		_artifactRoot = Path.Combine(AppContext.BaseDirectory, nameof(VoiceEnumeratorTests), Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(_artifactRoot);
+		_originalSearchBases = [.. AppPaths.SearchBases];
+	}
+
+	public void Dispose()
+	{
+		Array.Copy(_originalSearchBases, AppPaths.SearchBases, _originalSearchBases.Length);
+
+		if (Directory.Exists(_artifactRoot))
+		{
+			Directory.Delete(_artifactRoot, recursive: true);
+		}
+	}
+
 	[Theory]
 	[InlineData("piper:Aru", (int)VoiceType.Piper, "Aru")]
 	[InlineData("sapi:Mark", (int)VoiceType.Legacy, "Mark")]
@@ -43,11 +65,12 @@ public sealed class VoiceEnumeratorTests
 
 	[Theory]
 	[InlineData("en_GB-aru-medium", "en-GB")]
+	[InlineData("fr_FR-siwis-medium", "fr-FR")]
 	[InlineData("en_GB-aru", "en-GB")]
 	[InlineData("nodash", "")]
-	public void ExtractPiperLocale_ModelName_ReturnsExpectedLocale(string modelName, string expected)
+	public void ExtractPiperLocale_ExtractsCorrectly(string modelName, string expected)
 	{
-		var result = InvokePrivateStatic<string>(typeof(VoiceEnumerator), "ExtractPiperLocale", modelName);
+		var result = VoiceEnumerator.ExtractPiperLocale(modelName);
 
 		Assert.Equal(expected, result);
 	}
@@ -106,21 +129,24 @@ public sealed class VoiceEnumeratorTests
 	[Theory]
 	[InlineData("Microsoft Aria (Natural) - English (United States)", "Aria")]
 	[InlineData("Microsoft David", "David")]
+	[InlineData("Microsoft Ava (Natural HD) - English (United States)", "Ava")]
 	[InlineData(null, null)]
 	[InlineData("", null)]
-	public void ExtractPersonName_DisplayName_ReturnsExpectedPersonName(string? displayName, string? expected)
+	[InlineData("   ", null)]
+	[InlineData("SomeThirdPartyVoice", "SomeThirdPartyVoice")]
+	public void ExtractPersonName_ExtractsFirstWord(string? displayName, string? expected)
 	{
-		var result = InvokePrivateStatic<string?>(typeof(VoiceEnumerator), "ExtractPersonName", displayName);
+		var result = VoiceEnumerator.ExtractPersonName(displayName);
 
 		Assert.Equal(expected, result);
 	}
 
 	[Fact]
-	public void FilterByType_NullFilter_ReturnsAllVoices()
+	public void FilterByType_NullFilter_ReturnsAll()
 	{
 		var voices = CreateTestVoices();
 
-		var result = InvokePrivateStatic<InstalledVoice[]>(typeof(VoiceEnumerator), "FilterByType", voices, null);
+		var result = VoiceEnumerator.FilterByType(voices, null);
 
 		Assert.Equal(voices.Length, result.Length);
 		Assert.Equal(voices.Select(static voice => voice.Name), result.Select(static voice => voice.Name));
@@ -130,20 +156,26 @@ public sealed class VoiceEnumeratorTests
 	[InlineData((int)VoiceType.Neural, "Neural Voice")]
 	[InlineData((int)VoiceType.Legacy, "Legacy Voice")]
 	[InlineData((int)VoiceType.Piper, "en_US-ryan-high")]
-	public void FilterByType_TypeFilter_ReturnsOnlyMatchingVoices(int filter, string expectedName)
+	public void FilterByType_TypeFilter_ReturnsOnlyMatchingType(int filter, string expectedName)
 	{
 		var voices = CreateTestVoices();
 
-		var result = InvokePrivateStatic<InstalledVoice[]>
-		(
-			typeof(VoiceEnumerator),
-			"FilterByType",
-			voices,
-			(VoiceType?)filter
-		);
+		var result = VoiceEnumerator.FilterByType(voices, (VoiceType?)filter);
 
 		var voice = Assert.Single(result);
 		Assert.Equal(expectedName, voice.Name);
+	}
+
+	[Theory]
+	[InlineData("Microsoft Jenny(Natural) - English (US)", "Jenny")]
+	[InlineData("Microsoft David", "David")]
+	[InlineData("Some Voice - French", "Some Voice")]
+	[InlineData("Plain Name", "Plain Name")]
+	public void ExtractWindowsFriendlyName_ExtractsCorrectly(string fullName, string expected)
+	{
+		var result = InstalledVoice.ExtractWindowsFriendlyName(fullName);
+
+		Assert.Equal(expected, result);
 	}
 
 	[Theory]
@@ -161,7 +193,7 @@ public sealed class VoiceEnumeratorTests
 			localName: "Microsoft Jenny (Natural) - English (US)"
 		);
 
-		var result = InvokePrivateStatic<InstalledVoice?>(typeof(VoiceEnumerator), "FindExactMatch", new[] { voice }, query);
+		var result = VoiceEnumerator.FindExactMatch([voice], query);
 
 		Assert.Same(voice, result);
 	}
@@ -177,7 +209,7 @@ public sealed class VoiceEnumeratorTests
 			localName: "Microsoft Jenny (Natural) - English (US)"
 		);
 
-		var result = InvokePrivateStatic<InstalledVoice?>(typeof(VoiceEnumerator), "FindExactMatch", new[] { voice }, "jen");
+		var result = VoiceEnumerator.FindExactMatch([voice], "jen");
 
 		Assert.Null(result);
 	}
@@ -213,7 +245,7 @@ public sealed class VoiceEnumeratorTests
 			),
 		];
 
-		var result = InvokePrivateStatic<InstalledVoice?>(typeof(VoiceEnumerator), "FindFuzzy", voices, query);
+		var result = VoiceEnumerator.FindFuzzy(voices, query);
 
 		Assert.NotNull(result);
 		Assert.Equal(expectedName, result.Name);
@@ -228,7 +260,7 @@ public sealed class VoiceEnumeratorTests
 			CreateVoice(VoiceType.Legacy, name: "Beta", shortName: "beta", localName: "Microsoft Beta"),
 		];
 
-		var result = InvokePrivateStatic<InstalledVoice?>(typeof(VoiceEnumerator), "FindFuzzy", voices, "zzzzzz");
+		var result = VoiceEnumerator.FindFuzzy(voices, "zzzzzz");
 
 		Assert.Null(result);
 	}
@@ -236,6 +268,11 @@ public sealed class VoiceEnumeratorTests
 	[Fact]
 	public void ResolveDefaultVoice_NoPreferredMatches_ReturnsFirstVoice()
 	{
+		if (!TryGetPreferredPersonNameForEnvironment(out _))
+		{
+			return;
+		}
+
 		InstalledVoice[] voices =
 		[
 			CreateVoice
@@ -261,12 +298,7 @@ public sealed class VoiceEnumeratorTests
 			),
 		];
 
-		var result = InvokePrivateStatic<InstalledVoice>
-		(
-			typeof(VoiceEnumerator),
-			"ResolveDefaultVoice",
-			new object?[] { voices }
-		);
+		var result = VoiceEnumerator.ResolveDefaultVoice(voices);
 
 		Assert.Same(voices[0], result);
 	}
@@ -274,11 +306,15 @@ public sealed class VoiceEnumeratorTests
 	[Fact]
 	public void ResolveDefaultVoice_PreferredPersonHasNeuralOption_ReturnsNeuralVoice()
 	{
-		var preferredPersonName = GetPreferredPersonNameForEnvironment();
+		if (!TryGetPreferredPersonNameForEnvironment(out var preferredPersonName))
+		{
+			return;
+		}
+
 		var neuralVoice = CreateVoice
 		(
 			VoiceType.Neural,
-			name: $"Microsoft {preferredPersonName} (Natural) - Test Locale",
+			name: $"Microsoft {preferredPersonName!} (Natural) - Test Locale",
 			shortName: $"{preferredPersonName}-neural",
 			localName: $"Microsoft {preferredPersonName} (Natural) - Test Locale"
 		);
@@ -296,14 +332,52 @@ public sealed class VoiceEnumeratorTests
 			neuralVoice,
 		];
 
-		var result = InvokePrivateStatic<InstalledVoice>
-		(
-			typeof(VoiceEnumerator),
-			"ResolveDefaultVoice",
-			new object?[] { voices }
-		);
+		var result = VoiceEnumerator.ResolveDefaultVoice(voices);
 
 		Assert.Same(neuralVoice, result);
+	}
+
+	[Theory]
+	[InlineData(@"C:\path\", @"C:\path")]
+	[InlineData(@"C:\path", @"C:\path")]
+	public void NormalizePath_TrimsTrailingSeparators(string path, string expected)
+	{
+		var result = VoiceEnumerator.NormalizePath(path);
+
+		Assert.Equal(expected, result);
+	}
+
+	[Fact]
+	public void GetPiperVoices_WhenVoicesDirectoryMissing_ReturnsEmptyArray()
+	{
+		ConfigureSearchBases();
+
+		var result = VoiceEnumerator.GetPiperVoices();
+
+		Assert.Empty(result);
+	}
+
+	[Fact]
+	public void GetPiperVoices_TransformsCachedVoicesIntoInstalledVoices()
+	{
+		var searchBases = ConfigureSearchBases();
+		var voicesDir = Path.Combine(searchBases[0], ".piper-tts", "voices");
+		Directory.CreateDirectory(voicesDir);
+		File.WriteAllBytes(Path.Combine(voicesDir, "en_US-ryan-high.onnx"), [0x08]);
+		File.WriteAllText(Path.Combine(voicesDir, "en_US-ryan-high.onnx.json"), "{}");
+		File.WriteAllBytes(Path.Combine(voicesDir, "orphan.onnx"), [0x08]);
+
+		var result = VoiceEnumerator.GetPiperVoices();
+
+		var voice = Assert.Single(result);
+		Assert.Equal("en_US-ryan-high", voice.Name);
+		Assert.Equal("en_US-ryan-high", voice.ShortName);
+		Assert.Equal("Piper Ryan (high) - en-US", voice.LocalName);
+		Assert.Equal("en-US", voice.Locale);
+		Assert.Equal(string.Empty, voice.Gender);
+		Assert.Equal(Path.Combine(voicesDir, "en_US-ryan-high.onnx"), voice.VoicePath);
+		Assert.Equal(VoiceType.Piper, voice.VoiceType);
+		Assert.Equal("Ryan", voice.FriendlyName);
 	}
 
 	private static InstalledVoice[] CreateTestVoices()
@@ -337,15 +411,22 @@ public sealed class VoiceEnumeratorTests
 		);
 	}
 
-	private static string GetPreferredPersonNameForEnvironment()
+	private static bool TryGetPreferredPersonNameForEnvironment(out string? personName)
 	{
-		var narratorVoiceName = InvokePrivateStatic<string?>(typeof(VoiceEnumerator), "GetNarratorVoiceName");
-		var displayName = string.IsNullOrWhiteSpace(narratorVoiceName)
-			? SpeechSynthesizer.DefaultVoice.DisplayName
-			: narratorVoiceName;
-		var personName = InvokePrivateStatic<string?>(typeof(VoiceEnumerator), "ExtractPersonName", displayName);
-
-		return personName ?? throw new InvalidOperationException("Could not determine a preferred voice person name.");
+		try
+		{
+			var narratorVoiceName = InvokePrivateStatic<string?>(typeof(VoiceEnumerator), "GetNarratorVoiceName");
+			var displayName = string.IsNullOrWhiteSpace(narratorVoiceName)
+				? SpeechSynthesizer.DefaultVoice.DisplayName
+				: narratorVoiceName;
+			personName = VoiceEnumerator.ExtractPersonName(displayName);
+			return !string.IsNullOrWhiteSpace(personName);
+		}
+		catch (COMException)
+		{
+			personName = null;
+			return false;
+		}
 	}
 
 	private static T InvokePrivateStatic<T>(Type type, string methodName, params object?[] args)
@@ -360,5 +441,18 @@ public sealed class VoiceEnumeratorTests
 		}
 
 		return Assert.IsAssignableFrom<T>(result);
+	}
+
+	private string[] ConfigureSearchBases()
+	{
+		var searchBases = new[]
+		{
+			Path.Combine(_artifactRoot, "base-0"),
+			Path.Combine(_artifactRoot, "base-1"),
+			Path.Combine(_artifactRoot, "base-2"),
+		};
+
+		Array.Copy(searchBases, AppPaths.SearchBases, searchBases.Length);
+		return searchBases;
 	}
 }

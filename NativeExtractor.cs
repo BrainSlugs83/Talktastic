@@ -9,6 +9,9 @@ using System.Text.Json.Serialization;
 
 namespace Talktastic;
 
+/// <summary>
+/// Defines native DLL group values.
+/// </summary>
 [Flags]
 internal enum DllGroup
 {
@@ -18,6 +21,9 @@ internal enum DllGroup
 	OnnxRuntime = 4,
 }
 
+/// <summary>
+/// Provides native DLL extraction operations.
+/// </summary>
 internal static class NativeExtractor
 {
 	private const string ResourcePrefix = "Talktastic.Native.";
@@ -192,7 +198,12 @@ internal static class NativeExtractor
 		}
 	}
 
-	private static HashSet<string> GetDllNames(DllGroup groups)
+	/// <summary>
+	/// Gets the DLL names.
+	/// </summary>
+	/// <param name="groups">The DLL groups.</param>
+	/// <returns>The matching names.</returns>
+	internal static HashSet<string> GetDllNames(DllGroup groups)
 	{
 		var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -210,6 +221,10 @@ internal static class NativeExtractor
 		return names;
 	}
 
+	/// <summary>
+	/// Gets the native payload manifest.
+	/// </summary>
+	/// <returns>The manifest entries.</returns>
 	private static NativePayloadManifestEntry[] GetManifest()
 	{
 		if (_cachedManifest is not null)
@@ -231,6 +246,13 @@ internal static class NativeExtractor
 		return _cachedManifest;
 	}
 
+	/// <summary>
+	/// Finds or extracts a DLL.
+	/// </summary>
+	/// <param name="assembly">The assembly.</param>
+	/// <param name="entry">The manifest entry.</param>
+	/// <param name="cwd">The current working directory.</param>
+	/// <returns>The resolved DLL.</returns>
 	private static ResolvedDll FindOrExtract(Assembly assembly, NativePayloadManifestEntry entry, string cwd)
 	{
 		string[] searchDirs = [AppDataDir, TempDir, cwd];
@@ -275,6 +297,12 @@ internal static class NativeExtractor
 		);
 	}
 
+	/// <summary>
+	/// Determines whether the directory is the current working directory.
+	/// </summary>
+	/// <param name="dir">The d.</param>
+	/// <param name="cwd">The c.</param>
+	/// <returns><c>true</c> if the condition is met; otherwise, <c>false</c>.</returns>
 	private static bool IsCwd(string dir, string cwd)
 	{
 		return string.Equals
@@ -285,6 +313,12 @@ internal static class NativeExtractor
 		);
 	}
 
+	/// <summary>
+	/// Determines whether the extracted DLL is valid.
+	/// </summary>
+	/// <param name="targetPath">The target path.</param>
+	/// <param name="entry">The manifest entry.</param>
+	/// <returns><c>true</c> if the condition is met; otherwise, <c>false</c>.</returns>
 	private static bool IsValid(string targetPath, NativePayloadManifestEntry entry)
 	{
 		if (!File.Exists(targetPath))
@@ -302,6 +336,12 @@ internal static class NativeExtractor
 		return string.Equals(ComputeMd5(targetPath), entry.Md5, StringComparison.OrdinalIgnoreCase);
 	}
 
+	/// <summary>
+	/// Extracts the embedded resource.
+	/// </summary>
+	/// <param name="assembly">The assembly.</param>
+	/// <param name="entry">The manifest entry.</param>
+	/// <param name="targetPath">The target path.</param>
 	private static void ExtractResource(Assembly assembly, NativePayloadManifestEntry entry, string targetPath)
 	{
 		var resourceName = ResourcePrefix + entry.Name + ".gz";
@@ -392,6 +432,10 @@ internal static class NativeExtractor
 		}
 	}
 
+	/// <summary>
+	/// Configures the native DLL search paths.
+	/// </summary>
+	/// <param name="resolved">The resolved DLLs.</param>
 	private static void ConfigureSearchPaths(IEnumerable<ResolvedDll> resolved)
 	{
 		var newDirs = resolved
@@ -445,6 +489,11 @@ internal static class NativeExtractor
 		}
 	}
 
+	/// <summary>
+	/// Computes the MD5 hash.
+	/// </summary>
+	/// <param name="path">The path.</param>
+	/// <returns>The resulting string.</returns>
 	[SuppressMessage
 	(
 		"Security",
@@ -457,13 +506,29 @@ internal static class NativeExtractor
 		return Convert.ToHexString(MD5.HashData(stream));
 	}
 
+	/// <summary>
+	/// Sets the DLL search directory.
+	/// </summary>
+	/// <param name="lpPathName">The DLL search path.</param>
+	/// <returns><c>true</c> if the condition is met; otherwise, <c>false</c>.</returns>
 	[DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
 	[DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
 	private static extern bool SetDllDirectory(string lpPathName);
 }
 
+/// <summary>
+/// Represents a resolved DLL.
+/// </summary>
+/// <param name="Name">The name.</param>
+/// <param name="Path">The path.</param>
 internal sealed record ResolvedDll(string Name, string Path);
 
+/// <summary>
+/// Represents a native payload manifest entry.
+/// </summary>
+/// <param name="Name">The name.</param>
+/// <param name="Size">The S.</param>
+/// <param name="Md5">The MD5.</param>
 internal sealed record NativePayloadManifestEntry
 (
 	string Name,
@@ -471,6 +536,9 @@ internal sealed record NativePayloadManifestEntry
 	string Md5
 );
 
+/// <summary>
+/// Provides native extractor JSON serialization metadata.
+/// </summary>
 [JsonSerializable(typeof(NativePayloadManifestEntry[]))]
 internal sealed partial class NativeExtractorJsonContext : JsonSerializerContext
 {

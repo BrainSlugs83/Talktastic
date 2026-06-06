@@ -4,6 +4,9 @@ using System.Buffers.Binary;
 
 namespace Talktastic;
 
+/// <summary>
+/// Provides audio DSP operations.
+/// </summary>
 internal static class AudioDsp
 {
 	private const int TargetSampleRate = 16000;
@@ -661,6 +664,14 @@ internal static class AudioDsp
 		return result;
 	}
 
+	/// <summary>
+	/// Parses PCM16 samples.
+	/// </summary>
+	/// <param name="payload">The payload.</param>
+	/// <param name="sampleRate">The sample rate.</param>
+	/// <param name="channels">The channel count.</param>
+	/// <param name="blockAlign">The block alignment.</param>
+	/// <returns>The samples, sample rate, and channel count.</returns>
 	private static
 	(
 		float[] Samples,
@@ -691,6 +702,14 @@ internal static class AudioDsp
 		return (samples, sampleRate, channels);
 	}
 
+	/// <summary>
+	/// Parses float32 samples.
+	/// </summary>
+	/// <param name="payload">The payload.</param>
+	/// <param name="sampleRate">The sample rate.</param>
+	/// <param name="channels">The channel count.</param>
+	/// <param name="blockAlign">The block alignment.</param>
+	/// <returns>The samples, sample rate, and channel count.</returns>
 	private static
 	(
 		float[] Samples,
@@ -721,6 +740,14 @@ internal static class AudioDsp
 		return (samples, sampleRate, channels);
 	}
 
+	/// <summary>
+	/// Applies zero-phase filtering.
+	/// </summary>
+	/// <param name="audio">The audio samples.</param>
+	/// <param name="b">The numerator coefficients.</param>
+	/// <param name="a">The denominator coefficients.</param>
+	/// <param name="padLength">The pad length.</param>
+	/// <returns>The resulting samples.</returns>
 	private static float[] ApplyFiltFilt
 	(
 		float[] audio,
@@ -742,6 +769,12 @@ internal static class AudioDsp
 		return result;
 	}
 
+	/// <summary>
+	/// Creates the odd extension.
+	/// </summary>
+	/// <param name="audio">The audio samples.</param>
+	/// <param name="padLength">The pad length.</param>
+	/// <returns>The resulting samples.</returns>
 	private static float[] CreateOddExtension
 	(
 		float[] audio,
@@ -776,6 +809,14 @@ internal static class AudioDsp
 		return result;
 	}
 
+	/// <summary>
+	/// Applies the IIR filter.
+	/// </summary>
+	/// <param name="b">The numerator coefficients.</param>
+	/// <param name="a">The denominator coefficients.</param>
+	/// <param name="input">The input values.</param>
+	/// <param name="initialState">The initial filter state.</param>
+	/// <returns>The resulting samples.</returns>
 	private static float[] ApplyIirFilter
 	(
 		double[] b,
@@ -837,6 +878,12 @@ internal static class AudioDsp
 		return output;
 	}
 
+	/// <summary>
+	/// Computes the filter initial state.
+	/// </summary>
+	/// <param name="b">The numerator coefficients.</param>
+	/// <param name="a">The denominator coefficients.</param>
+	/// <returns>The initial filter state.</returns>
 	private static double[] ComputeLFilterZi
 	(
 		double[] b,
@@ -889,6 +936,12 @@ internal static class AudioDsp
 		return zi;
 	}
 
+	/// <summary>
+	/// Scales the filter state.
+	/// </summary>
+	/// <param name="state">The filter state.</param>
+	/// <param name="scale">The scale factor.</param>
+	/// <returns>The scaled state.</returns>
 	private static double[] ScaleState
 	(
 		double[] state,
@@ -904,6 +957,12 @@ internal static class AudioDsp
 		return scaled;
 	}
 
+	/// <summary>
+	/// Zero-pads the waveform.
+	/// </summary>
+	/// <param name="audio">The audio samples.</param>
+	/// <param name="pad">The padding size.</param>
+	/// <returns>The resulting samples.</returns>
 	private static float[] ZeroPad
 	(
 		float[] audio,
@@ -920,6 +979,12 @@ internal static class AudioDsp
 		return result;
 	}
 
+	/// <summary>
+	/// Builds the centered Hann window.
+	/// </summary>
+	/// <param name="nFft">The FFT size.</param>
+	/// <param name="winLength">The window length.</param>
+	/// <returns>The resulting samples.</returns>
 	private static float[] BuildCenteredHannWindow
 	(
 		int nFft,
@@ -936,6 +1001,12 @@ internal static class AudioDsp
 		return window;
 	}
 
+	/// <summary>
+	/// Reflects the index.
+	/// </summary>
+	/// <param name="index">The i.</param>
+	/// <param name="length">The sequence length.</param>
+	/// <returns>The resulting integer value.</returns>
 	private static int ReflectIndex
 	(
 		int index,
@@ -957,6 +1028,11 @@ internal static class AudioDsp
 		return wrapped < length ? wrapped : period - wrapped;
 	}
 
+	/// <summary>
+	/// Converts Hz to mel.
+	/// </summary>
+	/// <param name="frequency">The frequency.</param>
+	/// <returns>The resulting floating-point value.</returns>
 	private static double HzToMel
 	(
 		double frequency
@@ -965,6 +1041,11 @@ internal static class AudioDsp
 		return 2595.0 * Math.Log10(1.0 + (frequency / 700.0));
 	}
 
+	/// <summary>
+	/// Converts mel to Hz.
+	/// </summary>
+	/// <param name="mel">The mel value.</param>
+	/// <returns>The resulting floating-point value.</returns>
 	private static double MelToHz
 	(
 		double mel
@@ -973,6 +1054,11 @@ internal static class AudioDsp
 		return 700.0 * (Math.Pow(10.0, mel / 2595.0) - 1.0);
 	}
 
+	/// <summary>
+	/// Computes the next power of two.
+	/// </summary>
+	/// <param name="value">The value.</param>
+	/// <returns>The resulting integer value.</returns>
 	private static int NextPowerOfTwo
 	(
 		int value
@@ -1107,6 +1193,11 @@ internal static class AudioDsp
 		);
 	}
 
+	/// <summary>
+	/// Decodes an MP3 file to WAV bytes.
+	/// </summary>
+	/// <param name="filePath">The file path.</param>
+	/// <returns>The resulting bytes.</returns>
 	private static byte[] DecodeMp3ToWav(string filePath)
 	{
 		using var fileStream = File.OpenRead(filePath);
@@ -1160,6 +1251,11 @@ internal static class AudioDsp
 		return EncodeWav(mono, sampleRate);
 	}
 
+	/// <summary>
+	/// Decodes an OGG file to WAV bytes.
+	/// </summary>
+	/// <param name="filePath">The file path.</param>
+	/// <returns>The resulting bytes.</returns>
 	private static byte[] DecodeOggToWav(string filePath)
 	{
 		using var fileStream = File.OpenRead(filePath);
