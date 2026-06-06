@@ -314,15 +314,9 @@ Notes:
 						await Console.Out.WriteLineAsync($"  {v.Name} [{tag}] ({v.Locale}, {v.Gender})").ConfigureAwait(false);
 					}
 
-					var piperVoices = PiperEngine.GetCachedVoices();
-					if (piperVoices.Count > 0)
+					foreach (var (name, sizeMb) in PiperEngine.GetCachedVoices())
 					{
-						await Console.Out.WriteLineAsync().ConfigureAwait(false);
-						await Console.Out.WriteLineAsync("Piper voices:").ConfigureAwait(false);
-						foreach (var (name, sizeMb) in piperVoices)
-						{
-							await Console.Out.WriteLineAsync($"  {name} ({sizeMb} MB)").ConfigureAwait(false);
-						}
+						await Console.Out.WriteLineAsync($"  {name} [piper] ({sizeMb} MB)").ConfigureAwait(false);
 					}
 
 					needSeparator = true;
