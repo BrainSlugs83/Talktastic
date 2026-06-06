@@ -180,7 +180,8 @@ static partial class RvcEngine
 			return downloadPath;
 		}
 
-		var namedModel = FindCachedModel(voicesDir, rvcQuery);
+		var namedModel = FindCachedModel(voicesDir, rvcQuery)
+			?? FindCachedModelFuzzy(voicesDir, rvcQuery);
 		if (namedModel is not null)
 		{
 			return namedModel;
@@ -195,7 +196,11 @@ static partial class RvcEngine
 			}
 
 			var modelName = line[(tab + 1)..];
-			if (!string.Equals(modelName, rvcQuery, StringComparison.OrdinalIgnoreCase))
+			if
+			(
+				!string.Equals(modelName, rvcQuery, StringComparison.InvariantCultureIgnoreCase)
+				&& !modelName.Contains(rvcQuery, StringComparison.InvariantCultureIgnoreCase)
+			)
 			{
 				continue;
 			}
@@ -256,6 +261,35 @@ static partial class RvcEngine
 		if (File.Exists(pthPath))
 		{
 			return pthPath;
+		}
+
+		return null;
+	}
+
+	private static string? FindCachedModelFuzzy(string voicesDir, string query)
+	{
+		if (!Directory.Exists(voicesDir))
+		{
+			return null;
+		}
+
+		foreach (var file in Directory.GetFiles(voicesDir))
+		{
+			var ext = Path.GetExtension(file);
+			if
+			(
+				!string.Equals(ext, ".onnx", StringComparison.OrdinalIgnoreCase)
+				&& !string.Equals(ext, ".pth", StringComparison.OrdinalIgnoreCase)
+			)
+			{
+				continue;
+			}
+
+			var name = Path.GetFileNameWithoutExtension(file);
+			if (name.Contains(query, StringComparison.InvariantCultureIgnoreCase))
+			{
+				return file;
+			}
 		}
 
 		return null;
