@@ -215,28 +215,28 @@ internal static partial class SpeechEngine
 		if (request.OutputPath is null)
 		{
 			await AudioOutput.PlayToDeviceAsync(audioBytes, request.DeviceQuery).ConfigureAwait(false);
-			return $"Spoke with {voice.Name} (legacy).";
+			return $"Spoke with {voice.Name} (sapi).";
 		}
 
 		if (HasExtension(request.OutputPath, ".wav"))
 		{
 			AudioOutput.EnsureDirectoryExists(request.OutputPath);
 			await File.WriteAllBytesAsync(request.OutputPath, audioBytes).ConfigureAwait(false);
-			return $"Wrote WAV file '{request.OutputPath}' with {voice.Name} (legacy).";
+			return $"Wrote WAV file '{request.OutputPath}' with {voice.Name} (sapi).";
 		}
 
 		if (HasExtension(request.OutputPath, ".mp3"))
 		{
 			AudioOutput.EnsureDirectoryExists(request.OutputPath);
 			await AudioOutput.WriteMp3Async(audioBytes, request.OutputFormat, request.OutputPath, meta).ConfigureAwait(false);
-			return $"Wrote MP3 file '{request.OutputPath}' with {voice.Name} (legacy).";
+			return $"Wrote MP3 file '{request.OutputPath}' with {voice.Name} (sapi).";
 		}
 
 		if (HasExtension(request.OutputPath, ".ogg"))
 		{
 			AudioOutput.EnsureDirectoryExists(request.OutputPath);
 			await AudioOutput.WriteOggOpusAsync(audioBytes, request.OutputFormat, request.OutputPath, meta).ConfigureAwait(false);
-			return $"Wrote OGG file '{request.OutputPath}' with {voice.Name} (legacy).";
+			return $"Wrote OGG file '{request.OutputPath}' with {voice.Name} (sapi).";
 		}
 
 		throw new InvalidOperationException($"Unsupported output file extension for '{request.OutputPath}'. Use .wav, .mp3, or .ogg.");

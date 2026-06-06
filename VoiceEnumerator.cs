@@ -9,8 +9,8 @@ namespace Talktastic;
 internal enum VoiceType
 {
 	Neural,
-	Legacy,
 	Piper,
+	Legacy,
 }
 
 internal static class VoiceEnumerator

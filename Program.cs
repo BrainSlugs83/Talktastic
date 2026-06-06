@@ -313,7 +313,7 @@ Notes:
 							var tag = v.VoiceType switch
 							{
 								VoiceType.Neural => "neural",
-								VoiceType.Legacy => "legacy",
+								VoiceType.Legacy => "sapi",
 								VoiceType.Piper => "piper",
 								_ => "unknown",
 							};
