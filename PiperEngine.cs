@@ -203,6 +203,15 @@ static partial class PiperEngine
 		using var http = new HttpClient();
 		http.DefaultRequestHeaders.Add("User-Agent", "Talktastic");
 
+		// ZIP URL -- download, extract, find .onnx + .onnx.json
+		if (IsUrlVoice(voiceQuery) && voiceQuery.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+		{
+			return await DownloadAndExtractZipVoiceAsync
+			(
+				http, voiceQuery, voicesDir, piperDir, cancellationToken
+			).ConfigureAwait(false);
+		}
+
 		// Resolve the voice query to concrete download URLs + config URL
 		var resolved = IsUrlVoice(voiceQuery)
 			? await ResolveUrlVoiceAsync(http, voiceQuery, cancellationToken).ConfigureAwait(false)
@@ -239,6 +248,78 @@ static partial class PiperEngine
 			WriteRegistry(piperDir, voiceQuery, resolved.ModelName);
 
 		return modelPath;
+	}
+
+	private static async Task<string> DownloadAndExtractZipVoiceAsync
+	(
+		HttpClient http,
+		string zipUrl,
+		string voicesDir,
+		string piperDir,
+		CancellationToken cancellationToken
+	)
+	{
+		await Console.Error.WriteLineAsync
+		(
+			$"Downloading and extracting Piper voice from ZIP..."
+		).ConfigureAwait(false);
+
+		var tempZip = Path.Combine(voicesDir, $"download-{Guid.NewGuid():N}.zip");
+		var tempExtract = Path.Combine(voicesDir, $"extract-{Guid.NewGuid():N}");
+
+		try
+		{
+			await DownloadFileAsync(http, zipUrl, tempZip, cancellationToken).ConfigureAwait(false);
+
+			Directory.CreateDirectory(tempExtract);
+			await ZipFile.ExtractToDirectoryAsync(tempZip, tempExtract, overwriteFiles: true, cancellationToken).ConfigureAwait(false);
+
+			var onnxFiles = Directory.GetFiles(tempExtract, "*.onnx", SearchOption.AllDirectories);
+			if (onnxFiles.Length == 0)
+			{
+				throw new InvalidOperationException
+				(
+					$"No .onnx model file found in zip archive from {zipUrl}"
+				);
+			}
+
+			var sourceOnnx = onnxFiles[0];
+			var modelName = Path.GetFileNameWithoutExtension(sourceOnnx);
+			var finalOnnxPath = Path.Combine(voicesDir, $"{modelName}.onnx");
+
+			File.Move(sourceOnnx, finalOnnxPath, overwrite: true);
+
+			// Look for companion .onnx.json config
+			var sourceDir = Path.GetDirectoryName(sourceOnnx)!;
+			var configFiles = Directory.GetFiles(sourceDir, "*.onnx.json", SearchOption.TopDirectoryOnly);
+			if (configFiles.Length > 0)
+			{
+				var finalConfigPath = Path.Combine(voicesDir, $"{modelName}.onnx.json");
+				File.Move(configFiles[0], finalConfigPath, overwrite: true);
+			}
+
+			// Also check for JSON with same base name
+			var jsonCandidate = Path.ChangeExtension(sourceOnnx, ".onnx.json");
+			if (File.Exists(jsonCandidate))
+			{
+				File.Move(jsonCandidate, Path.Combine(voicesDir, $"{modelName}.onnx.json"), overwrite: true);
+			}
+
+			var sizeMb = new FileInfo(finalOnnxPath).Length / 1024 / 1024;
+			await Console.Error.WriteLineAsync
+			(
+				$"Extracted {modelName} ({sizeMb} MB)."
+			).ConfigureAwait(false);
+
+			WriteRegistry(piperDir, zipUrl, modelName);
+			return finalOnnxPath;
+		}
+		finally
+		{
+			try { File.Delete(tempZip); } catch (IOException) { }
+			try { if (Directory.Exists(tempExtract)) Directory.Delete(tempExtract, recursive: true); }
+			catch (IOException) { }
+		}
 	}
 
 	// ── Voice registry ──
