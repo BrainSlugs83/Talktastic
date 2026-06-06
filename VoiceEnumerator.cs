@@ -49,28 +49,36 @@ internal static class VoiceEnumerator
 
 		// Try legacy voices first -- no native DLLs needed
 		var legacyVoices = GetLegacyVoices();
-		var legacyMatch = FindMatch(legacyVoices, query);
+		var legacyMatch = FindExactMatch(legacyVoices, query);
 
 		if (legacyMatch is not null)
 		{
 			return legacyMatch;
 		}
 
-		// No legacy match -- load Speech SDK DLLs and try neural voices
+		// Load neural voices and search the combined set
 		var neuralVoices = await GetNeuralVoicesAsync(cancellationToken).ConfigureAwait(false);
-		var neuralMatch = FindMatch(neuralVoices, query);
+		var allVoices = legacyVoices.Concat(neuralVoices).ToArray();
 
-		if (neuralMatch is not null)
+		var exactMatch = FindExactMatch(neuralVoices, query);
+		if (exactMatch is not null)
 		{
-			return neuralMatch;
+			return exactMatch;
+		}
+
+		// Fuzzy match across ALL voices so the best match wins
+		var fuzzyMatch = FindFuzzy(allVoices, query);
+		if (fuzzyMatch is not null)
+		{
+			return fuzzyMatch;
 		}
 
 		throw new InvalidOperationException($"No voice matched '{query}'.");
 	}
 
-	private static InstalledVoice? FindMatch(InstalledVoice[] voices, string query)
+	private static InstalledVoice? FindExactMatch(InstalledVoice[] voices, string query)
 	{
-		var exactMatch = voices.FirstOrDefault
+		return voices.FirstOrDefault
 		(
 			v =>
 				v.Name.EqualsIgnoreCase(query) ||
@@ -78,13 +86,10 @@ internal static class VoiceEnumerator
 				v.LocalName.EqualsIgnoreCase(query) ||
 				v.FriendlyName.EqualsIgnoreCase(query)
 		);
+	}
 
-		if (exactMatch is not null)
-		{
-			return exactMatch;
-		}
-
-		// Fuzzy match against the friendly name (best for short queries like "hazl")
+	private static InstalledVoice? FindFuzzy(InstalledVoice[] voices, string query)
+	{
 		return FuzzyMatcher.FindBestMatch(voices, query, static v => v.FriendlyName)
 			?? FuzzyMatcher.FindBestMatch(voices, query, static v => v.Name)
 			?? FuzzyMatcher.FindBestMatch(voices, query, static v => v.ShortName);
