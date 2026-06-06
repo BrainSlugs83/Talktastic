@@ -823,11 +823,24 @@ static partial class PiperEngine
 
 			if (process.ExitCode != 0)
 			{
-				throw new InvalidOperationException
-				(
-					$"Piper exited with code {process.ExitCode}: {stderr.Trim()}"
-				);
-			}
+					var errorDetail = stderr.Trim();
+					if (string.IsNullOrWhiteSpace(errorDetail))
+					{
+						errorDetail = process.ExitCode switch
+						{
+							unchecked((int)0xC0000005) => "Access violation (corrupted or incompatible model?)",
+							unchecked((int)0xC0000409) => "Stack buffer overrun (model may be incompatible with this Piper version)",
+							unchecked((int)0xC00000FD) => "Stack overflow (model too large or incompatible)",
+							_ when process.ExitCode < 0 => $"Native crash (0x{process.ExitCode:X8})",
+							_ => $"Unknown error",
+						};
+					}
+
+					throw new InvalidOperationException
+					(
+						$"Piper exited with code {process.ExitCode}: {errorDetail}"
+					);
+				}
 
 			return await File.ReadAllBytesAsync(outFile, cancellationToken).ConfigureAwait(false);
 		}
