@@ -112,11 +112,25 @@ static partial class RvcEngine
 	}
 
 	/// <summary>
-	/// Lists downloaded RVC models as (name, extension, sizeMB, hasIndex) tuples.
+	/// Describes a cached RVC model's properties.
+	/// Single source of truth for model discovery -- used by listing, resolution, and loading.
 	/// </summary>
-	public static List<(string Name, string Extension, int SizeMb, bool HasIndex)> GetCachedModels()
+	internal sealed record RvcModelInfo
+	(
+		string Name,
+		string ModelPath,
+		string Extension,
+		int SizeMb,
+		bool HasIndex,
+		string? IndexPath
+	);
+
+	/// <summary>
+	/// Lists downloaded RVC models with validated index detection.
+	/// </summary>
+	public static List<RvcModelInfo> GetCachedModels()
 	{
-		var results = new List<(string, string, int, bool)>();
+		var results = new List<RvcModelInfo>();
 		foreach (var basePath in AppPaths.SearchBases)
 		{
 			var voicesDir = Path.Combine(basePath, RvcDirName, VoicesSubDir);
@@ -125,8 +139,19 @@ static partial class RvcEngine
 			{
 				var ext = Path.GetExtension(modelPath);
 				var sizeMb = (int)(new FileInfo(modelPath).Length / 1024 / 1024);
-				var hasIndex = FindCompanionIndex(modelPath) is not null;
-				results.Add((name, ext[1..], sizeMb, hasIndex));
+				var indexPath = FindCompanionIndex(modelPath);
+				results.Add
+				(
+					new RvcModelInfo
+					(
+						Name: name,
+						ModelPath: modelPath,
+						Extension: ext[1..],
+						SizeMb: sizeMb,
+						HasIndex: indexPath is not null,
+						IndexPath: indexPath
+					)
+				);
 			}
 
 			if (Directory.Exists(voicesDir))
@@ -355,16 +380,25 @@ static partial class RvcEngine
 
 	/// <summary>
 	/// Finds the first .onnx or .pth file in a directory.
+	/// Skips .cached.onnx files -- those are auto-generated from .pth
+	/// and must go through CreatePthSession to get the correct sample rate.
 	/// </summary>
 	private static string? FindModelFileInDir(string dir)
 	{
-		return Directory.GetFiles(dir, "*.onnx").FirstOrDefault()
+		var onnxFiles = Directory.GetFiles(dir, "*.onnx")
+			.Where
+			(
+				f => !f.EndsWith(".cached.onnx", StringComparison.OrdinalIgnoreCase)
+			)
+			.FirstOrDefault();
+
+		return onnxFiles
 			?? Directory.GetFiles(dir, "*.pth").FirstOrDefault();
 	}
 
 	/// <summary>
 	/// Finds a companion .index file next to the model file.
-	/// Trivial: just look for *.index in the same directory.
+	/// Only returns the path if the index is a recognized FAISS format.
 	/// </summary>
 	private static string? FindCompanionIndex(string modelPath)
 	{
@@ -374,7 +408,13 @@ static partial class RvcEngine
 			return null;
 		}
 
-		return Directory.GetFiles(dir, "*.index").FirstOrDefault();
+		var indexFile = Directory.GetFiles(dir, "*.index").FirstOrDefault();
+		if (indexFile is null || !FaissIndex.IsSupportedFormat(indexFile))
+		{
+			return null;
+		}
+
+		return indexFile;
 	}
 
 	public static async Task EnsureInfraModelsAsync(CancellationToken ct)

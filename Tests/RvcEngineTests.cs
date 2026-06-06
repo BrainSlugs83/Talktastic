@@ -394,6 +394,33 @@ public sealed class RvcEngineTests : IDisposable
 	}
 
 	[Fact]
+	public void FindModelFileInDir_SkipsCachedOnnx_ReturnsPth()
+	{
+		var modelDir = Path.Combine(_tempDir, "cached-onnx");
+		Directory.CreateDirectory(modelDir);
+		var cachedOnnxPath = Path.Combine(modelDir, "voice.cached.onnx");
+		var pthPath = Path.Combine(modelDir, "voice.pth");
+		File.WriteAllBytes(cachedOnnxPath, [0x08]);
+		File.WriteAllBytes(pthPath, [0x80]);
+
+		var result = InvokePrivateStaticNullable<string>("FindModelFileInDir", modelDir);
+
+		Assert.Equal(pthPath, result);
+	}
+
+	[Fact]
+	public void FindModelFileInDir_SkipsCachedOnnx_WhenOnlyOnnxIsCached()
+	{
+		var modelDir = Path.Combine(_tempDir, "only-cached");
+		Directory.CreateDirectory(modelDir);
+		File.WriteAllBytes(Path.Combine(modelDir, "voice.cached.onnx"), [0x08]);
+
+		var result = InvokePrivateStaticNullable<string>("FindModelFileInDir", modelDir);
+
+		Assert.Null(result);
+	}
+
+	[Fact]
 	public void FindModelFileInDir_WithoutModelFiles_ReturnsNull()
 	{
 		var modelDir = Path.Combine(_tempDir, "empty-model-dir");
@@ -406,18 +433,33 @@ public sealed class RvcEngineTests : IDisposable
 	}
 
 	[Fact]
-	public void FindCompanionIndex_WithIndexInSameDirectory_ReturnsIndexPath()
+	public void FindCompanionIndex_WithSupportedIndex_ReturnsIndexPath()
 	{
 		var modelDir = Path.Combine(_tempDir, "voice");
 		Directory.CreateDirectory(modelDir);
 		var modelPath = Path.Combine(modelDir, "voice.pth");
 		var indexPath = Path.Combine(modelDir, "voice.index");
 		File.WriteAllBytes(modelPath, [0x80]);
-		File.WriteAllBytes(indexPath, [0x01]);
+		File.WriteAllBytes(indexPath, BuildValidIndexBytes());
 
 		var result = InvokePrivateStaticNullable<string>("FindCompanionIndex", modelPath);
 
 		Assert.Equal(indexPath, result);
+	}
+
+	[Fact]
+	public void FindCompanionIndex_WithUnsupportedIndex_ReturnsNull()
+	{
+		var modelDir = Path.Combine(_tempDir, "voice-bad-idx");
+		Directory.CreateDirectory(modelDir);
+		var modelPath = Path.Combine(modelDir, "voice.pth");
+		var indexPath = Path.Combine(modelDir, "voice.index");
+		File.WriteAllBytes(modelPath, [0x80]);
+		File.WriteAllBytes(indexPath, [0xDE, 0xAD, 0xBE, 0xEF]);
+
+		var result = InvokePrivateStaticNullable<string>("FindCompanionIndex", modelPath);
+
+		Assert.Null(result);
 	}
 
 	[Fact]
@@ -452,7 +494,7 @@ public sealed class RvcEngineTests : IDisposable
 		Directory.CreateDirectory(primaryModelDir);
 		var primaryModelPath = Path.Combine(primaryModelDir, "alpha.pth");
 		CreateSizedFile(primaryModelPath, (2 * 1024 * 1024) + 123);
-		File.WriteAllBytes(Path.Combine(primaryModelDir, "alpha.index"), [0x01]);
+		File.WriteAllBytes(Path.Combine(primaryModelDir, "alpha.index"), BuildValidIndexBytes());
 
 		File.WriteAllBytes(Path.Combine(primaryVoices, "beta.onnx"), new byte[1024]);
 
@@ -467,8 +509,36 @@ public sealed class RvcEngineTests : IDisposable
 			.ToList();
 
 		Assert.Equal(2, models.Count);
-		Assert.Equal(("alpha", "pth", 2, true), models[0]);
-		Assert.Equal(("beta", "onnx", 0, false), models[1]);
+
+		Assert.Equal("alpha", models[0].Name);
+		Assert.Equal("pth", models[0].Extension);
+		Assert.Equal(2, models[0].SizeMb);
+		Assert.True(models[0].HasIndex);
+
+		Assert.Equal("beta", models[1].Name);
+		Assert.Equal("onnx", models[1].Extension);
+		Assert.Equal(0, models[1].SizeMb);
+		Assert.False(models[1].HasIndex);
+	}
+
+	[Fact]
+	public void GetCachedModels_UnsupportedIndexFormat_ReportsNoIndex()
+	{
+		var root = Path.Combine(_tempDir, "unsupported-idx");
+		var voicesDir = CreateVoicesDir(root);
+
+		var modelDir = Path.Combine(voicesDir, "gamma");
+		Directory.CreateDirectory(modelDir);
+		CreateSizedFile(Path.Combine(modelDir, "gamma.pth"), 1024 * 1024);
+		File.WriteAllBytes(Path.Combine(modelDir, "gamma.index"), [0xBA, 0xAD, 0xF0, 0x0D]);
+
+		SetSearchBases(root);
+
+		var models = RvcEngine.GetCachedModels();
+
+		Assert.Single(models);
+		Assert.Equal("gamma", models[0].Name);
+		Assert.False(models[0].HasIndex);
 	}
 
 	[Theory]
@@ -891,5 +961,67 @@ public sealed class RvcEngineTests : IDisposable
 		{
 			Assert.InRange(actual[i], expected[i] - tolerance, expected[i] + tolerance);
 		}
+	}
+
+	/// <summary>
+	/// Builds a minimal valid IwFl FAISS index (1 list, 1 vector, dim=2)
+	/// that passes FaissIndex.IsSupportedFormat.
+	/// </summary>
+	private static byte[] BuildValidIndexBytes()
+	{
+		var bytes = new List<byte>();
+
+		void WriteU32(uint v) { bytes.AddRange(BitConverter.GetBytes(v)); }
+		void WriteI32(int v) { bytes.AddRange(BitConverter.GetBytes(v)); }
+		void WriteI64(long v) { bytes.AddRange(BitConverter.GetBytes(v)); }
+		void WriteF32(float v) { bytes.AddRange(BitConverter.GetBytes(v)); }
+
+		const int dim = 2;
+		const long ntotal = 1;
+		const int nlist = 1;
+
+		// IVF header
+		WriteU32(0x6C46_7749); // IwFl
+		WriteI32(dim);
+		WriteI64(ntotal);
+		WriteI64(0); // dummy
+		WriteI64(0); // dummy
+		bytes.Add(1); // is_trained
+		WriteI32(0); // metric
+
+		WriteI64(nlist); // nlist
+		WriteI64(1);     // nprobe
+
+		// Quantizer (IxF2)
+		WriteU32(0x3246_7849); // IxF2
+		WriteI32(dim);
+		WriteI64(nlist);
+		WriteI64(0);
+		WriteI64(0);
+		bytes.Add(1);
+		WriteI32(0);
+		WriteI64(nlist * dim); // xb count
+		for (var i = 0; i < nlist * dim; i++) WriteF32(0f); // centroids
+
+		// Direct map
+		bytes.Add(0); // no direct map
+		WriteI64(0);
+
+		// Inverted lists (ilar)
+		WriteU32(0x7261_6C69); // ilar
+		WriteI64(nlist);
+		WriteI64(dim * 4L); // code_size
+		WriteU32(0x6C6C_7566); // "full"
+		WriteI64(nlist); // list count
+
+		WriteI64(ntotal); // list 0 has 1 vector
+
+		// list 0 codes
+		WriteF32(1f);
+		WriteF32(2f);
+		// list 0 ids
+		WriteI64(0);
+
+		return bytes.ToArray();
 	}
 }

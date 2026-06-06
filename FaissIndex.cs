@@ -70,6 +70,36 @@ static partial class FaissIndex
 	}
 
 	/// <summary>
+	/// Checks whether a file starts with a recognized FAISS index fourcc.
+	/// Returns false for missing, empty, or unrecognized files without throwing.
+	/// </summary>
+	public static bool IsSupportedFormat(string path)
+	{
+		try
+		{
+			using var fs = File.OpenRead(path);
+			Span<byte> buf = stackalloc byte[4];
+			if (fs.Read(buf) < 4)
+			{
+				return false;
+			}
+
+			var magic = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(buf);
+			return magic is FourCC_IwFl or FourCC_IxF2 or FourCC_IxFI or FourCC_IxFl;
+		}
+		catch (Exception ex) when
+		(
+			ex is FileNotFoundException
+			or DirectoryNotFoundException
+			or IOException
+			or UnauthorizedAccessException
+		)
+		{
+			return false;
+		}
+	}
+
+	/// <summary>
 	/// Loads a FAISS IVF Flat index from a byte array.
 	/// </summary>
 	public static Index Load(byte[] data)
@@ -81,17 +111,57 @@ static partial class FaissIndex
 
 	private static Index Read(BinaryReader br)
 	{
-		// ── IVF header ──
 		var magic = br.ReadUInt32();
+
+		if (magic == FourCC_IxF2 || magic == FourCC_IxFI || magic == FourCC_IxFl)
+		{
+			return ReadIndexFlat(br);
+		}
+
 		if (magic != FourCC_IwFl)
 		{
 			throw new InvalidDataException
 			(
-				$"Not an IVF Flat index. Expected fourcc 'IwFl' (0x{FourCC_IwFl:X8}), "
-				+ $"got 0x{magic:X8}."
+				$"Unsupported FAISS index format 0x{magic:X8}. "
+				+ "Expected IwFl (IVF Flat), IxF2 (Flat L2), IxFI (Flat IP), or IxFl (Flat)."
 			);
 		}
 
+		return ReadIndexIvfFlat(br);
+	}
+
+	/// <summary>
+	/// Reads an IndexFlat (IxF2/IxFI/IxFl) — a simple flat array of vectors.
+	/// No IVF structure; always uses brute-force search.
+	/// </summary>
+	private static Index ReadIndexFlat(BinaryReader br)
+	{
+		var d = br.ReadInt32();
+		var ntotal = br.ReadInt64();
+		br.ReadInt64(); // dummy
+		br.ReadInt64(); // dummy
+		br.ReadByte();  // is_trained
+		br.ReadInt32(); // metric_type
+
+		var xbCount = br.ReadInt64();
+		var vectors = new float[xbCount];
+		var byteCount = (int)xbCount * 4;
+		var raw = br.ReadBytes(byteCount);
+		Buffer.BlockCopy(raw, 0, vectors, 0, byteCount);
+
+		return new Index
+		{
+			Vectors = vectors,
+			Dimension = d,
+		};
+	}
+
+	/// <summary>
+	/// Reads an IndexIVFFlat (IwFl) — IVF structure with posting lists.
+	/// Uses cluster-based pruning for fast search.
+	/// </summary>
+	private static Index ReadIndexIvfFlat(BinaryReader br)
+	{
 		var d = br.ReadInt32();
 		var ntotal = br.ReadInt64();
 		br.ReadInt64(); // dummy

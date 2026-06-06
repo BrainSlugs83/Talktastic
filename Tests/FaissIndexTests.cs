@@ -830,4 +830,193 @@ public sealed class FaissIndexTests
 			bytes.Add(buffer[i]);
 		}
 	}
+
+	// ── IsSupportedFormat tests ──
+
+	[Fact]
+	public void IsSupportedFormat_ValidIwFlFile_ReturnsTrue()
+	{
+		var data = BuildMinimalFaissBytes(2, [1f, 2f]);
+		var path = Path.Combine(Path.GetTempPath(), $"faiss-{Guid.NewGuid()}.index");
+		try
+		{
+			File.WriteAllBytes(path, data);
+			Assert.True(FaissIndex.IsSupportedFormat(path));
+		}
+		finally
+		{
+			File.Delete(path);
+		}
+	}
+
+	[Fact]
+	public void IsSupportedFormat_ValidIxF2File_ReturnsTrue()
+	{
+		var data = BuildMinimalIndexFlatBytes(FourCCIxF2, 2, [1f, 2f, 3f, 4f]);
+		var path = Path.Combine(Path.GetTempPath(), $"faiss-{Guid.NewGuid()}.index");
+		try
+		{
+			File.WriteAllBytes(path, data);
+			Assert.True(FaissIndex.IsSupportedFormat(path));
+		}
+		finally
+		{
+			File.Delete(path);
+		}
+	}
+
+	[Fact]
+	public void IsSupportedFormat_WrongMagic_ReturnsFalse()
+	{
+		var path = Path.Combine(Path.GetTempPath(), $"faiss-{Guid.NewGuid()}.index");
+		try
+		{
+			File.WriteAllBytes(path, [0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00]);
+			Assert.False(FaissIndex.IsSupportedFormat(path));
+		}
+		finally
+		{
+			File.Delete(path);
+		}
+	}
+
+	[Fact]
+	public void IsSupportedFormat_FileTooShort_ReturnsFalse()
+	{
+		var path = Path.Combine(Path.GetTempPath(), $"faiss-{Guid.NewGuid()}.index");
+		try
+		{
+			File.WriteAllBytes(path, [0x01, 0x02]);
+			Assert.False(FaissIndex.IsSupportedFormat(path));
+		}
+		finally
+		{
+			File.Delete(path);
+		}
+	}
+
+	[Fact]
+	public void IsSupportedFormat_EmptyFile_ReturnsFalse()
+	{
+		var path = Path.Combine(Path.GetTempPath(), $"faiss-{Guid.NewGuid()}.index");
+		try
+		{
+			File.WriteAllBytes(path, []);
+			Assert.False(FaissIndex.IsSupportedFormat(path));
+		}
+		finally
+		{
+			File.Delete(path);
+		}
+	}
+
+	[Fact]
+	public void IsSupportedFormat_MissingFile_ReturnsFalse()
+	{
+		Assert.False(FaissIndex.IsSupportedFormat(@"C:\nonexistent\fake.index"));
+	}
+
+	// ── IndexFlat loading tests (RED until IndexFlat support is added) ──
+
+	[Fact]
+	public void Load_IndexFlatL2_ParsesCorrectly()
+	{
+		var data = BuildMinimalIndexFlatBytes
+		(
+			FourCCIxF2, 3,
+			[
+				1f, 2f, 3f,
+				4f, 5f, 6f,
+			]
+		);
+
+		// RED: currently throws because Read() only handles IwFl
+		var index = FaissIndex.Load(data);
+
+		Assert.Equal(3, index.Dimension);
+		Assert.Equal(2, index.Count);
+		Assert.False(index.HasIvf);
+		Assert.Equal([1f, 2f, 3f, 4f, 5f, 6f], index.Vectors);
+	}
+
+	[Fact]
+	public void Load_IndexFlatIxFl_ParsesCorrectly()
+	{
+		var data = BuildMinimalIndexFlatBytes
+		(
+			FourCCIxFl, 2,
+			[10f, 20f]
+		);
+
+		var index = FaissIndex.Load(data);
+
+		Assert.Equal(2, index.Dimension);
+		Assert.Equal(1, index.Count);
+		Assert.False(index.HasIvf);
+		Assert.Equal([10f, 20f], index.Vectors);
+	}
+
+	[Fact]
+	public void SearchAndBlend_IndexFlat_ProducesSameResultAsBruteForce()
+	{
+		var data = BuildMinimalIndexFlatBytes
+		(
+			FourCCIxF2, 2,
+			[1f, 2f, 5f, 6f, 3f, 4f]
+		);
+		var flatIndex = FaissIndex.Load(data);
+		Assert.False(flatIndex.HasIvf);
+
+		var bfIndex = CreateIndex(2, [1f, 2f, 5f, 6f, 3f, 4f]);
+
+		float[] queries = [2f, 3f];
+		var flatResult = FaissIndex.SearchAndBlend
+		(
+			flatIndex, queries, frameCount: 1, k: 2, indexRate: 1f
+		);
+		var bfResult = FaissIndex.SearchAndBlend
+		(
+			bfIndex, queries, frameCount: 1, k: 2, indexRate: 1f
+		);
+
+		AssertEqualWithinTolerance(bfResult, flatResult);
+	}
+
+	// ── IndexFlat builder helper ──
+
+	private const uint FourCCIxFl = 0x6C46_7849;
+
+	private static byte[] BuildMinimalIndexFlatBytes
+	(
+		uint magic,
+		int dimension,
+		float[] vectors
+	)
+	{
+		if (vectors.Length % dimension != 0)
+		{
+			throw new ArgumentException("vectors length must be a multiple of dimension");
+		}
+
+		var ntotal = vectors.Length / dimension;
+		var bytes = new List<byte>();
+
+		// IndexFlat header
+		AppendUInt32(bytes, magic);       // fourcc
+		AppendInt32(bytes, dimension);    // d
+		AppendInt64(bytes, ntotal);       // ntotal
+		AppendInt64(bytes, 0);           // dummy
+		AppendInt64(bytes, 0);           // dummy
+		AppendByte(bytes, 1);            // is_trained
+		AppendInt32(bytes, 0);           // metric_type (L2)
+
+		// READXBVECTOR: total floats then data
+		AppendInt64(bytes, vectors.Length);
+		foreach (var v in vectors)
+		{
+			AppendSingle(bytes, v);
+		}
+
+		return bytes.ToArray();
+	}
 }

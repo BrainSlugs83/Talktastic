@@ -405,10 +405,10 @@ Notes:
 					await Console.Out.WriteLineAsync("RVC models:").ConfigureAwait(false);
 					if (rvcModels.Count > 0)
 					{
-						foreach (var (name, ext, sizeMb, hasIndex) in rvcModels)
+						foreach (var model in rvcModels)
 						{
-								var tag = hasIndex ? $"{ext}+idx" : ext;
-								await Console.Out.WriteLineAsync($"  {name} [{tag}] ({sizeMb} MB)").ConfigureAwait(false);
+									var tag = model.HasIndex ? $"{model.Extension}+idx" : model.Extension;
+									await Console.Out.WriteLineAsync($"  {model.Name} [{tag}] ({model.SizeMb} MB)").ConfigureAwait(false);
 							}
 					}
 					else
