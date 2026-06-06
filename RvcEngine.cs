@@ -102,7 +102,10 @@ static partial class RvcEngine
 			var ext = System.IO.Path.GetExtension(file);
 			if
 			(
-				string.Equals(ext, ".onnx", StringComparison.OrdinalIgnoreCase)
+				(
+					string.Equals(ext, ".onnx", StringComparison.OrdinalIgnoreCase)
+					&& !file.EndsWith(".cached.onnx", StringComparison.OrdinalIgnoreCase)
+				)
 				|| string.Equals(ext, ".pth", StringComparison.OrdinalIgnoreCase)
 			)
 			{
@@ -379,21 +382,100 @@ static partial class RvcEngine
 	}
 
 	/// <summary>
-	/// Finds the first .onnx or .pth file in a directory.
-	/// Skips .cached.onnx files -- those are auto-generated from .pth
-	/// and must go through CreatePthSession to get the correct sample rate.
+	/// Finds the best model file in a directory.
+	/// Priority: native .onnx > .pth > validated .cached.onnx (with .cached.meta).
 	/// </summary>
 	private static string? FindModelFileInDir(string dir)
 	{
-		var onnxFiles = Directory.GetFiles(dir, "*.onnx")
+		// 1. Prefer native .onnx (not auto-generated cache)
+		var nativeOnnx = Directory.GetFiles(dir, "*.onnx")
 			.Where
 			(
 				f => !f.EndsWith(".cached.onnx", StringComparison.OrdinalIgnoreCase)
 			)
 			.FirstOrDefault();
+		if (nativeOnnx is not null)
+		{
+			return nativeOnnx;
+		}
 
-		return onnxFiles
-			?? Directory.GetFiles(dir, "*.pth").FirstOrDefault();
+		// 2. Then .pth (CreatePthSession handles its own caching)
+		var pth = Directory.GetFiles(dir, "*.pth").FirstOrDefault();
+		if (pth is not null)
+		{
+			return pth;
+		}
+
+		// 3. Last resort: .cached.onnx — only if .cached.meta validates
+		var cachedOnnx = Directory.GetFiles(dir, "*.cached.onnx").FirstOrDefault();
+		if (cachedOnnx is not null && HasValidCachedMeta(cachedOnnx))
+		{
+			return cachedOnnx;
+		}
+
+		return null;
+	}
+
+	/// <summary>
+	/// Gets the .cached.meta path for a .cached.onnx file.
+	/// </summary>
+	private static string GetCachedMetaPath(string cachedOnnxPath)
+	{
+		// Can't use Path.ChangeExtension -- it only changes after the last dot
+		// "foo.cached.onnx" → need "foo.cached.meta", not "foo.cached.cached.meta"
+		const string onnxSuffix = ".cached.onnx";
+		const string metaSuffix = ".cached.meta";
+
+		if (cachedOnnxPath.EndsWith(onnxSuffix, StringComparison.OrdinalIgnoreCase))
+		{
+			return string.Concat
+			(
+				cachedOnnxPath.AsSpan(0, cachedOnnxPath.Length - onnxSuffix.Length),
+				metaSuffix
+			);
+		}
+
+		return Path.ChangeExtension(cachedOnnxPath, ".meta");
+	}
+
+	/// <summary>
+	/// Checks whether a .cached.onnx file has a companion .cached.meta
+	/// with a valid integer sample rate.
+	/// </summary>
+	internal static bool HasValidCachedMeta(string cachedOnnxPath)
+	{
+		var metaPath = GetCachedMetaPath(cachedOnnxPath);
+		if (!File.Exists(metaPath))
+		{
+			return false;
+		}
+
+		var text = File.ReadAllText(metaPath).Trim();
+		return int.TryParse(text, out var sr) && sr > 0;
+	}
+
+	/// <summary>
+	/// Reads the target sample rate from a .cached.meta file.
+	/// Returns DefaultTargetSampleRate if the meta file is missing or invalid.
+	/// </summary>
+	private static int ReadCachedMetaSampleRate(string cachedOnnxPath)
+	{
+		var metaPath = GetCachedMetaPath(cachedOnnxPath);
+		if (File.Exists(metaPath))
+		{
+			var text = File.ReadAllText(metaPath).Trim();
+			if (int.TryParse(text, out var sr) && sr > 0)
+			{
+				return sr;
+			}
+		}
+
+		return DefaultTargetSampleRate;
+	}
+
+	private static bool IsCachedOnnxFile(string path)
+	{
+		return path.EndsWith(".cached.onnx", StringComparison.OrdinalIgnoreCase);
 	}
 
 	/// <summary>
@@ -486,6 +568,11 @@ static partial class RvcEngine
 				if (IsPthFile(rvcModelPath))
 				{
 					(rvcSession, targetSampleRate) = CreatePthSession(rvcModelPath);
+				}
+				else if (IsCachedOnnxFile(rvcModelPath))
+				{
+					rvcSession = CreateSession(rvcModelPath);
+					targetSampleRate = ReadCachedMetaSampleRate(rvcModelPath);
 				}
 				else
 				{

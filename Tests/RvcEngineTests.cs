@@ -398,22 +398,47 @@ public sealed class RvcEngineTests : IDisposable
 	{
 		var modelDir = Path.Combine(_tempDir, "cached-onnx");
 		Directory.CreateDirectory(modelDir);
-		var cachedOnnxPath = Path.Combine(modelDir, "voice.cached.onnx");
-		var pthPath = Path.Combine(modelDir, "voice.pth");
-		File.WriteAllBytes(cachedOnnxPath, [0x08]);
-		File.WriteAllBytes(pthPath, [0x80]);
+		File.WriteAllBytes(Path.Combine(modelDir, "voice.cached.onnx"), [0x08]);
+		File.WriteAllBytes(Path.Combine(modelDir, "voice.pth"), [0x80]);
 
 		var result = InvokePrivateStaticNullable<string>("FindModelFileInDir", modelDir);
 
-		Assert.Equal(pthPath, result);
+		// .pth preferred over .cached.onnx when both exist
+		Assert.Equal(Path.Combine(modelDir, "voice.pth"), result);
 	}
 
 	[Fact]
-	public void FindModelFileInDir_SkipsCachedOnnx_WhenOnlyOnnxIsCached()
+	public void FindModelFileInDir_CachedOnnxWithValidMeta_UsedAsLastResort()
 	{
-		var modelDir = Path.Combine(_tempDir, "only-cached");
+		var modelDir = Path.Combine(_tempDir, "only-cached-valid");
 		Directory.CreateDirectory(modelDir);
 		File.WriteAllBytes(Path.Combine(modelDir, "voice.cached.onnx"), [0x08]);
+		File.WriteAllText(Path.Combine(modelDir, "voice.cached.meta"), "32000");
+
+		var result = InvokePrivateStaticNullable<string>("FindModelFileInDir", modelDir);
+
+		Assert.Equal(Path.Combine(modelDir, "voice.cached.onnx"), result);
+	}
+
+	[Fact]
+	public void FindModelFileInDir_CachedOnnxWithoutMeta_ReturnsNull()
+	{
+		var modelDir = Path.Combine(_tempDir, "only-cached-no-meta");
+		Directory.CreateDirectory(modelDir);
+		File.WriteAllBytes(Path.Combine(modelDir, "voice.cached.onnx"), [0x08]);
+
+		var result = InvokePrivateStaticNullable<string>("FindModelFileInDir", modelDir);
+
+		Assert.Null(result);
+	}
+
+	[Fact]
+	public void FindModelFileInDir_CachedOnnxWithBadMeta_ReturnsNull()
+	{
+		var modelDir = Path.Combine(_tempDir, "only-cached-bad-meta");
+		Directory.CreateDirectory(modelDir);
+		File.WriteAllBytes(Path.Combine(modelDir, "voice.cached.onnx"), [0x08]);
+		File.WriteAllText(Path.Combine(modelDir, "voice.cached.meta"), "garbage");
 
 		var result = InvokePrivateStaticNullable<string>("FindModelFileInDir", modelDir);
 
@@ -551,6 +576,114 @@ public sealed class RvcEngineTests : IDisposable
 		var result = InvokePrivateStatic<bool>("IsPthFile", path);
 
 		Assert.Equal(expected, result);
+	}
+
+	[Theory]
+	[InlineData("voice.cached.onnx", true)]
+	[InlineData("VOICE.CACHED.ONNX", true)]
+	[InlineData("voice.onnx", false)]
+	[InlineData("voice.pth", false)]
+	[InlineData("cached.onnx", false)]
+	public void IsCachedOnnxFile_MatchesExpectedPaths(string path, bool expected)
+	{
+		var result = InvokePrivateStatic<bool>("IsCachedOnnxFile", path);
+
+		Assert.Equal(expected, result);
+	}
+
+	[Fact]
+	public void HasValidCachedMeta_WithValidMeta_ReturnsTrue()
+	{
+		var onnxPath = Path.Combine(_tempDir, "test.cached.onnx");
+		var metaPath = Path.Combine(_tempDir, "test.cached.meta");
+		File.WriteAllBytes(onnxPath, [0x00]);
+		File.WriteAllText(metaPath, "32000");
+
+		Assert.True(RvcEngine.HasValidCachedMeta(onnxPath));
+	}
+
+	[Fact]
+	public void HasValidCachedMeta_WithMissingMeta_ReturnsFalse()
+	{
+		var onnxPath = Path.Combine(_tempDir, "missing-meta.cached.onnx");
+		File.WriteAllBytes(onnxPath, [0x00]);
+
+		Assert.False(RvcEngine.HasValidCachedMeta(onnxPath));
+	}
+
+	[Theory]
+	[InlineData("garbage")]
+	[InlineData("")]
+	[InlineData("0")]
+	[InlineData("-1")]
+	public void HasValidCachedMeta_WithInvalidMeta_ReturnsFalse(string content)
+	{
+		var name = $"bad-meta-{Guid.NewGuid():N}";
+		var onnxPath = Path.Combine(_tempDir, $"{name}.cached.onnx");
+		var metaPath = Path.Combine(_tempDir, $"{name}.cached.meta");
+		File.WriteAllBytes(onnxPath, [0x00]);
+		File.WriteAllText(metaPath, content);
+
+		Assert.False(RvcEngine.HasValidCachedMeta(onnxPath));
+	}
+
+	[Fact]
+	public void ReadCachedMetaSampleRate_WithValidMeta_ReturnsRate()
+	{
+		var onnxPath = Path.Combine(_tempDir, "sr-test.cached.onnx");
+		var metaPath = Path.Combine(_tempDir, "sr-test.cached.meta");
+		File.WriteAllBytes(onnxPath, [0x00]);
+		File.WriteAllText(metaPath, "48000");
+
+		var sr = InvokePrivateStatic<int>("ReadCachedMetaSampleRate", onnxPath);
+
+		Assert.Equal(48000, sr);
+	}
+
+	[Fact]
+	public void ReadCachedMetaSampleRate_WithMissingMeta_ReturnsDefault()
+	{
+		var onnxPath = Path.Combine(_tempDir, "no-meta.cached.onnx");
+		File.WriteAllBytes(onnxPath, [0x00]);
+
+		var sr = InvokePrivateStatic<int>("ReadCachedMetaSampleRate", onnxPath);
+
+		Assert.Equal(40000, sr); // DefaultTargetSampleRate
+	}
+
+	[Fact]
+	public void GetCachedModels_CachedOnnxWithMeta_IncludesModel()
+	{
+		var root = Path.Combine(_tempDir, "cached-model");
+		var voicesDir = CreateVoicesDir(root);
+		var modelDir = Path.Combine(voicesDir, "delta");
+		Directory.CreateDirectory(modelDir);
+		CreateSizedFile(Path.Combine(modelDir, "delta.cached.onnx"), 1024 * 1024);
+		File.WriteAllText(Path.Combine(modelDir, "delta.cached.meta"), "32000");
+
+		SetSearchBases(root);
+
+		var models = RvcEngine.GetCachedModels();
+
+		Assert.Single(models);
+		Assert.Equal("delta", models[0].Name);
+		Assert.EndsWith(".cached.onnx", models[0].ModelPath, StringComparison.OrdinalIgnoreCase);
+	}
+
+	[Fact]
+	public void GetCachedModels_CachedOnnxWithoutMeta_ExcludesModel()
+	{
+		var root = Path.Combine(_tempDir, "orphan-cached");
+		var voicesDir = CreateVoicesDir(root);
+		var modelDir = Path.Combine(voicesDir, "orphan");
+		Directory.CreateDirectory(modelDir);
+		CreateSizedFile(Path.Combine(modelDir, "orphan.cached.onnx"), 1024 * 1024);
+
+		SetSearchBases(root);
+
+		var models = RvcEngine.GetCachedModels();
+
+		Assert.Empty(models);
 	}
 
 	// ── Pure DSP / tensor helpers ──────────────────────────────────────

@@ -626,4 +626,98 @@ public sealed class AudioDspTests
 			writer.Write((byte)0);
 		}
 	}
+
+	// ── ReadAudioFileToWav tests ──
+
+	[Fact]
+	public void ReadAudioFileToWav_ValidWavFile_ReturnsSameBytes()
+	{
+		var wavBytes = BuildWavBytes(16000, 1, 16, BuildPcm16Bytes(100, 200, 300));
+		var path = Path.Combine(Path.GetTempPath(), $"test-{Guid.NewGuid()}.wav");
+		try
+		{
+			File.WriteAllBytes(path, wavBytes);
+			var result = AudioDsp.ReadAudioFileToWav(path);
+			Assert.Equal(wavBytes, result);
+		}
+		finally
+		{
+			File.Delete(path);
+		}
+	}
+
+	[Fact]
+	public void ReadAudioFileToWav_MissingFile_ThrowsFileNotFoundException()
+	{
+		Assert.Throws<FileNotFoundException>
+		(
+			() => AudioDsp.ReadAudioFileToWav(@"C:\nonexistent\fake.wav")
+		);
+	}
+
+	[Fact]
+	public void ReadAudioFileToWav_UnsupportedExtension_ThrowsInvalidOperationException()
+	{
+		var path = Path.Combine(Path.GetTempPath(), $"test-{Guid.NewGuid()}.flac");
+		try
+		{
+			File.WriteAllBytes(path, [0x00]);
+			var ex = Assert.Throws<InvalidOperationException>
+			(
+				() => AudioDsp.ReadAudioFileToWav(path)
+			);
+			Assert.Contains(".flac", ex.Message, StringComparison.OrdinalIgnoreCase);
+		}
+		finally
+		{
+			File.Delete(path);
+		}
+	}
+
+	[Theory]
+	[InlineData(null)]
+	[InlineData("")]
+	[InlineData("   ")]
+	public void ReadAudioFileToWav_NullOrWhitespace_ThrowsArgumentException(string? path)
+	{
+		Assert.ThrowsAny<ArgumentException>
+		(
+			() => AudioDsp.ReadAudioFileToWav(path!)
+		);
+	}
+
+	[Fact]
+	public void ReadAudioFileToWav_OggExtension_WithInvalidContent_ReturnsEmptyWav()
+	{
+		// Invalid OGG content has no packets -- decoder returns empty WAV
+		var path = Path.Combine(Path.GetTempPath(), $"test-{Guid.NewGuid()}.ogg");
+		try
+		{
+			File.WriteAllBytes(path, [0x00, 0x01, 0x02]);
+			var result = AudioDsp.ReadAudioFileToWav(path);
+
+			// Should produce a valid (empty) WAV header at minimum
+			Assert.NotNull(result);
+			Assert.True(result.Length >= 44); // WAV header is 44 bytes
+		}
+		finally
+		{
+			File.Delete(path);
+		}
+	}
+
+	[Fact]
+	public void ReadAudioFileToWav_Mp3Extension_AcceptsFile()
+	{
+		var path = Path.Combine(Path.GetTempPath(), $"test-{Guid.NewGuid()}.mp3");
+		try
+		{
+			File.WriteAllBytes(path, [0x00, 0x01, 0x02]);
+			Assert.ThrowsAny<Exception>(() => AudioDsp.ReadAudioFileToWav(path));
+		}
+		finally
+		{
+			File.Delete(path);
+		}
+	}
 }

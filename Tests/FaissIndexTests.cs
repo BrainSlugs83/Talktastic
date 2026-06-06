@@ -982,6 +982,60 @@ public sealed class FaissIndexTests
 		AssertEqualWithinTolerance(bfResult, flatResult);
 	}
 
+	[Fact]
+	public void Load_IndexFlatIP_ParsesCorrectly()
+	{
+		const uint fourCCIxFI = 0x4946_7849; // "IxFI"
+		var data = BuildMinimalIndexFlatBytes
+		(
+			fourCCIxFI, 2,
+			[7f, 8f, 9f, 10f]
+		);
+
+		var index = FaissIndex.Load(data);
+
+		Assert.Equal(2, index.Dimension);
+		Assert.Equal(2, index.Count);
+		Assert.False(index.HasIvf);
+		Assert.Equal([7f, 8f, 9f, 10f], index.Vectors);
+	}
+
+	[Fact]
+	public void Load_UnknownMagic_ThrowsInvalidDataException()
+	{
+		var bytes = new byte[32];
+		bytes[0] = 0xDE;
+		bytes[1] = 0xAD;
+		bytes[2] = 0xBE;
+		bytes[3] = 0xEF;
+
+		var ex = Assert.Throws<InvalidDataException>(() => FaissIndex.Load(bytes));
+		Assert.Contains("0xEFBEADDE", ex.Message, StringComparison.Ordinal);
+		Assert.Contains("Unsupported", ex.Message, StringComparison.Ordinal);
+	}
+
+	[Theory]
+	[InlineData(0x6C46_7749u, true)]  // IwFl
+	[InlineData(0x3246_7849u, true)]  // IxF2
+	[InlineData(0x4946_7849u, true)]  // IxFI
+	[InlineData(0x6C46_7849u, true)]  // IxFl
+	[InlineData(0xDEAD_BEEFu, false)] // unknown
+	public void IsSupportedFormat_AllKnownMagics(uint magic, bool expected)
+	{
+		var path = Path.Combine(Path.GetTempPath(), $"faiss-{Guid.NewGuid()}.index");
+		try
+		{
+			var bytes = new byte[4];
+			System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(bytes, magic);
+			File.WriteAllBytes(path, bytes);
+			Assert.Equal(expected, FaissIndex.IsSupportedFormat(path));
+		}
+		finally
+		{
+			File.Delete(path);
+		}
+	}
+
 	// ── IndexFlat builder helper ──
 
 	private const uint FourCCIxFl = 0x6C46_7849;
