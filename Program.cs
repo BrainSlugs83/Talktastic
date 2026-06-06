@@ -132,6 +132,11 @@ var noGpuOption = new Option<bool>("--no-gpu")
 	Description = "Disable DirectML GPU acceleration (use CPU only for RVC)",
 };
 
+var perfOption = new Option<bool>("--perf")
+{
+	Description = "Show detailed RVC pipeline timing information",
+};
+
 var rootCommand = new RootCommand($"Talktastic v{version} - standalone Windows TTS CLI")
 {
 	textArgument,
@@ -157,6 +162,7 @@ var rootCommand = new RootCommand($"Talktastic v{version} - standalone Windows T
 	quietOption,
 	superQuietOption,
 	noGpuOption,
+	perfOption,
 };
 
 rootCommand.SetAction
@@ -192,10 +198,16 @@ rootCommand.SetAction
 			var quiet = parseResult.GetValue(quietOption);
 			var superQuiet = parseResult.GetValue(superQuietOption);
 			var noGpu = parseResult.GetValue(noGpuOption);
+			var perf = parseResult.GetValue(perfOption);
 
 			if (noGpu)
 			{
 				RvcEngine.DisableGpu = true;
+			}
+
+			if (perf)
+			{
+				RvcEngine.ShowPerf = true;
 			}
 
 			if (superQuiet)

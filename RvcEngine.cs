@@ -483,7 +483,7 @@ static partial class RvcEngine
 				() =>
 				{
 					var result = ExtractF0(rmvpeSession!, inferenceAudio, pitchShiftSemitones, ct);
-					Console.Error.WriteLine($"[vec/f0] f0 done in {f0Sw.ElapsedMilliseconds}ms");
+					if (ShowPerf) Console.Error.WriteLine($"[vec/f0] f0 done in {f0Sw.ElapsedMilliseconds}ms");
 					return result;
 				},
 				ct
@@ -497,7 +497,7 @@ static partial class RvcEngine
 						() =>
 						{
 							var result = ExtractSegmentFeatures(vecSession!, slice.Audio, faissIndex);
-							Console.Error.WriteLine($"[vec/f0] vec done in {f0Sw.ElapsedMilliseconds}ms");
+							if (ShowPerf) Console.Error.WriteLine($"[vec/f0] vec done in {f0Sw.ElapsedMilliseconds}ms");
 							return result;
 						},
 						ct
@@ -537,12 +537,15 @@ static partial class RvcEngine
 			var finalSamples = Concatenate(convertedSegments);
 			var result = AudioDsp.EncodeWav(finalSamples, targetSampleRate);
 
-			await Console.Error.WriteLineAsync
-			(
-				$"[perf] prep={tPrep}ms load={tLoad - tPrep}ms "
-				+ $"f0+vec={tFeatures - tLoad}ms infer={tInfer - tFeatures}ms "
-				+ $"total={sw.ElapsedMilliseconds}ms"
-			).ConfigureAwait(false);
+			if (ShowPerf)
+			{
+				await Console.Error.WriteLineAsync
+				(
+					$"[perf] prep={tPrep}ms load={tLoad - tPrep}ms "
+					+ $"f0+vec={tFeatures - tLoad}ms infer={tInfer - tFeatures}ms "
+					+ $"total={sw.ElapsedMilliseconds}ms"
+				).ConfigureAwait(false);
+			}
 
 			return result;
 		}
@@ -763,6 +766,8 @@ static partial class RvcEngine
 	internal static bool DisableGpu { get; set; } =
 		Environment.GetEnvironmentVariable("TALKTASTIC_NO_GPU") is "1" or "true";
 
+	internal static bool ShowPerf { get; set; }
+
 	private static SessionOptions CreateSessionOptions(bool useGpu = true)
 	{
 		var options = new SessionOptions();
@@ -922,10 +927,13 @@ static partial class RvcEngine
 		var pitchf = DecodeF0(cents);
 		var tDecode = sw.ElapsedMilliseconds;
 
-		Console.Error.WriteLine
-		(
-			$"[f0] mel={tMel}ms rmvpe={tRmvpe - tMel}ms decode={tDecode - tRmvpe}ms"
-		);
+		if (ShowPerf)
+		{
+			Console.Error.WriteLine
+			(
+				$"[f0] mel={tMel}ms rmvpe={tRmvpe - tMel}ms decode={tDecode - tRmvpe}ms"
+			);
+		}
 
 		// Apply pitch shift (in semitones) before quantization
 		if (pitchShiftSemitones != 0.0f)
@@ -1219,11 +1227,14 @@ static partial class RvcEngine
 		}
 		var tFaiss = sw.ElapsedMilliseconds;
 
-		Console.Error.WriteLine
-		(
-			$"[vec] contentvec={tVec}ms faiss={tFaiss - tVec}ms "
-			+ $"audio={audioSegment.Length} samples"
-		);
+		if (ShowPerf)
+		{
+			Console.Error.WriteLine
+			(
+				$"[vec] contentvec={tVec}ms faiss={tFaiss - tVec}ms "
+				+ $"audio={audioSegment.Length} samples"
+			);
+		}
 
 		return features;
 	}
