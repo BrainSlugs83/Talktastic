@@ -793,7 +793,7 @@ static partial class RvcEngine
 						_dmlAvailable = false;
 						Console.Error.WriteLine
 						(
-							$"DirectML not available ({ex.GetType().Name}: {ex.Message}), using CPU."
+							"DirectML failed, falling back to CPU."
 						);
 					}
 				}
