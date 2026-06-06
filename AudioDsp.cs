@@ -133,7 +133,7 @@ internal static class AudioDsp
 						throw new InvalidDataException("WAV extensible fmt chunk is too small.");
 					}
 
-					formatTag = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(offset + 24, 4));
+					formatTag = BinaryPrimitives.ReadUInt16LittleEndian(data.Slice(offset + 24, 2));
 				}
 			}
 			else if (chunkId.SequenceEqual("data"u8))

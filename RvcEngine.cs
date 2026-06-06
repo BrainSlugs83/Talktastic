@@ -48,10 +48,27 @@ static partial class RvcEngine
 	private static string? _resolvedRvcDir;
 
 	/// <summary>
+	/// Returns the RVC voices directory path, if it exists.
+	/// </summary>
+	internal static string? FindVoicesDir()
+	{
+		foreach (var basePath in SearchBases)
+		{
+			var voicesDir = Path.Combine(basePath, RvcDirName, VoicesSubDir);
+			if (Directory.Exists(voicesDir))
+			{
+				return voicesDir;
+			}
+		}
+
+		return null;
+	}
+
+	/// <summary>
 	/// Enumerates all cached RVC models as (displayName, modelFilePath) pairs.
 	/// Searches subdirectories first, then legacy flat files.
 	/// </summary>
-	private static IEnumerable<(string Name, string Path)> EnumerateCachedModels(string voicesDir)
+	internal static IEnumerable<(string Name, string Path)> EnumerateCachedModels(string voicesDir)
 	{
 		if (!Directory.Exists(voicesDir))
 		{

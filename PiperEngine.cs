@@ -34,12 +34,26 @@ static partial class PiperEngine
 	];
 
 	/// <summary>
-	/// Lists downloaded Piper voice models as (name, sizeMB) tuples.
+	/// Returns the Piper voices directory path, if it exists.
 	/// </summary>
+	internal static string? FindVoicesDir()
+	{
+		foreach (var basePath in SearchBases)
+		{
+			var voicesDir = Path.Combine(basePath, PiperDirName, VoicesSubDir);
+			if (Directory.Exists(voicesDir))
+			{
+				return voicesDir;
+			}
+		}
+
+		return null;
+	}
+
 	/// <summary>
 	/// Enumerates all cached Piper voices as (name, onnxPath) pairs.
 	/// </summary>
-	private static IEnumerable<(string Name, string OnnxPath)> EnumerateCachedVoices(string voicesDir)
+	internal static IEnumerable<(string Name, string OnnxPath)> EnumerateCachedVoices(string voicesDir)
 	{
 		if (!Directory.Exists(voicesDir))
 		{
@@ -55,7 +69,10 @@ static partial class PiperEngine
 			}
 		}
 	}
-
+
+	/// <summary>
+	/// Lists downloaded Piper voice models as (name, sizeMB) tuples.
+	/// </summary>
 	public static List<(string Name, int SizeMb)> GetCachedVoices()
 	{
 		var results = new List<(string, int)>();

@@ -466,21 +466,14 @@ static async Task<string?> ReadInputTextAsync(string? text, CancellationToken ca
 
 static int RemovePiperVoice(string query)
 {
-	var piperRoot = FindCacheRoot
-	(
-		[".piper-tts", ".piper"],
-		"voices"
-	);
-
-	if (piperRoot is null)
+	var voicesDir = PiperEngine.FindVoicesDir();
+	if (voicesDir is null)
 	{
 		throw new InvalidOperationException($"Unknown Piper voice '{query}'.");
 	}
 
-	var voicesDir = Path.Combine(piperRoot, "voices");
-	var candidates = Directory.GetFiles(voicesDir, "*.onnx")
-		.OrderBy(static file => file, StringComparer.OrdinalIgnoreCase)
-		.Select(static file => new CachedItem(file))
+	var candidates = PiperEngine.EnumerateCachedVoices(voicesDir)
+		.Select(v => new CachedItem(v.OnnxPath))
 		.ToArray();
 
 	var match = FuzzyMatcher.FindBestMatch
@@ -496,10 +489,7 @@ static int RemovePiperVoice(string query)
 	}
 
 	var configPath = match.PrimaryPath + ".json";
-	var deletePaths = new List<string>
-	{
-		match.PrimaryPath,
-	};
+	var deletePaths = new List<string> { match.PrimaryPath };
 
 	if (File.Exists(configPath))
 	{
@@ -519,31 +509,21 @@ static int RemovePiperVoice(string query)
 		File.Delete(path);
 	}
 
+	var piperRoot = Path.GetDirectoryName(voicesDir)!;
 	RemoveRegistryEntries(Path.Combine(piperRoot, "voices.json"), match.Name);
 	return 0;
 }
 
 static int RemoveRvcModel(string query)
 {
-	var rvcRoot = FindCacheRoot([".rvc"], "voices");
-	if (rvcRoot is null)
+	var voicesDir = RvcEngine.FindVoicesDir();
+	if (voicesDir is null)
 	{
 		throw new InvalidOperationException($"Unknown RVC model '{query}'.");
 	}
 
-	var voicesDir = Path.Combine(rvcRoot, "voices");
-	var candidates = Directory.GetFiles(voicesDir)
-		.Where
-		(
-			static file =>
-			{
-				var extension = Path.GetExtension(file);
-				return string.Equals(extension, ".onnx", StringComparison.OrdinalIgnoreCase)
-					|| string.Equals(extension, ".pth", StringComparison.OrdinalIgnoreCase);
-			}
-		)
-		.OrderBy(static file => file, StringComparer.OrdinalIgnoreCase)
-		.Select(static file => new CachedItem(file))
+	var candidates = RvcEngine.EnumerateCachedModels(voicesDir)
+		.Select(m => new CachedItem(m.Path))
 		.ToArray();
 
 	var match = FuzzyMatcher.FindBestMatch
@@ -558,32 +538,14 @@ static int RemoveRvcModel(string query)
 		throw new InvalidOperationException($"Unknown RVC model '{query}'.");
 	}
 
-	var deletePaths = Directory.GetFiles(voicesDir)
-		.Where
-		(
-			file =>
-			{
-				if (string.Equals(file, match.PrimaryPath, StringComparison.OrdinalIgnoreCase))
-				{
-					return true;
-				}
-
-				var extension = Path.GetExtension(file);
-				if
-				(
-					!string.Equals(extension, ".index", StringComparison.OrdinalIgnoreCase)
-					&& !string.Equals(extension, ".json", StringComparison.OrdinalIgnoreCase)
-				)
-				{
-					return false;
-				}
-
-				var companionName = Path.GetFileNameWithoutExtension(file);
-				return HasMatchingPrefix(companionName, match.Name);
-			}
-		)
-		.Distinct(StringComparer.OrdinalIgnoreCase)
-		.ToArray();
+	// Delete the entire model directory (subdirectory layout)
+	var modelDir = Path.GetDirectoryName(match.PrimaryPath)!;
+	var isSubDir = !string.Equals
+	(
+		Path.GetFullPath(modelDir),
+		Path.GetFullPath(voicesDir),
+		StringComparison.OrdinalIgnoreCase
+	);
 
 	var sizeMb = (int)(match.SizeBytes / 1024 / 1024);
 	Console.Error.Write($"Remove RVC model '{match.Name}' ({match.FileName}, {sizeMb} MB)? [y/N] ");
@@ -593,45 +555,19 @@ static int RemoveRvcModel(string query)
 		return 0;
 	}
 
-	foreach (var path in deletePaths)
+	if (isSubDir)
 	{
-		File.Delete(path);
+		Directory.Delete(modelDir, recursive: true);
+	}
+	else
+	{
+		// Legacy flat file
+		File.Delete(match.PrimaryPath);
 	}
 
+	var rvcRoot = Path.GetDirectoryName(voicesDir)!;
 	RemoveRegistryEntries(Path.Combine(rvcRoot, "rvcs.json"), match.Name);
 	return 0;
-}
-
-static string? FindCacheRoot
-(
-	IReadOnlyList<string> dirNames,
-	string voicesSubDir
-)
-{
-	foreach (var basePath in GetSearchBases())
-	{
-		foreach (var dirName in dirNames)
-		{
-			var candidateRoot = Path.Combine(basePath, dirName);
-			var voicesDir = Path.Combine(candidateRoot, voicesSubDir);
-			if (Directory.Exists(voicesDir))
-			{
-				return candidateRoot;
-			}
-		}
-	}
-
-	return null;
-}
-
-static IReadOnlyList<string> GetSearchBases()
-{
-	return
-	[
-		Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Talktastic"),
-		Path.GetTempPath(),
-		Environment.CurrentDirectory,
-	];
 }
 
 static void RemoveRegistryEntries(string registryPath, string modelName)
@@ -659,22 +595,6 @@ static void RemoveRegistryEntries(string registryPath, string modelName)
 		.ToArray();
 
 	File.WriteAllLines(registryPath, remainingLines);
-}
-
-static bool HasMatchingPrefix(string candidate, string prefix)
-{
-	if (!candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-	{
-		return false;
-	}
-
-	if (candidate.Length == prefix.Length)
-	{
-		return true;
-	}
-
-	var next = candidate[prefix.Length];
-	return next == '.' || next == '_' || next == '-';
 }
 
 file sealed record CachedItem(string PrimaryPath)
