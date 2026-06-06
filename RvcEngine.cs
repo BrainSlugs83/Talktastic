@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 using Microsoft.ML.OnnxRuntime;
@@ -15,11 +16,6 @@ static partial class RvcEngine
 	private const string VoicesSubDir = "voices";
 	private const string InfraSubDir = "infra";
 	private const string RegistryFileName = "rvcs.json";
-
-	private static readonly JsonSerializerOptions ManifestJsonOptions = new()
-	{
-		PropertyNameCaseInsensitive = true,
-	};
 
 	private const string ContentVecUrl = "https://huggingface.co/NaruseMioShirakana/MoeSS-SUBModel/resolve/main/vec-768-layer-12.onnx";
 	private const string RmvpeUrl = "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.onnx";
@@ -319,10 +315,10 @@ static partial class RvcEngine
 		}
 
 		var manifestJson = File.ReadAllText(manifestPath);
-		var manifest = JsonSerializer.Deserialize<SkeletonManifest>
+		var manifest = JsonSerializer.Deserialize
 		(
 			manifestJson,
-			ManifestJsonOptions
+			SkeletonManifestJsonContext.Default.SkeletonManifest
 		) ?? throw new InvalidDataException($"Failed to parse manifest: {manifestPath}");
 
 		// Build name mapping from manifest's explicit pthToOnnx mapping
@@ -1091,3 +1087,9 @@ internal sealed record SkeletonManifest
 	Dictionary<string, int[]> Initializers,
 	Dictionary<string, string> PthToOnnx
 );
+
+[JsonSerializable(typeof(SkeletonManifest))]
+[JsonSourceGenerationOptions(PropertyNameCaseInsensitive = true)]
+internal sealed partial class SkeletonManifestJsonContext : JsonSerializerContext
+{
+}
