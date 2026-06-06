@@ -71,31 +71,6 @@ static partial class PiperEngine
 	}
 
 	/// <summary>
-	/// Lists downloaded Piper voice models as (name, sizeMB) tuples.
-	/// </summary>
-	public static List<(string Name, int SizeMb)> GetCachedVoices()
-	{
-		var results = new List<(string, int)>();
-		foreach (var basePath in SearchBases)
-		{
-			var voicesDir = Path.Combine(basePath, PiperDirName, VoicesSubDir);
-
-			foreach (var (name, onnxPath) in EnumerateCachedVoices(voicesDir))
-			{
-				var sizeMb = (int)(new FileInfo(onnxPath).Length / 1024 / 1024);
-				results.Add((name, sizeMb));
-			}
-
-			if (Directory.Exists(voicesDir))
-			{
-				break;
-			}
-		}
-
-		return results;
-	}
-
-	/// <summary>
 	/// Finds or creates the .piper-tts directory. Searches LOCALAPPDATA, TEMP, CWD.
 	/// If the runtime isn't found anywhere, extracts the embedded zip to the first writable location.
 	/// </summary>
@@ -159,43 +134,6 @@ static partial class PiperEngine
 	}
 
 	// ── Public API ──
-
-	/// <summary>
-	/// Returns true if the voice query is a Piper voice.
-	/// Matches: "piper:model-name", direct .onnx URLs, HuggingFace tree/model URLs,
-	/// and GitHub release URLs.
-	/// </summary>
-	public static bool IsPiperVoice(string? voiceQuery)
-	{
-		if (voiceQuery is null)
-			return false;
-
-		if (voiceQuery.StartsWith("piper:", StringComparison.OrdinalIgnoreCase))
-			return true;
-
-		if (!IsUrlVoice(voiceQuery))
-			return false;
-
-		// Direct .onnx URL
-		if (voiceQuery.Contains(".onnx", StringComparison.OrdinalIgnoreCase))
-			return true;
-
-		// HuggingFace tree/model page (folder containing .onnx files)
-		if (voiceQuery.Contains("huggingface.co", StringComparison.OrdinalIgnoreCase))
-			return true;
-
-		// GitHub release page
-		if
-		(
-			voiceQuery.Contains("github.com", StringComparison.OrdinalIgnoreCase)
-			&& voiceQuery.Contains("/releases/", StringComparison.OrdinalIgnoreCase)
-		)
-		{
-			return true;
-		}
-
-		return false;
-	}
 
 	/// <summary>
 	/// Returns true if the voice query is an HTTP(S) URL.

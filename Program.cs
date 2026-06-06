@@ -310,17 +310,23 @@ Notes:
 					await Console.Out.WriteLineAsync("Voices:").ConfigureAwait(false);
 					foreach (var v in voices)
 					{
-						var tag = v.VoiceType == VoiceType.Neural ? "neural" : "legacy";
-						await Console.Out.WriteLineAsync($"  {v.Name} [{tag}] ({v.Locale}, {v.Gender})").ConfigureAwait(false);
-					}
+							var tag = v.VoiceType switch
+							{
+								VoiceType.Neural => "neural",
+								VoiceType.Legacy => "legacy",
+								VoiceType.Piper => "piper",
+								_ => "unknown",
+							};
 
-					foreach (var (name, sizeMb) in PiperEngine.GetCachedVoices())
-					{
-						await Console.Out.WriteLineAsync($"  {name} [piper] ({sizeMb} MB)").ConfigureAwait(false);
-					}
+							var details = v.VoiceType == VoiceType.Piper
+								? v.Locale
+								: $"{v.Locale}, {v.Gender}";
 
-					needSeparator = true;
-				}
+							await Console.Out.WriteLineAsync($"  {v.Name} [{tag}] ({details})").ConfigureAwait(false);
+						}
+
+						needSeparator = true;
+					}
 
 				if (listAll || listRvcs)
 				{

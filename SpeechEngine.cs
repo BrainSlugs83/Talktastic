@@ -18,28 +18,14 @@ internal static partial class SpeechEngine
 			return await SynthesizeWithRvcAsync(request, cancellationToken).ConfigureAwait(false);
 		}
 
-		// Piper voices bypass the normal voice resolution
-		if (PiperEngine.IsPiperVoice(request.VoiceQuery))
-		{
-			return await SynthesizePiperAsync(request, cancellationToken).ConfigureAwait(false);
-		}
-
+		// Resolve voice from the unified list (neural + legacy + piper)
 		var voice = await VoiceEnumerator.ResolveVoiceAsync(request.VoiceQuery, cancellationToken).ConfigureAwait(false);
 
-		if (voice.VoiceType == VoiceType.Legacy)
+		return voice.VoiceType switch
 		{
-			return await SynthesizeLegacyAsync(request, voice).ConfigureAwait(false);
-		}
-
-		var license = LicenseProvider.GetLicenseText();
-
-		return request.OutputPath switch
-		{
-			null => await SpeakToDeviceAsync(request, voice, license).ConfigureAwait(false),
-			var path when HasExtension(path, ".wav") => await WriteWaveAsync(path, request, voice, license).ConfigureAwait(false),
-			var path when HasExtension(path, ".mp3") => await WriteMp3Async(path, request, voice, license).ConfigureAwait(false),
-			var path when HasExtension(path, ".ogg") => await WriteOggAsync(path, request, voice, license).ConfigureAwait(false),
-			var path => throw new InvalidOperationException($"Unsupported output file extension for '{path}'. Use .wav, .mp3, or .ogg."),
+			VoiceType.Piper => await SynthesizePiperAsync(request, voice, cancellationToken).ConfigureAwait(false),
+			VoiceType.Legacy => await SynthesizeLegacyAsync(request, voice).ConfigureAwait(false),
+			_ => await SynthesizeNeuralAsync(request, voice).ConfigureAwait(false),
 		};
 	}
 
@@ -57,36 +43,27 @@ internal static partial class SpeechEngine
 		var rvcModelPath = await RvcEngine.ResolveRvcModelAsync(request.RvcModel!, cancellationToken).ConfigureAwait(false);
 		var rvcDisplayName = Path.GetFileNameWithoutExtension(rvcModelPath);
 
-		// Step 1: Produce WAV bytes from the source TTS engine
+		// Step 1: Produce WAV bytes from the source TTS engine (unified resolution)
+		var voice = await VoiceEnumerator.ResolveVoiceAsync(request.VoiceQuery, cancellationToken).ConfigureAwait(false);
+		var sourceVoiceName = voice.VoiceType == VoiceType.Piper ? voice.LocalName : voice.Name;
+
 		byte[] wavBytes;
-		string sourceVoiceName;
-
-		if (PiperEngine.IsPiperVoice(request.VoiceQuery))
+		if (voice.VoiceType == VoiceType.Piper)
 		{
-			var modelPath = await PiperEngine.EnsureVoiceModelAsync(request.VoiceQuery!, cancellationToken).ConfigureAwait(false);
-			var modelName = Path.GetFileNameWithoutExtension(modelPath);
-			sourceVoiceName = PiperEngine.GetDisplayName(modelName);
-
 			var text = request.TreatInputAsSsml
 				? StripSsmlTags(request.Text)
 				: request.Text;
 
 			var lengthScale = RateToPiperLengthScale(request.Rate);
-			wavBytes = await PiperEngine.SynthesizeToWavAsync(text, modelPath, lengthScale, cancellationToken).ConfigureAwait(false);
+			wavBytes = await PiperEngine.SynthesizeToWavAsync(text, voice.VoicePath, lengthScale, cancellationToken).ConfigureAwait(false);
+		}
+		else if (voice.VoiceType == VoiceType.Legacy)
+		{
+			wavBytes = await SynthesizeLegacyToWavAsync(request, voice).ConfigureAwait(false);
 		}
 		else
 		{
-			var voice = await VoiceEnumerator.ResolveVoiceAsync(request.VoiceQuery, cancellationToken).ConfigureAwait(false);
-			sourceVoiceName = voice.Name;
-
-			if (voice.VoiceType == VoiceType.Legacy)
-			{
-				wavBytes = await SynthesizeLegacyToWavAsync(request, voice).ConfigureAwait(false);
-			}
-			else
-			{
-				wavBytes = await SynthesizeNeuralToWavAsync(request, voice, cancellationToken).ConfigureAwait(false);
-			}
+			wavBytes = await SynthesizeNeuralToWavAsync(request, voice, cancellationToken).ConfigureAwait(false);
 		}
 
 		// Step 2: Apply RVC voice conversion
@@ -265,14 +242,15 @@ internal static partial class SpeechEngine
 		throw new InvalidOperationException($"Unsupported output file extension for '{request.OutputPath}'. Use .wav, .mp3, or .ogg.");
 	}
 
-	private static async Task<string> SynthesizePiperAsync(SynthesisRequest request, CancellationToken cancellationToken)
+	private static async Task<string> SynthesizePiperAsync
+	(
+		SynthesisRequest request,
+		InstalledVoice voice,
+		CancellationToken cancellationToken
+	)
 	{
-		var voiceQuery = request.VoiceQuery!;
-		var modelPath = await PiperEngine.EnsureVoiceModelAsync(voiceQuery, cancellationToken).ConfigureAwait(false);
-
-		// Derive display name from the resolved model file (not the URL placeholder)
-		var modelName = Path.GetFileNameWithoutExtension(modelPath);
-		var displayName = PiperEngine.GetDisplayName(modelName);
+		var modelPath = voice.VoicePath;
+		var displayName = voice.LocalName;
 
 		var text = request.TreatInputAsSsml
 			? StripSsmlTags(request.Text)
@@ -327,6 +305,23 @@ internal static partial class SpeechEngine
 		}
 
 		throw new InvalidOperationException($"Unsupported output file extension for '{request.OutputPath}'. Use .wav, .mp3, or .ogg.");
+	}
+
+	/// <summary>
+	/// Synthesizes text using a neural (embedded) voice with direct output routing.
+	/// </summary>
+	private static async Task<string> SynthesizeNeuralAsync(SynthesisRequest request, InstalledVoice voice)
+	{
+		var license = LicenseProvider.GetLicenseText();
+
+		return request.OutputPath switch
+		{
+			null => await SpeakToDeviceAsync(request, voice, license).ConfigureAwait(false),
+			var path when HasExtension(path, ".wav") => await WriteWaveAsync(path, request, voice, license).ConfigureAwait(false),
+			var path when HasExtension(path, ".mp3") => await WriteMp3Async(path, request, voice, license).ConfigureAwait(false),
+			var path when HasExtension(path, ".ogg") => await WriteOggAsync(path, request, voice, license).ConfigureAwait(false),
+			var path => throw new InvalidOperationException($"Unsupported output file extension for '{path}'. Use .wav, .mp3, or .ogg."),
+		};
 	}
 
 	/// <summary>
