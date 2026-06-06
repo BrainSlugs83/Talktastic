@@ -63,6 +63,11 @@ if ($LASTEXITCODE -ne 0)
 New-Item -ItemType Directory -Path $distDir -Force | Out-Null
 Copy-Item (Join-Path $publishDir 'say.exe') $exePath -Force
 
+# Copy any native companion DLLs (e.g. onnxruntime.dll)
+Get-ChildItem $publishDir -Filter '*.dll' | ForEach-Object {
+	Copy-Item $_.FullName (Join-Path $distDir $_.Name) -Force
+}
+
 # Touch the sentinel so subsequent builds can short-circuit.
 [IO.File]::WriteAllText($stampPath, '')
 
