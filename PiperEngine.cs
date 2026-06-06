@@ -774,9 +774,9 @@ static partial class PiperEngine
 	}
 
 	/// <summary>
-	/// Synthesizes text to WAV bytes using Piper.
+	/// Synthesizes text to WAV bytes using a Piper ONNX model via sherpa-onnx (in-process).
 	/// </summary>
-	public static async Task<byte[]> SynthesizeToWavAsync
+	public static Task<byte[]> SynthesizeToWavAsync
 	(
 		string text,
 		string modelPath,
@@ -784,70 +784,12 @@ static partial class PiperEngine
 		CancellationToken cancellationToken
 	)
 	{
-		var piperDir = EnsureRuntimeAvailable();
-		var piperExe = Path.Combine(piperDir, "piper.exe");
-		var espeakData = Path.Combine(piperDir, "espeak-ng-data");
+		// Ensure espeak-ng-data is available (needed for phonemization)
+		EnsureRuntimeAvailable();
 
-		var outFile = Path.Combine(Path.GetTempPath(), $"talktastic-piper-{Guid.NewGuid():N}.wav");
-
-		try
-		{
-			var args = $"--model \"{modelPath}\" --output_file \"{outFile}\" --espeak_data \"{espeakData}\" --quiet";
-			if (lengthScale is not null)
-				args += $" --length_scale {lengthScale.Value:F3}";
-
-			var psi = new ProcessStartInfo
-			{
-				FileName = piperExe,
-				Arguments = args,
-				RedirectStandardInput = true,
-				RedirectStandardOutput = true,
-				RedirectStandardError = true,
-				UseShellExecute = false,
-				CreateNoWindow = true,
-			};
-
-			using var process = Process.Start(psi)
-				?? throw new InvalidOperationException("Failed to start Piper process.");
-
-			await process.StandardInput.WriteLineAsync(text.AsMemory(), cancellationToken).ConfigureAwait(false);
-			process.StandardInput.Close();
-
-			// Drain stdout and stderr to avoid deadlocks (piper prints the output path to stdout)
-			var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-			var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-			await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
-			var stderr = await stderrTask.ConfigureAwait(false);
-
-			await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-
-			if (process.ExitCode != 0)
-			{
-					var errorDetail = stderr.Trim();
-					if (string.IsNullOrWhiteSpace(errorDetail))
-					{
-						errorDetail = process.ExitCode switch
-						{
-							unchecked((int)0xC0000005) => "Access violation (corrupted or incompatible model?)",
-							unchecked((int)0xC0000409) => "Stack buffer overrun (model may be incompatible with this Piper version)",
-							unchecked((int)0xC00000FD) => "Stack overflow (model too large or incompatible)",
-							_ when process.ExitCode < 0 => $"Native crash (0x{process.ExitCode:X8})",
-							_ => $"Unknown error",
-						};
-					}
-
-					throw new InvalidOperationException
-					(
-						$"Piper exited with code {process.ExitCode}: {errorDetail}"
-					);
-				}
-
-			return await File.ReadAllBytesAsync(outFile, cancellationToken).ConfigureAwait(false);
-		}
-		finally
-		{
-			try { File.Delete(outFile); } catch (IOException) { /* best effort */ }
-		}
+		cancellationToken.ThrowIfCancellationRequested();
+		var wavBytes = SherpaEngine.SynthesizeToWav(text, modelPath, lengthScale);
+		return Task.FromResult(wavBytes);
 	}
 
 	/// <summary>

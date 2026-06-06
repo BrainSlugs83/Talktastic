@@ -49,7 +49,8 @@ internal static class NativeExtractor
 		[
 			"onnxruntime.dll",
 			"onnxruntime_providers_shared.dll",
-		],
+				"sherpa-onnx-c-api.dll",
+			],
 	};
 
 	private static readonly object SyncRoot = new();

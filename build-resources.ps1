@@ -18,6 +18,9 @@ param
 	[Parameter(Mandatory = $true)]
 	[string]$MlOnnxRuntimePackageDirectory,
 
+	[Parameter(Mandatory = $true)]
+	[string]$SherpaOnnxPackageDirectory,
+
 	[string]$RuntimeIdentifier = 'win-x64'
 )
 
@@ -118,12 +121,17 @@ $nativeDlls = @(
 		SourcePath = Join-Path $LamePackageDirectory 'build\libmp3lame.64.dll'
 	}
 	@{
+		# Use sherpa-onnx's ORT (1.24.4) -- compatible with both sherpa-onnx and Microsoft.ML.OnnxRuntime managed wrapper
 		Name = 'onnxruntime.dll'
-		SourcePath = Join-Path $MlOnnxRuntimePackageDirectory "runtimes\$RuntimeIdentifier\native\onnxruntime.dll"
+		SourcePath = Join-Path $SherpaOnnxPackageDirectory "runtimes\$RuntimeIdentifier\native\onnxruntime.dll"
 	}
 	@{
 		Name = 'onnxruntime_providers_shared.dll'
 		SourcePath = Join-Path $MlOnnxRuntimePackageDirectory "runtimes\$RuntimeIdentifier\native\onnxruntime_providers_shared.dll"
+	}
+	@{
+		Name = 'sherpa-onnx-c-api.dll'
+		SourcePath = Join-Path $SherpaOnnxPackageDirectory "runtimes\$RuntimeIdentifier\native\sherpa-onnx-c-api.dll"
 	}
 )
 

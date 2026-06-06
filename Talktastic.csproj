@@ -40,8 +40,10 @@
     <PackageReference Include="Microsoft.CognitiveServices.Speech" Version="1.50.0" GeneratePathProperty="true" />
     <PackageReference Include="Microsoft.CognitiveServices.Speech.Extension.Embedded.TTS" Version="1.50.0" GeneratePathProperty="true" />
     <PackageReference Include="Microsoft.CognitiveServices.Speech.Extension.ONNX.Runtime" Version="1.50.0" GeneratePathProperty="true" />
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.23.2" GeneratePathProperty="true" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.4" GeneratePathProperty="true" />
     <PackageReference Include="NAudio.Lame" Version="2.1.0" GeneratePathProperty="true" ExcludeAssets="all" />
+    <PackageReference Include="org.k2fsa.sherpa.onnx" Version="1.13.2" />
+    <PackageReference Include="org.k2fsa.sherpa.onnx.runtime.win-x64" Version="1.13.2" GeneratePathProperty="true" />
     <PackageReference Include="System.CommandLine" Version="3.0.0-preview.4.26230.115" />
   </ItemGroup>
 
@@ -59,7 +61,7 @@
   </ItemGroup>
 
   <Target Name="PrepareNativeResources" BeforeTargets="PrepareResourceNames" Condition="'$(DesignTimeBuild)' != 'true'">
-    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\build-resources.ps1&quot; -OutputDirectory &quot;$(SpeechNativeResourceDirectory)&quot; -BasePackageDirectory &quot;$(PkgMicrosoft_CognitiveServices_Speech)&quot; -EmbeddedTtsPackageDirectory &quot;$(PkgMicrosoft_CognitiveServices_Speech_Extension_Embedded_TTS)&quot; -OnnxRuntimePackageDirectory &quot;$(PkgMicrosoft_CognitiveServices_Speech_Extension_ONNX_Runtime)&quot; -LamePackageDirectory &quot;$(PkgNAudio_Lame)&quot; -MlOnnxRuntimePackageDirectory &quot;$(PkgMicrosoft_ML_OnnxRuntime)&quot; -RuntimeIdentifier &quot;$(SpeechNativeRuntimeIdentifier)&quot;" />
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\build-resources.ps1&quot; -OutputDirectory &quot;$(SpeechNativeResourceDirectory)&quot; -BasePackageDirectory &quot;$(PkgMicrosoft_CognitiveServices_Speech)&quot; -EmbeddedTtsPackageDirectory &quot;$(PkgMicrosoft_CognitiveServices_Speech_Extension_Embedded_TTS)&quot; -OnnxRuntimePackageDirectory &quot;$(PkgMicrosoft_CognitiveServices_Speech_Extension_ONNX_Runtime)&quot; -LamePackageDirectory &quot;$(PkgNAudio_Lame)&quot; -MlOnnxRuntimePackageDirectory &quot;$(PkgMicrosoft_ML_OnnxRuntime)&quot; -SherpaOnnxPackageDirectory &quot;$(Pkgorg_k2fsa_sherpa_onnx_runtime_win-x64)&quot; -RuntimeIdentifier &quot;$(SpeechNativeRuntimeIdentifier)&quot;" />
     <ItemGroup>
       <GeneratedNativeResource Remove="$(SpeechNativeResourceDirectory)\*.dll.gz" />
       <GeneratedNativeResource Include="$(SpeechNativeResourceDirectory)\*.dll.gz" />
@@ -96,7 +98,7 @@
 
   <Target Name="ExcludeEmbeddedSpeechNativeFilesFromPublish" BeforeTargets="ComputeFilesToPublish">
     <ItemGroup>
-      <EmbeddedSpeechNativePublishCandidate Include="@(ResolvedFileToPublish)" Condition="&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.core.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.audio.sys.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.codec.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.embedded.tts.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.kws.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.kws.ort.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.onnxruntime.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.telemetry.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'onnxruntime.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'onnxruntime_providers_shared.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'onnxruntime.lib' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'onnxruntime_providers_shared.lib'" />
+      <EmbeddedSpeechNativePublishCandidate Include="@(ResolvedFileToPublish)" Condition="&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.core.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.audio.sys.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.codec.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.embedded.tts.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.kws.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.kws.ort.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.onnxruntime.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'Microsoft.CognitiveServices.Speech.extension.telemetry.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'onnxruntime.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'onnxruntime_providers_shared.dll' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'onnxruntime.lib' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'onnxruntime_providers_shared.lib' Or&#xD;&#xA;          '%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'sherpa-onnx-c-api.dll'" />
       <ResolvedFileToPublish Remove="@(EmbeddedSpeechNativePublishCandidate)" />
     </ItemGroup>
   </Target>
@@ -104,7 +106,7 @@
   <!-- Also exclude ORT native assets that come via NativeLibrary items (NativeAOT) -->
   <Target Name="ExcludeOrtNativeLibraries" BeforeTargets="_ComputeAssembliesToPostprocessOnPublish;ComputeLinkedFilesToPublish" Condition="'$(PublishAot)' == 'true'">
     <ItemGroup>
-      <NativeBinary Remove="@(NativeBinary)" Condition="$([System.String]::new('%(Filename)').StartsWith('onnxruntime'))" />
+      <NativeBinary Remove="@(NativeBinary)" Condition="$([System.String]::new('%(Filename)').StartsWith('onnxruntime')) Or $([System.String]::new('%(Filename)').StartsWith('sherpa-onnx'))" />
     </ItemGroup>
   </Target>
 
