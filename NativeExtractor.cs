@@ -15,6 +15,7 @@ internal enum DllGroup
 	None = 0,
 	SpeechSdk = 1,
 	Lame = 2,
+	OnnxRuntime = 4,
 }
 
 internal static class NativeExtractor
@@ -43,6 +44,11 @@ internal static class NativeExtractor
 		[DllGroup.Lame] =
 		[
 			"libmp3lame.dll",
+		],
+		[DllGroup.OnnxRuntime] =
+		[
+			"onnxruntime.dll",
+			"onnxruntime_providers_shared.dll",
 		],
 	};
 

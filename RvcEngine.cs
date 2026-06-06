@@ -414,6 +414,8 @@ static partial class RvcEngine
 		var vecPath = Path.Combine(infraDir, "vec-768-layer-12.onnx");
 		var rmvpePath = Path.Combine(infraDir, "rmvpe.onnx");
 
+		NativeExtractor.EnsureAvailable(DllGroup.OnnxRuntime);
+
 		using var vecSession = CreateSession(vecPath);
 		using var rmvpeSession = CreateSession(rmvpePath);
 

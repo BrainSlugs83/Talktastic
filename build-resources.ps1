@@ -15,6 +15,9 @@ param
 	[Parameter(Mandatory = $true)]
 	[string]$LamePackageDirectory,
 
+	[Parameter(Mandatory = $true)]
+	[string]$MlOnnxRuntimePackageDirectory,
+
 	[string]$RuntimeIdentifier = 'win-x64'
 )
 
@@ -113,6 +116,14 @@ $nativeDlls = @(
 		# NAudio.Lame ships the DLL as build/libmp3lame.64.dll; we embed it as libmp3lame.dll
 		Name = 'libmp3lame.dll'
 		SourcePath = Join-Path $LamePackageDirectory 'build\libmp3lame.64.dll'
+	}
+	@{
+		Name = 'onnxruntime.dll'
+		SourcePath = Join-Path $MlOnnxRuntimePackageDirectory "runtimes\$RuntimeIdentifier\native\onnxruntime.dll"
+	}
+	@{
+		Name = 'onnxruntime_providers_shared.dll'
+		SourcePath = Join-Path $MlOnnxRuntimePackageDirectory "runtimes\$RuntimeIdentifier\native\onnxruntime_providers_shared.dll"
 	}
 )
 
