@@ -2,9 +2,12 @@ using Microsoft.CognitiveServices.Speech;
 using System.CommandLine;
 using System.CommandLine.Help;
 using System.Reflection;
+using System.Text;
 using System.Xml;
 
 using Talktastic;
+
+Console.OutputEncoding = Encoding.UTF8;
 
 var fullVersion = Assembly.GetEntryAssembly()
 	?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()

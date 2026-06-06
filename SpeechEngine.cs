@@ -97,7 +97,7 @@ internal static partial class SpeechEngine
 
 		wavBytes = await RvcEngine.ConvertAsync(wavBytes, rvcModelPath, request.RvcPitchShift, cancellationToken).ConfigureAwait(false);
 
-		var displayName = $"{sourceVoiceName} -> {rvcDisplayName}";
+		var displayName = $"{sourceVoiceName} → {rvcDisplayName}";
 
 		// Step 3: Output the converted audio
 		if (request.OutputPath is null)
