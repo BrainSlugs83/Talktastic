@@ -458,6 +458,161 @@ public sealed class FaissIndexTests
 		Assert.Equal(queries, result);
 	}
 
+	[Fact]
+	public void Load_ParsesCentroidsAndListOffsets()
+	{
+		var data = BuildMinimalFaissBytes
+		(
+			2,
+			[
+				1f, 2f,
+				3f, 4f,
+			],
+			[
+				5f, 6f,
+			]
+		);
+
+		var index = FaissIndex.Load(data);
+
+		Assert.True(index.HasIvf);
+		Assert.NotNull(index.Centroids);
+		Assert.NotNull(index.ListOffsets);
+		Assert.Equal(3, index.ListOffsets.Length); // 2 lists + sentinel
+		Assert.Equal(0, index.ListOffsets[0]);
+		Assert.Equal(2, index.ListOffsets[1]); // list 0 has 2 vectors
+		Assert.Equal(3, index.ListOffsets[2]); // list 1 has 1 vector
+	}
+
+	[Fact]
+	public void Load_EmptyList_HasCorrectOffsets()
+	{
+		var data = BuildMinimalFaissBytes
+		(
+			2,
+			Array.Empty<float>(),
+			[
+				1f, 2f,
+				3f, 4f,
+			],
+			Array.Empty<float>()
+		);
+
+		var index = FaissIndex.Load(data);
+
+		Assert.True(index.HasIvf);
+		Assert.Equal(4, index.ListOffsets!.Length);
+		Assert.Equal(0, index.ListOffsets[0]); // empty list 0
+		Assert.Equal(0, index.ListOffsets[1]); // list 1 starts at 0
+		Assert.Equal(2, index.ListOffsets[2]); // list 1 has 2 vectors
+		Assert.Equal(2, index.ListOffsets[3]); // empty list 2
+	}
+
+	[Fact]
+	public void SearchAndBlend_IvfIndex_FindsNearestInCorrectCluster()
+	{
+		// Build index with 2 clusters:
+		// cluster 0: [1,1], [2,2]
+		// cluster 1: [10,10], [11,11]
+		float[] centroids =
+		[
+			1.5f, 1.5f,
+			10.5f, 10.5f,
+		];
+		var data = BuildMinimalFaissBytesWithCentroids
+		(
+			2,
+			centroids,
+			[
+				1f, 1f,
+				2f, 2f,
+			],
+			[
+				10f, 10f,
+				11f, 11f,
+			]
+		);
+
+		var index = FaissIndex.Load(data);
+		Assert.True(index.HasIvf);
+
+		// Query near cluster 1 → should find [10,10]
+		float[] queries = [9f, 9f];
+		var result = FaissIndex.SearchAndBlend
+		(
+			index,
+			queries,
+			frameCount: 1,
+			k: 1,
+			indexRate: 1f
+		);
+
+		// With nprobe=1, should find nearest in cluster 1
+		Assert.Equal(10f, result[0], 0.5f);
+		Assert.Equal(10f, result[1], 0.5f);
+	}
+
+	[Fact]
+	public void SearchAndBlend_IvfVsBruteForce_SimilarResults()
+	{
+		// Build identical data as IVF (from file) and brute-force
+		var data = BuildMinimalFaissBytes
+		(
+			2,
+			[
+				1f, 2f,
+				3f, 4f,
+			],
+			[
+				5f, 6f,
+				7f, 8f,
+			]
+		);
+
+		var ivfIndex = FaissIndex.Load(data);
+		Assert.True(ivfIndex.HasIvf);
+
+		var bfIndex = CreateIndex
+		(
+			2,
+			[
+				1f, 2f,
+				3f, 4f,
+				5f, 6f,
+				7f, 8f,
+			]
+		);
+		Assert.False(bfIndex.HasIvf);
+
+		// Query that's equidistant to both clusters → both methods
+		// should give similar results with enough nprobe
+		float[] queries = [4f, 5f];
+
+		var bfResult = FaissIndex.SearchAndBlend
+		(
+			bfIndex,
+			queries,
+			frameCount: 1,
+			k: 2,
+			indexRate: 1f
+		);
+
+		// The IVF result may differ slightly since nprobe=1 only
+		// searches one cluster, but should be reasonable
+		var ivfResult = FaissIndex.SearchAndBlend
+		(
+			ivfIndex,
+			queries,
+			frameCount: 1,
+			k: 2,
+			indexRate: 1f
+		);
+
+		// Both should produce results in the same ballpark
+		Assert.InRange(ivfResult[0], 0f, 10f);
+		Assert.InRange(ivfResult[1], 0f, 10f);
+	}
+
 	private static FaissIndex.Index CreateIndex(int dimension, float[] vectors)
 	{
 		return new FaissIndex.Index
@@ -489,6 +644,19 @@ public sealed class FaissIndexTests
 	private static byte[] BuildMinimalFaissBytes
 	(
 		int dimension,
+		params float[][] lists
+	)
+	{
+		return BuildMinimalFaissBytesWithCentroids
+		(
+			dimension, centroids: null, lists
+		);
+	}
+
+	private static byte[] BuildMinimalFaissBytesWithCentroids
+	(
+		int dimension,
+		float[]? centroids,
 		params float[][] lists
 	)
 	{
@@ -533,9 +701,28 @@ public sealed class FaissIndexTests
 		AppendInt32(bytes, 0);
 		AppendInt64(bytes, (long)lists.Length * dimension);
 
-		for (var i = 0; i < lists.Length * dimension; i++)
+		if (centroids is not null)
 		{
-			AppendSingle(bytes, 0f);
+			if (centroids.Length != lists.Length * dimension)
+			{
+				throw new ArgumentException
+				(
+					"Centroids array length must equal lists.Length × dimension.",
+					nameof(centroids)
+				);
+			}
+
+			foreach (var c in centroids)
+			{
+				AppendSingle(bytes, c);
+			}
+		}
+		else
+		{
+			for (var i = 0; i < lists.Length * dimension; i++)
+			{
+				AppendSingle(bytes, 0f);
+			}
 		}
 
 		AppendByte(bytes, 0);

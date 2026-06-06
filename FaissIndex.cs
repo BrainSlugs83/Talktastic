@@ -1,16 +1,21 @@
 namespace Talktastic;
 
 /// <summary>
-/// Reads a FAISS IVF Flat index file and performs brute-force
-/// nearest-neighbor retrieval. Only supports the "IwFl" (IndexIVFFlat)
-/// format with "ilar" (ArrayInvertedLists) — the standard format
-/// produced by RVC model training.
+/// Reads a FAISS IVF Flat index file and performs nearest-neighbor
+/// retrieval. When IVF structure is available (centroids + posting lists),
+/// uses cluster-based pruning for O(nprobe × cluster_size) search instead
+/// of O(ntotal) brute-force. Falls back to brute-force for indices
+/// constructed without IVF structure (e.g. in tests).
+/// Only supports the "IwFl" (IndexIVFFlat) format with "ilar"
+/// (ArrayInvertedLists) — the standard format produced by RVC training.
 /// </summary>
 static partial class FaissIndex
 {
 	/// <summary>
 	/// The result of loading a FAISS index: a dense matrix of stored
 	/// feature vectors ready for nearest-neighbor search.
+	/// When IVF structure is present (loaded from file), search uses
+	/// cluster-based pruning; otherwise falls back to brute-force.
 	/// </summary>
 	internal sealed class Index
 	{
@@ -22,6 +27,27 @@ static partial class FaissIndex
 
 		/// <summary>Total number of stored vectors.</summary>
 		public int Count => Vectors.Length / Dimension;
+
+		/// <summary>
+		/// IVF centroids, row-major [nlist × d]. Null when the index
+		/// was constructed without IVF structure (e.g. in tests).
+		/// </summary>
+		public float[]? Centroids { get; init; }
+
+		/// <summary>
+		/// Cumulative vector offsets per inverted list, length nlist+1.
+		/// <c>ListOffsets[i]</c> is the first vector index for list i,
+		/// <c>ListOffsets[i+1] - ListOffsets[i]</c> is the list size.
+		/// </summary>
+		public int[]? ListOffsets { get; init; }
+
+		/// <summary>
+		/// Number of centroids to probe during search (default 1).
+		/// </summary>
+		public int Nprobe { get; init; } = 1;
+
+		/// <summary>Whether this index has IVF structure for fast search.</summary>
+		public bool HasIvf => Centroids is not null && ListOffsets is not null;
 	}
 
 	// ── FAISS fourcc constants ──
@@ -74,9 +100,9 @@ static partial class FaissIndex
 		var metric = br.ReadInt32();
 
 		var nlist = br.ReadInt64();
-		br.ReadInt64(); // nprobe (we do brute-force, don't need this)
+		var nprobe = br.ReadInt64();
 
-		// ── Quantizer (IndexFlat) — skip centroids, we don't need them ──
+		// ── Quantizer (IndexFlat) — read centroids ──
 		var qMagic = br.ReadUInt32();
 		if (qMagic != FourCC_IxF2 && qMagic != FourCC_IxFI && qMagic != FourCC_IxFl)
 		{
@@ -94,10 +120,13 @@ static partial class FaissIndex
 		br.ReadByte();   // is_trained
 		br.ReadInt32();  // metric_type
 
-		// READXBVECTOR: size stored as count/4, actual bytes = count * 4
+		// READXBVECTOR: count stored as total floats
 		var xbCount = br.ReadInt64();
-		var centroidBytes = xbCount * 4;
-		SkipBytes(br, centroidBytes);
+		var centroidFloats = (int)xbCount;
+		var centroids = new float[centroidFloats];
+		var centroidBytes = centroidFloats * 4;
+		var centroidRaw = br.ReadBytes(centroidBytes);
+		Buffer.BlockCopy(centroidRaw, 0, centroids, 0, centroidBytes);
 
 		// ── Direct map ──
 		var dmType = br.ReadByte();
@@ -155,12 +184,14 @@ static partial class FaissIndex
 			);
 		}
 
-		// ── Read all vectors from posting lists ──
+		// ── Read all vectors from posting lists, tracking boundaries ──
 		var vectors = new float[totalVectors * d];
+		var listOffsets = new int[(int)szCount + 1];
 		var writePos = 0;
 
 		for (var i = 0; i < szCount; i++)
 		{
+			listOffsets[i] = writePos / d;
 			var count = (int)sizes[i];
 			if (count == 0)
 			{
@@ -178,10 +209,15 @@ static partial class FaissIndex
 			SkipBytes(br, count * 8L);
 		}
 
+		listOffsets[(int)szCount] = writePos / d;
+
 		return new Index
 		{
 			Vectors = vectors,
 			Dimension = d,
+			Centroids = centroids,
+			ListOffsets = listOffsets,
+			Nprobe = Math.Max(1, (int)nprobe),
 		};
 	}
 
@@ -227,10 +263,151 @@ static partial class FaissIndex
 			return (float[])queries.Clone();
 		}
 
+		var result = new float[frameCount * d];
+		var actualK = Math.Min(k, index.Count);
+
+		if (index.HasIvf)
+		{
+			SearchAndBlendIvf
+			(
+				index, queries, frameCount, actualK, indexRate, result
+			);
+		}
+		else
+		{
+			SearchAndBlendBruteForce
+			(
+				index, queries, frameCount, actualK, indexRate, result
+			);
+		}
+
+		return result;
+	}
+
+	private static void SearchAndBlendIvf
+	(
+		Index index,
+		float[] queries,
+		int frameCount,
+		int actualK,
+		float indexRate,
+		float[] result
+	)
+	{
+		var d = index.Dimension;
+		var centroids = index.Centroids!;
+		var listOffsets = index.ListOffsets!;
+		var nlist = listOffsets.Length - 1;
+		var nprobe = Math.Min(index.Nprobe, nlist);
+		var vectors = index.Vectors;
+
+		Enumerable.Range(0, frameCount)
+			.AsParallel()
+			.ForAll
+			(
+				frame =>
+				{
+					var qOffset = frame * d;
+					var rOffset = frame * d;
+
+					// Step 1: find nprobe closest centroids
+					var centDist = new float[nlist];
+					ComputeL2Distances
+					(
+						queries, qOffset, centroids, d, nlist, centDist
+					);
+
+					var probeIdx = new int[nprobe];
+					var probeDist = new float[nprobe];
+					FindTopK(centDist, nprobe, probeIdx, probeDist);
+
+					// Step 2: search only vectors in the probed clusters
+					var candidateCount = 0;
+					for (var p = 0; p < nprobe; p++)
+					{
+						var listIdx = probeIdx[p];
+						candidateCount += listOffsets[listIdx + 1]
+							- listOffsets[listIdx];
+					}
+
+					var topKIdx = new int[actualK];
+					var topKDist = new float[actualK];
+					for (var i = 0; i < actualK; i++)
+					{
+						topKDist[i] = float.MaxValue;
+						topKIdx[i] = -1;
+					}
+
+					var heapSize = 0;
+
+					for (var p = 0; p < nprobe; p++)
+					{
+						var listIdx = probeIdx[p];
+						var start = listOffsets[listIdx];
+						var end = listOffsets[listIdx + 1];
+
+						for (var vi = start; vi < end; vi++)
+						{
+							var vecOffset = vi * d;
+							var dist = ComputeL2Distance
+							(
+								queries, qOffset, vectors, vecOffset, d
+							);
+
+							if (heapSize < actualK)
+							{
+								topKIdx[heapSize] = vi;
+								topKDist[heapSize] = dist;
+								heapSize++;
+								if (heapSize == actualK)
+								{
+									// Build max-heap
+									for
+									(
+										var i = actualK / 2 - 1;
+										i >= 0;
+										i--
+									)
+									{
+										SiftDown
+										(
+											topKDist, topKIdx, actualK, i
+										);
+									}
+								}
+							}
+							else if (dist < topKDist[0])
+							{
+								topKDist[0] = dist;
+								topKIdx[0] = vi;
+								SiftDown(topKDist, topKIdx, actualK, 0);
+							}
+						}
+					}
+
+					var usedK = Math.Min(actualK, heapSize);
+					BlendResults
+					(
+						queries, qOffset, vectors, d, topKIdx,
+						topKDist, usedK, indexRate, result, rOffset
+					);
+				}
+			);
+	}
+
+	private static void SearchAndBlendBruteForce
+	(
+		Index index,
+		float[] queries,
+		int frameCount,
+		int actualK,
+		float indexRate,
+		float[] result
+	)
+	{
+		var d = index.Dimension;
 		var n = index.Count;
 		var vectors = index.Vectors;
-		var result = new float[frameCount * d];
-		var actualK = Math.Min(k, n);
 
 		// Each frame's search is independent — parallelize with PLINQ
 		Enumerable.Range(0, frameCount)
@@ -247,50 +424,112 @@ static partial class FaissIndex
 					var topKIdx = new int[actualK];
 					var topKDist = new float[actualK];
 
-					ComputeL2Distances(queries, qOffset, vectors, d, n, distances);
+					ComputeL2Distances
+					(
+						queries, qOffset, vectors, d, n, distances
+					);
 					FindTopK(distances, actualK, topKIdx, topKDist);
 
-					// Inverse-squared-distance weighting
-					Span<float> weights = stackalloc float[actualK];
-					var weightSum = 0f;
-					for (var ki = 0; ki < actualK; ki++)
-					{
-						var dist = topKDist[ki];
-						var w = dist > 1e-10f ? 1f / (dist * dist) : 1e10f;
-						weights[ki] = w;
-						weightSum += w;
-					}
-
-					if (weightSum > 0f)
-					{
-						for (var ki = 0; ki < actualK; ki++)
-						{
-							weights[ki] /= weightSum;
-						}
-					}
-
-					// Weighted blend of retrieved vectors
-					for (var ki = 0; ki < actualK; ki++)
-					{
-						var vecOffset = topKIdx[ki] * d;
-						var w = weights[ki];
-						for (var j = 0; j < d; j++)
-						{
-							result[rOffset + j] += w * vectors[vecOffset + j];
-						}
-					}
-
-					// Blend with original features
-					var oneMinusRate = 1f - indexRate;
-					for (var j = 0; j < d; j++)
-					{
-						result[rOffset + j] = indexRate * result[rOffset + j]
-							+ oneMinusRate * queries[qOffset + j];
-					}
+					BlendResults
+					(
+						queries, qOffset, vectors, d, topKIdx,
+						topKDist, actualK, indexRate, result, rOffset
+					);
 				}
 			);
+	}
 
-		return result;
+	private static void BlendResults
+	(
+		float[] queries,
+		int qOffset,
+		float[] vectors,
+		int d,
+		int[] topKIdx,
+		float[] topKDist,
+		int usedK,
+		float indexRate,
+		float[] result,
+		int rOffset
+	)
+	{
+		// Inverse-squared-distance weighting
+		Span<float> weights = stackalloc float[usedK];
+		var weightSum = 0f;
+		for (var ki = 0; ki < usedK; ki++)
+		{
+			var dist = topKDist[ki];
+			var w = dist > 1e-10f ? 1f / (dist * dist) : 1e10f;
+			weights[ki] = w;
+			weightSum += w;
+		}
+
+		if (weightSum > 0f)
+		{
+			for (var ki = 0; ki < usedK; ki++)
+			{
+				weights[ki] /= weightSum;
+			}
+		}
+
+		// Weighted blend of retrieved vectors
+		for (var ki = 0; ki < usedK; ki++)
+		{
+			var vecOffset = topKIdx[ki] * d;
+			var w = weights[ki];
+			for (var j = 0; j < d; j++)
+			{
+				result[rOffset + j] += w * vectors[vecOffset + j];
+			}
+		}
+
+		// Blend with original features
+		var oneMinusRate = 1f - indexRate;
+		for (var j = 0; j < d; j++)
+		{
+			result[rOffset + j] = indexRate * result[rOffset + j]
+				+ oneMinusRate * queries[qOffset + j];
+		}
+	}
+
+	private static float ComputeL2Distance
+	(
+		float[] a,
+		int aOffset,
+		float[] b,
+		int bOffset,
+		int d
+	)
+	{
+		var sum = 0f;
+		var j = 0;
+
+		var simdWidth = System.Numerics.Vector<float>.Count;
+		if (d >= simdWidth)
+		{
+			var vSum = System.Numerics.Vector<float>.Zero;
+			for (; j <= d - simdWidth; j += simdWidth)
+			{
+				var va = new System.Numerics.Vector<float>(a, aOffset + j);
+				var vb = new System.Numerics.Vector<float>(b, bOffset + j);
+				var diff = va - vb;
+				vSum += diff * diff;
+			}
+
+			sum = System.Numerics.Vector.Dot
+			(
+				vSum,
+				System.Numerics.Vector<float>.One
+			);
+		}
+
+		for (; j < d; j++)
+		{
+			var diff = a[aOffset + j] - b[bOffset + j];
+			sum += diff * diff;
+		}
+
+		return sum;
 	}
 
 	private static void ComputeL2Distances

@@ -413,6 +413,7 @@ static partial class RvcEngine
 		ArgumentException.ThrowIfNullOrWhiteSpace(rvcModelPath);
 
 		ct.ThrowIfCancellationRequested();
+		var sw = System.Diagnostics.Stopwatch.StartNew();
 		await EnsureInfraModelsAsync(ct).ConfigureAwait(false);
 
 		var (samples, sampleRate, channels) = AudioDsp.ParseWavToFloat(wavBytes);
@@ -421,6 +422,7 @@ static partial class RvcEngine
 		var filtered = AudioDsp.ButterworthHighPass(normalized);
 		var analysisPad = AudioDsp.ReflectPad(filtered, Window / 2);
 		var (optTs, inferenceAudio) = FindOptimalTimestamps(filtered, analysisPad);
+		var tPrep = sw.ElapsedMilliseconds;
 
 		var infraDir = Path.Combine(EnsureRvcDirectory(), InfraSubDir);
 		var vecPath = Path.Combine(infraDir, "vec-768-layer-12.onnx");
@@ -434,8 +436,9 @@ static partial class RvcEngine
 		InferenceSession? rvcSession = null;
 		int targetSampleRate = 0;
 
-		var vecTask = Task.Run(() => vecSession = CreateSession(vecPath), ct);
-		var rmvpeTask = Task.Run(() => rmvpeSession = CreateSession(rmvpePath), ct);
+		// RMVPE on CPU (DML is 22x slower), ContentVec + RVC on GPU
+		var vecTask = Task.Run(() => vecSession = CreateSession(vecPath, useGpu: true), ct);
+		var rmvpeTask = Task.Run(() => rmvpeSession = CreateSession(rmvpePath, useGpu: false), ct);
 		var rvcTask = Task.Run
 		(
 			() =>
@@ -461,6 +464,7 @@ static partial class RvcEngine
 			: Task.CompletedTask;
 
 		await Task.WhenAll(vecTask, rmvpeTask, rvcTask, faissTask).ConfigureAwait(false);
+		var tLoad = sw.ElapsedMilliseconds;
 
 		try
 		{
@@ -473,9 +477,15 @@ static partial class RvcEngine
 				).ConfigureAwait(false);
 			}
 			var segmentSlices = ComputeSegmentSlices(inferenceAudio, optTs, ct);
+			var f0Sw = System.Diagnostics.Stopwatch.StartNew();
 			var f0Task = Task.Run
 			(
-				() => ExtractF0(rmvpeSession!, inferenceAudio, pitchShiftSemitones, ct),
+				() =>
+				{
+					var result = ExtractF0(rmvpeSession!, inferenceAudio, pitchShiftSemitones, ct);
+					Console.Error.WriteLine($"[vec/f0] f0 done in {f0Sw.ElapsedMilliseconds}ms");
+					return result;
+				},
 				ct
 			);
 
@@ -484,7 +494,12 @@ static partial class RvcEngine
 				(
 					slice => Task.Run
 					(
-						() => ExtractSegmentFeatures(vecSession!, slice.Audio, faissIndex),
+						() =>
+						{
+							var result = ExtractSegmentFeatures(vecSession!, slice.Audio, faissIndex);
+							Console.Error.WriteLine($"[vec/f0] vec done in {f0Sw.ElapsedMilliseconds}ms");
+							return result;
+						},
 						ct
 					)
 				)
@@ -492,6 +507,7 @@ static partial class RvcEngine
 
 			var allFeaturesTask = Task.WhenAll(featureTasks);
 			await Task.WhenAll(f0Task, allFeaturesTask).ConfigureAwait(false);
+			var tFeatures = sw.ElapsedMilliseconds;
 
 			var (pitchf, pitch) = await f0Task.ConfigureAwait(false);
 			var segmentFeatures = await allFeaturesTask.ConfigureAwait(false);
@@ -516,9 +532,19 @@ static partial class RvcEngine
 					)
 				);
 			}
+			var tInfer = sw.ElapsedMilliseconds;
 
 			var finalSamples = Concatenate(convertedSegments);
-			return AudioDsp.EncodeWav(finalSamples, targetSampleRate);
+			var result = AudioDsp.EncodeWav(finalSamples, targetSampleRate);
+
+			await Console.Error.WriteLineAsync
+			(
+				$"[perf] prep={tPrep}ms load={tLoad - tPrep}ms "
+				+ $"f0+vec={tFeatures - tLoad}ms infer={tInfer - tFeatures}ms "
+				+ $"total={sw.ElapsedMilliseconds}ms"
+			).ConfigureAwait(false);
+
+			return result;
 		}
 		finally
 		{
@@ -737,13 +763,13 @@ static partial class RvcEngine
 	internal static bool DisableGpu { get; set; } =
 		Environment.GetEnvironmentVariable("TALKTASTIC_NO_GPU") is "1" or "true";
 
-	private static SessionOptions CreateSessionOptions()
+	private static SessionOptions CreateSessionOptions(bool useGpu = true)
 	{
 		var options = new SessionOptions();
 		options.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
 		options.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR;
 
-		if (_dmlAvailable && !DisableGpu)
+		if (useGpu && _dmlAvailable && !DisableGpu)
 		{
 			try
 			{
@@ -781,9 +807,9 @@ static partial class RvcEngine
 		return options;
 	}
 
-	private static InferenceSession CreateSession(string modelPath)
+	private static InferenceSession CreateSession(string modelPath, bool useGpu = true)
 	{
-		using var options = CreateSessionOptions();
+		using var options = CreateSessionOptions(useGpu);
 		return new InferenceSession(modelPath, options);
 	}
 
@@ -885,11 +911,21 @@ static partial class RvcEngine
 	{
 		ct.ThrowIfCancellationRequested();
 
+		var sw = System.Diagnostics.Stopwatch.StartNew();
 		var mel = AudioDsp.ComputeMelSpectrogram(audioPad, center: true);
+		var tMel = sw.ElapsedMilliseconds;
 
 		var hidden = RunRmvpeHidden(rmvpeSession, mel);
+		var tRmvpe = sw.ElapsedMilliseconds;
+
 		var cents = DecodeLocalAverageCents(hidden, RmvpeThreshold);
 		var pitchf = DecodeF0(cents);
+		var tDecode = sw.ElapsedMilliseconds;
+
+		Console.Error.WriteLine
+		(
+			$"[f0] mel={tMel}ms rmvpe={tRmvpe - tMel}ms decode={tDecode - tRmvpe}ms"
+		);
 
 		// Apply pitch shift (in semitones) before quantization
 		if (pitchShiftSemitones != 0.0f)
@@ -1173,12 +1209,21 @@ static partial class RvcEngine
 		FaissIndex.Index? faissIndex
 	)
 	{
+		var sw = System.Diagnostics.Stopwatch.StartNew();
 		var features = RunContentVec(vecSession, audioSegment);
+		var tVec = sw.ElapsedMilliseconds;
 
 		if (faissIndex is not null && faissIndex.Dimension == features.GetLength(1))
 		{
 			features = ApplyFaissRetrieval(features, faissIndex);
 		}
+		var tFaiss = sw.ElapsedMilliseconds;
+
+		Console.Error.WriteLine
+		(
+			$"[vec] contentvec={tVec}ms faiss={tFaiss - tVec}ms "
+			+ $"audio={audioSegment.Length} samples"
+		);
 
 		return features;
 	}
