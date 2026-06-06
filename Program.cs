@@ -90,6 +90,11 @@ var rvcOption = new Option<string>("--rvc")
 	Description = "Apply RVC voice conversion (URL or local .onnx path)",
 };
 
+var inputOption = new Option<string>("--in")
+{
+	Description = "Input audio file (.wav, .mp3, .ogg) to process through RVC (no TTS)",
+};
+
 var rvcPitchOption = new Option<float>("--rvc-pitch")
 {
 	DefaultValueFactory = static _ => 0f,
@@ -154,6 +159,7 @@ var rootCommand = new RootCommand($"Talktastic v{version} - standalone Windows T
 	rateOption,
 	pitchOption,
 	rvcOption,
+	inputOption,
 	rvcPitchOption,
 	formatOption,
 	ssmlOption,
@@ -190,6 +196,7 @@ rootCommand.SetAction
 			var rate = parseResult.GetValue(rateOption);
 			var pitch = parseResult.GetValue(pitchOption);
 			var rvc = parseResult.GetValue(rvcOption);
+			var inputFile = parseResult.GetValue(inputOption);
 			var rvcPitch = parseResult.GetRequiredValue(rvcPitchOption);
 			var format = parseResult.GetRequiredValue(formatOption);
 			var ssml = parseResult.GetValue(ssmlOption);
@@ -430,6 +437,81 @@ Notes:
 					{
 						await Console.Out.WriteLineAsync("  (none found)").ConfigureAwait(false);
 					}
+				}
+
+				return 0;
+			}
+
+			// ── RVC-only mode: process an existing audio file ──
+			if (!string.IsNullOrWhiteSpace(inputFile))
+			{
+				if (string.IsNullOrWhiteSpace(rvc))
+				{
+					throw new InvalidOperationException("--in requires --rvc to specify a voice conversion model.");
+				}
+
+				var resolvedRvcOnly = await RvcEngine.ResolveRvcModelAsync(rvc, cancellationToken).ConfigureAwait(false);
+
+				if (!quiet && !superQuiet)
+				{
+					var accel = RvcEngine.DisableGpu ? "CPU" : "DirectML";
+					await Console.Error.WriteLineAsync
+					(
+						$"Applying RVC voice conversion with {accel} ({resolvedRvcOnly.DisplayName})..."
+					).ConfigureAwait(false);
+				}
+
+				var inputWav = AudioDsp.ReadAudioFileToWav(inputFile);
+				var convertedWav = await RvcEngine.ConvertAsync
+				(
+					inputWav, resolvedRvcOnly.Path, rvcPitch, cancellationToken
+				).ConfigureAwait(false);
+
+				if (quiet || superQuiet)
+				{
+					Console.SetOut(TextWriter.Null);
+				}
+
+				var inputName = Path.GetFileName(inputFile);
+				var rvcLabel = resolvedRvcOnly.DisplayName;
+
+				if (output is not null)
+				{
+					AudioOutput.EnsureDirectoryExists(output);
+					var meta = new AudioMetadata(rvcLabel, inputName);
+
+					if (SpeechEngine.HasExtension(output, ".wav"))
+					{
+						await File.WriteAllBytesAsync(output, convertedWav, cancellationToken).ConfigureAwait(false);
+					}
+					else if (SpeechEngine.HasExtension(output, ".mp3"))
+					{
+						await AudioOutput.WriteMp3FromWavAsync(convertedWav, output, meta, cancellationToken).ConfigureAwait(false);
+					}
+					else if (SpeechEngine.HasExtension(output, ".ogg"))
+					{
+						await AudioOutput.WriteOggOpusFromWavAsync(convertedWav, output, meta, cancellationToken).ConfigureAwait(false);
+					}
+					else
+					{
+						throw new InvalidOperationException
+						(
+							$"Unsupported output format '{Path.GetExtension(output)}'. Use .wav, .mp3, or .ogg."
+						);
+					}
+
+					await Console.Out.WriteLineAsync
+					(
+						$"Wrote '{output}' ({inputName} → {rvcLabel})."
+					).ConfigureAwait(false);
+				}
+				else
+				{
+					await AudioOutput.PlayToDeviceAsync(convertedWav, device).ConfigureAwait(false);
+					await Console.Out.WriteLineAsync
+					(
+						$"Played {inputName} → {rvcLabel}."
+					).ConfigureAwait(false);
 				}
 
 				return 0;

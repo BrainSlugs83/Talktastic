@@ -172,7 +172,7 @@ public sealed class NativeExtractorTests : IDisposable
 			DllGroup.SpeechSdk | DllGroup.Lame | DllGroup.OnnxRuntime
 		);
 
-		Assert.Equal(8, names.Count);
+		Assert.Equal(9, names.Count);
 		Assert.Contains("Microsoft.CognitiveServices.Speech.core.dll", names);
 		Assert.Contains("Microsoft.CognitiveServices.Speech.extension.audio.sys.dll", names);
 		Assert.Contains("Microsoft.CognitiveServices.Speech.extension.embedded.tts.dll", names);
@@ -180,6 +180,7 @@ public sealed class NativeExtractorTests : IDisposable
 		Assert.Contains("libmp3lame.dll", names);
 		Assert.Contains("onnxruntime.dll", names);
 		Assert.Contains("onnxruntime_providers_shared.dll", names);
+		Assert.Contains("DirectML.dll", names);
 		Assert.Contains("sherpa-onnx-c-api.dll", names);
 	}
 
@@ -200,8 +201,8 @@ public sealed class NativeExtractorTests : IDisposable
 	[InlineData((int)DllGroup.None, 0, null)]
 	[InlineData((int)DllGroup.SpeechSdk, 4, "Microsoft.CognitiveServices.Speech.core.dll")]
 	[InlineData((int)DllGroup.Lame, 1, "libmp3lame.dll")]
-	[InlineData((int)DllGroup.OnnxRuntime, 3, "onnxruntime.dll")]
-	[InlineData((int)(DllGroup.SpeechSdk | DllGroup.Lame | DllGroup.OnnxRuntime), 8, "sherpa-onnx-c-api.dll")]
+	[InlineData((int)DllGroup.OnnxRuntime, 4, "onnxruntime.dll")]
+	[InlineData((int)(DllGroup.SpeechSdk | DllGroup.Lame | DllGroup.OnnxRuntime), 9, "sherpa-onnx-c-api.dll")]
 	public void GetDllNames_GroupSelection_ReturnsExpectedNames(int groupsValue, int expectedCount, string? expectedName)
 	{
 		var groups = (DllGroup)groupsValue;

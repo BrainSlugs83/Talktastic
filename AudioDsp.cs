@@ -1066,4 +1066,119 @@ internal static class AudioDsp
 			}
 		}
 	}
+
+	/// <summary>
+	/// Reads an audio file (.wav, .mp3, or .ogg) and returns its content as
+	/// WAV bytes suitable for <see cref="ParseWavToFloat"/> or RVC processing.
+	/// </summary>
+	internal static byte[] ReadAudioFileToWav(string filePath)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+
+		if (!File.Exists(filePath))
+		{
+			throw new FileNotFoundException
+			(
+				$"Audio file not found: '{filePath}'",
+				filePath
+			);
+		}
+
+		var ext = Path.GetExtension(filePath);
+
+		if (ext.Equals(".wav", StringComparison.OrdinalIgnoreCase))
+		{
+			return File.ReadAllBytes(filePath);
+		}
+
+		if (ext.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
+		{
+			return DecodeMp3ToWav(filePath);
+		}
+
+		if (ext.Equals(".ogg", StringComparison.OrdinalIgnoreCase))
+		{
+			return DecodeOggToWav(filePath);
+		}
+
+		throw new InvalidOperationException
+		(
+			$"Unsupported input audio format '{ext}'. Use .wav, .mp3, or .ogg."
+		);
+	}
+
+	private static byte[] DecodeMp3ToWav(string filePath)
+	{
+		using var fileStream = File.OpenRead(filePath);
+		using var reader = new NLayer.MpegFile(fileStream);
+
+		var sampleRate = reader.SampleRate;
+		var channels = reader.Channels;
+
+		// Read all samples (interleaved float)
+		var buffer = new float[sampleRate * channels * 10]; // 10 sec initial
+		var totalRead = 0;
+
+		while (true)
+		{
+			if (totalRead >= buffer.Length)
+			{
+				Array.Resize(ref buffer, buffer.Length * 2);
+			}
+
+			var read = reader.ReadSamples(buffer, totalRead, buffer.Length - totalRead);
+			if (read <= 0)
+			{
+				break;
+			}
+
+			totalRead += read;
+		}
+
+		// Downmix to mono if stereo
+		float[] mono;
+		if (channels > 1)
+		{
+			var frameCount = totalRead / channels;
+			mono = new float[frameCount];
+			for (var i = 0; i < frameCount; i++)
+			{
+				var sum = 0f;
+				for (var ch = 0; ch < channels; ch++)
+				{
+					sum += buffer[i * channels + ch];
+				}
+
+				mono[i] = sum / channels;
+			}
+		}
+		else
+		{
+			mono = buffer[..totalRead];
+		}
+
+		return EncodeWav(mono, sampleRate);
+	}
+
+	private static byte[] DecodeOggToWav(string filePath)
+	{
+		using var fileStream = File.OpenRead(filePath);
+		using var decoder = Concentus.OpusCodecFactory.CreateDecoder(48000, 1);
+		var oggReader = new Concentus.Oggfile.OpusOggReadStream(decoder, fileStream);
+
+		var samples = new List<float>();
+		while (oggReader.HasNextPacket)
+		{
+			var packet = oggReader.DecodeNextPacket();
+			if (packet is not null)
+			{
+				for (var i = 0; i < packet.Length; i++)
+				{
+					samples.Add(packet[i] / 32768f);
+				}
+			}
+		}
+
+		return EncodeWav(samples.ToArray(), 48000);
+	}
 }

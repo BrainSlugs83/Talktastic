@@ -705,7 +705,7 @@ internal static partial class SpeechEngine
 		BitConverter.TryWriteBytes(wav.AsSpan(28), newByteRate);
 	}
 
-	private static bool HasExtension(string path, string extension)
+	internal static bool HasExtension(string path, string extension)
 	{
 		return string.Equals(Path.GetExtension(path), extension, StringComparison.OrdinalIgnoreCase);
 	}
