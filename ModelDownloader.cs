@@ -1,5 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.IO.Compression;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 namespace Talktastic;
@@ -7,7 +9,7 @@ namespace Talktastic;
 /// <summary>
 /// Shared HTTP download + URL resolution logic for voice/model downloads.
 /// Supports direct URLs, HuggingFace folder/tree URLs, GitHub release URLs, and .zip archives.
-/// Includes a tab-separated registry file for caching URL → model name mappings.
+/// Includes a JSON URL map file for caching URL → model name mappings, with TSV fallback for older files.
 /// </summary>
 static partial class ModelDownloader
 {
@@ -281,7 +283,7 @@ static partial class ModelDownloader
 	}
 
 	/// <summary>
-	/// Normalizes a URL for registry lookup: trims trailing slashes, lowercases scheme+host.
+	/// Normalizes a URL for URL map lookup: trims trailing slashes, lowercases scheme+host.
 	/// </summary>
 	public static string NormalizeUrl(string url)
 	{
@@ -291,63 +293,98 @@ static partial class ModelDownloader
 #pragma warning restore CA1308
 	}
 
-	// ── Registry I/O ──
+	// ── URL map I/O ──
 
 	/// <summary>
-	/// Looks up a URL in a tab-separated registry file. Returns the model name if found.
+	/// Looks up a URL in the URL map file. Returns the model name if found.
 	/// </summary>
-	public static string? LookupRegistry(string registryPath, string url)
+	public static string? LookupUrlMap(string urlMapPath, string url)
 	{
-		if (!File.Exists(registryPath))
-			return null;
-
 		var normalizedUrl = NormalizeUrl(url);
-		var lines = File.ReadAllLines(registryPath);
-
-		foreach (var line in lines)
-		{
-			var tab = line.IndexOf('\t', StringComparison.Ordinal);
-			if (tab < 0) continue;
-
-			var entryUrl = line[..tab];
-			if (string.Equals(entryUrl, normalizedUrl, StringComparison.OrdinalIgnoreCase))
-				return line[(tab + 1)..];
-		}
-
-		return null;
+		var urlMap = ReadUrlMap(urlMapPath);
+		return urlMap.TryGetValue(normalizedUrl, out var modelName)
+			? modelName
+			: null;
 	}
 
 	/// <summary>
-	/// Registers a URL → model name mapping in a tab-separated registry file.
+	/// Reads the URL map file as a URL → model name mapping.
+	/// Supports both JSON and the legacy tab-separated format.
 	/// </summary>
-	public static void WriteRegistry(string registryPath, string url, string modelName)
+	internal static Dictionary<string, string> ReadUrlMap(string urlMapPath)
 	{
-		var normalizedUrl = NormalizeUrl(url);
-		var newEntry = $"{normalizedUrl}\t{modelName}";
-
-		var lines = File.Exists(registryPath)
-			? File.ReadAllLines(registryPath).ToList()
-			: [];
-
-		var replaced = false;
-		for (var i = 0; i < lines.Count; i++)
+		var urlMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		if (!File.Exists(urlMapPath))
 		{
-			var tab = lines[i].IndexOf('\t', StringComparison.Ordinal);
-			if (tab < 0) continue;
-
-			var entryUrl = lines[i][..tab];
-			if (string.Equals(entryUrl, normalizedUrl, StringComparison.OrdinalIgnoreCase))
-			{
-				lines[i] = newEntry;
-				replaced = true;
-				break;
-			}
+			return urlMap;
 		}
 
-		if (!replaced)
-			lines.Add(newEntry);
+		var content = File.ReadAllText(urlMapPath);
+		if (string.IsNullOrWhiteSpace(content))
+		{
+			return urlMap;
+		}
 
-		File.WriteAllLines(registryPath, lines);
+		if (content.TrimStart().StartsWith('{'))
+		{
+			var jsonUrlMap = JsonSerializer.Deserialize(content, UrlMapJsonContext.Default.DictionaryStringString);
+			if (jsonUrlMap is null)
+			{
+				return urlMap;
+			}
+
+			foreach (var (entryUrl, modelName) in jsonUrlMap)
+			{
+				urlMap[NormalizeUrl(entryUrl)] = modelName;
+			}
+
+			return urlMap;
+		}
+
+		foreach (var line in File.ReadLines(urlMapPath))
+		{
+			var tab = line.IndexOf('\t', StringComparison.Ordinal);
+			if (tab < 0)
+			{
+				continue;
+			}
+
+			var entryUrl = line[..tab];
+			var modelName = line[(tab + 1)..];
+			urlMap[NormalizeUrl(entryUrl)] = modelName;
+		}
+
+		return urlMap;
+	}
+
+	/// <summary>
+	/// Writes the URL map as JSON.
+	/// </summary>
+	internal static void WriteUrlMap
+	(
+		string urlMapPath,
+		Dictionary<string, string> urlMap
+	)
+	{
+		var normalizedUrlMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		foreach (var (entryUrl, modelName) in urlMap)
+		{
+			normalizedUrlMap[NormalizeUrl(entryUrl)] = modelName;
+		}
+
+		var json = JsonSerializer.Serialize(normalizedUrlMap, UrlMapJsonContext.Default.DictionaryStringString);
+		File.WriteAllText(urlMapPath, json);
+	}
+
+	/// <summary>
+	/// Registers a URL → model name mapping in the URL map file.
+	/// </summary>
+	public static void WriteUrlMapEntry(string urlMapPath, string url, string modelName)
+	{
+		var normalizedUrl = NormalizeUrl(url);
+		var urlMap = ReadUrlMap(urlMapPath);
+		urlMap[normalizedUrl] = modelName;
+		WriteUrlMap(urlMapPath, urlMap);
 	}
 
 	// ── HuggingFace URL resolution ──
@@ -815,4 +852,13 @@ static partial class ModelDownloader
 		var match = RepoNamePattern().Match(repo);
 		return CleanModelName(match.Success ? match.Groups[1].Value : repo)!;
 	}
+}
+
+/// <summary>
+/// Source-generated JSON context for URL map files (AOT-safe).
+/// </summary>
+[JsonSerializable(typeof(Dictionary<string, string>))]
+[JsonSourceGenerationOptions(WriteIndented = true)]
+internal sealed partial class UrlMapJsonContext : JsonSerializerContext
+{
 }

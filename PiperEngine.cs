@@ -14,7 +14,7 @@ static partial class PiperEngine
 {
 	private const string PiperDirName = ".piper-tts";
 	private const string VoicesSubDir = "voices";
-	private const string RegistryFileName = "voices.json";
+	private const string UrlMapFileName = "voices.json";
 
 	private const string HuggingFaceBaseUrl =
 		"https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0";
@@ -129,7 +129,7 @@ static partial class PiperEngine
 	/// <summary>
 	/// Ensures the voice model is downloaded and returns the path to the .onnx file.
 	/// Supports: "piper:en_US-ryan-high", direct .onnx URLs, HuggingFace folder URLs,
-	/// and GitHub release URLs. Uses a local voices.json registry to avoid re-downloading.
+	/// and GitHub release URLs. Uses a local voices.json URL map to avoid re-downloading.
 	/// </summary>
 	public static async Task<string> EnsureVoiceModelAsync
 	(
@@ -141,10 +141,10 @@ static partial class PiperEngine
 		var voicesDir = Path.Combine(piperDir, VoicesSubDir);
 		Directory.CreateDirectory(voicesDir);
 
-		// For URL voices, check the registry first
+		// For URL voices, check the URL map first
 		if (IsUrlVoice(voiceQuery))
 		{
-			var cached = LookupRegistry(piperDir, voiceQuery);
+			var cached = LookupUrlMap(piperDir, voiceQuery);
 			if (cached is not null)
 				return cached;
 		}
@@ -174,9 +174,9 @@ static partial class PiperEngine
 
 		if (existing.OnnxPath is not null)
 		{
-			// Already downloaded but wasn't in registry (piper: shorthand, or registry lost)
+			// Already downloaded but wasn't in the URL map (piper: shorthand, or URL map lost)
 			if (IsUrlVoice(voiceQuery))
-				WriteRegistry(piperDir, voiceQuery, resolved.ModelName);
+				WriteUrlMapEntry(piperDir, voiceQuery, resolved.ModelName);
 
 			return existing.OnnxPath;
 		}
@@ -197,7 +197,7 @@ static partial class PiperEngine
 
 		// Register the URL → model name mapping
 		if (IsUrlVoice(voiceQuery))
-			WriteRegistry(piperDir, voiceQuery, resolved.ModelName);
+			WriteUrlMapEntry(piperDir, voiceQuery, resolved.ModelName);
 
 		return modelPath;
 	}
@@ -264,7 +264,7 @@ static partial class PiperEngine
 				$"Extracted {modelName} ({sizeMb} MB)."
 			).ConfigureAwait(false);
 
-			WriteRegistry(piperDir, zipUrl, modelName);
+			WriteUrlMapEntry(piperDir, zipUrl, modelName);
 			return finalOnnxPath;
 		}
 		finally
@@ -275,85 +275,52 @@ static partial class PiperEngine
 		}
 	}
 
-	// ── Voice registry ──
+	// ── Voice URL map ──
 
 	/// <summary>
-	/// Looks up a URL in the voice registry and returns the local .onnx path if cached,
+	/// Looks up a URL in the voice URL map and returns the local .onnx path if cached,
 	/// or null if not found.
 	/// </summary>
 	[ExcludeFromCodeCoverage]
-	private static string? LookupRegistry(string piperDir, string url)
+	private static string? LookupUrlMap(string piperDir, string url)
 	{
-		var registryPath = Path.Combine(piperDir, RegistryFileName);
-		if (!File.Exists(registryPath))
+		var urlMapPath = Path.Combine(piperDir, UrlMapFileName);
+		if (!File.Exists(urlMapPath))
 			return null;
 
 		var normalizedUrl = NormalizeUrl(url);
 		var voicesDir = Path.Combine(piperDir, VoicesSubDir);
 		var cached = EnumerateCachedVoices(voicesDir)
 			.ToDictionary(v => v.Name, v => v.OnnxPath, StringComparer.OrdinalIgnoreCase);
+		var urlMap = ModelDownloader.ReadUrlMap(urlMapPath);
 
-		foreach (var line in File.ReadAllLines(registryPath))
+		if
+		(
+			urlMap.TryGetValue(normalizedUrl, out var modelName)
+			&& cached.TryGetValue(modelName, out var onnxPath)
+		)
 		{
-			var tab = line.IndexOf('\t', StringComparison.Ordinal);
-			if (tab < 0)
-				continue;
-
-			var entryUrl = line[..tab];
-			var modelName = line[(tab + 1)..];
-
-			if
-			(
-				string.Equals(entryUrl, normalizedUrl, StringComparison.OrdinalIgnoreCase)
-				&& cached.TryGetValue(modelName, out var onnxPath)
-			)
-			{
-				return onnxPath;
-			}
+			return onnxPath;
 		}
 
 		return null;
 	}
 
 	/// <summary>
-	/// Registers a URL → model name mapping in voices.json.
+	/// Registers a URL → model name mapping in the voices.json URL map.
 	/// </summary>
 	[ExcludeFromCodeCoverage]
-	private static void WriteRegistry(string piperDir, string url, string modelName)
+	private static void WriteUrlMapEntry(string piperDir, string url, string modelName)
 	{
-		var registryPath = Path.Combine(piperDir, RegistryFileName);
+		var urlMapPath = Path.Combine(piperDir, UrlMapFileName);
 		var normalizedUrl = NormalizeUrl(url);
-		var newEntry = $"{normalizedUrl}\t{modelName}";
-
-		// Read existing entries, replace if URL already present
-		var lines = File.Exists(registryPath)
-			? File.ReadAllLines(registryPath).ToList()
-			: [];
-
-		var replaced = false;
-		for (var i = 0; i < lines.Count; i++)
-		{
-			var tab = lines[i].IndexOf('\t', StringComparison.Ordinal);
-			if (tab < 0)
-				continue;
-
-			var entryUrl = lines[i][..tab];
-			if (string.Equals(entryUrl, normalizedUrl, StringComparison.OrdinalIgnoreCase))
-			{
-				lines[i] = newEntry;
-				replaced = true;
-				break;
-			}
-		}
-
-		if (!replaced)
-			lines.Add(newEntry);
-
-		File.WriteAllLines(registryPath, lines);
+		var urlMap = ModelDownloader.ReadUrlMap(urlMapPath);
+		urlMap[normalizedUrl] = modelName;
+		ModelDownloader.WriteUrlMap(urlMapPath, urlMap);
 	}
 
 	/// <summary>
-	/// Normalizes a URL for registry lookup: trims trailing slashes, lowercases scheme+host.
+	/// Normalizes a URL for URL map lookup: trims trailing slashes, lowercases scheme+host.
 	/// </summary>
 	internal static string NormalizeUrl(string url)
 	{

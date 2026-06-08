@@ -657,7 +657,7 @@ static int RemovePiperVoice(string query)
 
 	var voicesDir = Path.GetDirectoryName(match.PrimaryPath)!;
 	var piperRoot = Path.GetDirectoryName(voicesDir)!;
-	RemoveRegistryEntries(Path.Combine(piperRoot, "voices.json"), match.Name);
+	RemoveUrlMapEntries(Path.Combine(piperRoot, "voices.json"), match.Name);
 	return 0;
 }
 
@@ -694,35 +694,37 @@ static int RemoveRvcModel(string query)
 	}
 
 	var rvcRoot = Path.GetDirectoryName(voicesDir)!;
-	RemoveRegistryEntries(Path.Combine(rvcRoot, "rvcs.json"), match.Name);
+	RemoveUrlMapEntries(Path.Combine(rvcRoot, "rvcs.json"), match.Name);
 	return 0;
 }
 
-static void RemoveRegistryEntries(string registryPath, string modelName)
+static void RemoveUrlMapEntries(string urlMapPath, string modelName)
 {
-	if (!File.Exists(registryPath))
+	if (!File.Exists(urlMapPath))
 	{
 		return;
 	}
 
-	var remainingLines = File.ReadAllLines(registryPath)
+	var urlMap = ModelDownloader.ReadUrlMap(urlMapPath);
+	var removedUrls = urlMap
 		.Where
 		(
-			line =>
-			{
-				var tab = line.IndexOf('\t', StringComparison.Ordinal);
-				if (tab < 0)
-				{
-					return true;
-				}
-
-				var entryModelName = line[(tab + 1)..];
-				return !string.Equals(entryModelName, modelName, StringComparison.OrdinalIgnoreCase);
-			}
+			entry => string.Equals(entry.Value, modelName, StringComparison.OrdinalIgnoreCase)
 		)
+		.Select(entry => entry.Key)
 		.ToArray();
 
-	File.WriteAllLines(registryPath, remainingLines);
+	if (removedUrls.Length == 0)
+	{
+		return;
+	}
+
+	foreach (var url in removedUrls)
+	{
+		urlMap.Remove(url);
+	}
+
+	ModelDownloader.WriteUrlMap(urlMapPath, urlMap);
 }
 
 static (string OldName, string NewName) ParseRenameArg(string arg)
@@ -773,7 +775,7 @@ static int RenamePiperVoice(string arg)
 	}
 
 	var piperRoot = Path.GetDirectoryName(voicesDir)!;
-	RenameRegistryEntries(Path.Combine(piperRoot, "voices.json"), match.Name, newName);
+	RenameUrlMapEntries(Path.Combine(piperRoot, "voices.json"), match.Name, newName);
 
 	Console.Error.WriteLine($"Renamed Piper voice '{match.Name}' → '{newName}'.");
 	return 0;
@@ -817,41 +819,34 @@ static int RenameRvcModel(string arg)
 	}
 
 	var rvcRoot = Path.GetDirectoryName(voicesDir)!;
-	RenameRegistryEntries(Path.Combine(rvcRoot, "rvcs.json"), match.Name, newName);
+	RenameUrlMapEntries(Path.Combine(rvcRoot, "rvcs.json"), match.Name, newName);
 
 	Console.Error.WriteLine($"Renamed RVC model '{match.Name}' → '{newName}'.");
 	return 0;
 }
 
-static void RenameRegistryEntries(string registryPath, string oldName, string newName)
+static void RenameUrlMapEntries(string urlMapPath, string oldName, string newName)
 {
-	if (!File.Exists(registryPath))
+	if (!File.Exists(urlMapPath))
 	{
 		return;
 	}
 
-	var lines = File.ReadAllLines(registryPath);
+	var urlMap = ModelDownloader.ReadUrlMap(urlMapPath);
 	var modified = false;
 
-	for (var i = 0; i < lines.Length; i++)
+	foreach (var url in urlMap.Keys.ToArray())
 	{
-		var tab = lines[i].IndexOf('\t', StringComparison.Ordinal);
-		if (tab < 0)
+		if (string.Equals(urlMap[url], oldName, StringComparison.OrdinalIgnoreCase))
 		{
-			continue;
-		}
-
-		var entryModelName = lines[i][(tab + 1)..];
-		if (string.Equals(entryModelName, oldName, StringComparison.OrdinalIgnoreCase))
-		{
-			lines[i] = lines[i][..(tab + 1)] + newName;
+			urlMap[url] = newName;
 			modified = true;
 		}
 	}
 
 	if (modified)
 	{
-		File.WriteAllLines(registryPath, lines);
+		ModelDownloader.WriteUrlMap(urlMapPath, urlMap);
 	}
 }
 

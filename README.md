@@ -21,10 +21,10 @@ Standalone Windows TTS CLI that speaks with neural, SAPI, and Piper voices -- wi
 ## Usage
 
 ```powershell
-# Speak with the voice, currently configured as the Default, in Windows.
+# Speak with the currently default Windows voice.
 say "Hello, from Talktastic!"
 
-# Use a Windows 11 neural voice (make sure to install it first; e.g via --add-voices)
+# Use a Windows 11 neural voice (make sure to install it first; e.g via "say --add-voices"!)
 say "This is Microsoft Ryan, a Windows 11 neural voice." -v "Microsoft Ryan"
 
 # Download and use an Open Source Piper voice by URL (cached automatically).

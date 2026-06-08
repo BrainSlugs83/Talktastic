@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Net;
 using System.Net.Http;
+using System.Text.Json;
 
 namespace Talktastic.Tests;
 
@@ -324,47 +325,49 @@ public sealed class ModelDownloaderTests : IDisposable
 	}
 
 	[Fact]
-	public void LookupRegistry_ReturnsNull_WhenFileDoesNotExist()
+	public void LookupUrlMap_ReturnsNull_WhenFileDoesNotExist()
 	{
-		var registryPath = GetRegistryPath();
+		var urlMapPath = GetUrlMapPath();
 
-		Assert.Null(ModelDownloader.LookupRegistry(registryPath, "https://example.com/model.onnx"));
+		Assert.Null(ModelDownloader.LookupUrlMap(urlMapPath, "https://example.com/model.onnx"));
 	}
 
 	[Fact]
-	public void LookupRegistry_ReturnsMatchingName_WhenUrlExists()
+	public void LookupUrlMap_ReturnsMatchingName_WhenUrlExists()
 	{
-		var registryPath = GetRegistryPath();
-		File.WriteAllLines
+		var urlMapPath = GetUrlMapPath();
+		File.WriteAllText
 		(
-			registryPath,
-			[
-				"https://example.com/voice.onnx\tegirl",
-				"https://example.com/other.onnx\thomer",
-			]
+			urlMapPath,
+			"""
+			{
+			  "https://example.com/voice.onnx": "egirl",
+			  "https://example.com/other.onnx": "homer"
+			}
+			"""
 		);
 
-		Assert.Equal("egirl", ModelDownloader.LookupRegistry(registryPath, "https://example.com/voice.onnx"));
+		Assert.Equal("egirl", ModelDownloader.LookupUrlMap(urlMapPath, "https://example.com/voice.onnx"));
 	}
 
 	[Fact]
-	public void LookupRegistry_ReturnsNull_WhenUrlIsMissing()
+	public void LookupUrlMap_ReturnsNull_WhenUrlIsMissing()
 	{
-		var registryPath = GetRegistryPath();
-		File.WriteAllText(registryPath, "https://example.com/voice.onnx\tegirl");
+		var urlMapPath = GetUrlMapPath();
+		File.WriteAllText(urlMapPath, """{ "https://example.com/voice.onnx": "egirl" }""");
 
-		Assert.Null(ModelDownloader.LookupRegistry(registryPath, "https://example.com/missing.onnx"));
+		Assert.Null(ModelDownloader.LookupUrlMap(urlMapPath, "https://example.com/missing.onnx"));
 	}
 
 	[Fact]
-	public void LookupRegistry_NormalizesUrlBeforeMatching()
+	public void LookupUrlMap_NormalizesUrlBeforeMatching()
 	{
-		var registryPath = GetRegistryPath();
-		File.WriteAllText(registryPath, "https://example.com/models\tegirl");
+		var urlMapPath = GetUrlMapPath();
+		File.WriteAllText(urlMapPath, """{ "https://example.com/models": "egirl" }""");
 
-		var result = ModelDownloader.LookupRegistry
+		var result = ModelDownloader.LookupUrlMap
 		(
-			registryPath,
+			urlMapPath,
 			"HTTPS://EXAMPLE.COM/models/"
 		);
 
@@ -372,72 +375,108 @@ public sealed class ModelDownloaderTests : IDisposable
 	}
 
 	[Fact]
-	public void WriteRegistry_CreatesNewFile()
+	public void LookupUrlMap_ParsesLegacyTabSeparatedUrlMap()
 	{
-		var registryPath = GetRegistryPath();
-
-		ModelDownloader.WriteRegistry(registryPath, "https://example.com/model.onnx", "egirl");
-
-		Assert.Equal
-		(
-			"https://example.com/model.onnx\tegirl",
-			File.ReadAllText(registryPath).TrimEnd('\r', '\n')
-		);
-	}
-
-	[Fact]
-	public void WriteRegistry_ReplacesExistingEntryForSameUrl()
-	{
-		var registryPath = GetRegistryPath();
+		var urlMapPath = GetUrlMapPath();
 		File.WriteAllLines
 		(
-			registryPath,
+			urlMapPath,
 			[
-				"https://example.com/model.onnx\told-name",
+				"https://example.com/voice.onnx\tegirl",
 				"https://example.com/other.onnx\thomer",
 			]
 		);
 
-		ModelDownloader.WriteRegistry(registryPath, "https://example.com/model.onnx", "new-name");
-
-		var lines = File.ReadAllLines(registryPath);
-		Assert.Equal(2, lines.Length);
-		Assert.Contains("https://example.com/model.onnx\tnew-name", lines, StringComparer.Ordinal);
+		Assert.Equal("egirl", ModelDownloader.LookupUrlMap(urlMapPath, "https://example.com/voice.onnx"));
 	}
 
 	[Fact]
-	public void WriteRegistry_AppendsNewEntry_WhenUrlDoesNotExist()
+	public void WriteUrlMapEntry_CreatesNewFile()
 	{
-		var registryPath = GetRegistryPath();
-		File.WriteAllText(registryPath, "https://example.com/model.onnx\tegirl");
+		var urlMapPath = GetUrlMapPath();
 
-		ModelDownloader.WriteRegistry(registryPath, "https://example.com/other.onnx", "homer");
+		ModelDownloader.WriteUrlMapEntry(urlMapPath, "https://example.com/model.onnx", "egirl");
 
-		var lines = File.ReadAllLines(registryPath);
-		Assert.Equal(2, lines.Length);
-		Assert.Contains("https://example.com/model.onnx\tegirl", lines, StringComparer.Ordinal);
-		Assert.Contains("https://example.com/other.onnx\thomer", lines, StringComparer.Ordinal);
+		var urlMap = ReadUrlMapJson(urlMapPath);
+		Assert.Equal("egirl", urlMap["https://example.com/model.onnx"]);
 	}
 
 	[Fact]
-	public void WriteRegistry_AndLookupRegistry_RoundTripNormalizedUrls()
+	public void WriteUrlMapEntry_ReplacesExistingEntryForSameUrl()
 	{
-		var registryPath = GetRegistryPath();
-
-		ModelDownloader.WriteRegistry
+		var urlMapPath = GetUrlMapPath();
+		File.WriteAllText
 		(
-			registryPath,
+			urlMapPath,
+			"""
+			{
+			  "https://example.com/model.onnx": "old-name",
+			  "https://example.com/other.onnx": "homer"
+			}
+			"""
+		);
+
+		ModelDownloader.WriteUrlMapEntry(urlMapPath, "https://example.com/model.onnx", "new-name");
+
+		var urlMap = ReadUrlMapJson(urlMapPath);
+		Assert.Equal(2, urlMap.Count);
+		Assert.Equal("new-name", urlMap["https://example.com/model.onnx"]);
+	}
+
+	[Fact]
+	public void WriteUrlMapEntry_AppendsNewEntry_WhenUrlDoesNotExist()
+	{
+		var urlMapPath = GetUrlMapPath();
+		File.WriteAllText(urlMapPath, """{ "https://example.com/model.onnx": "egirl" }""");
+
+		ModelDownloader.WriteUrlMapEntry(urlMapPath, "https://example.com/other.onnx", "homer");
+
+		var urlMap = ReadUrlMapJson(urlMapPath);
+		Assert.Equal(2, urlMap.Count);
+		Assert.Equal("egirl", urlMap["https://example.com/model.onnx"]);
+		Assert.Equal("homer", urlMap["https://example.com/other.onnx"]);
+	}
+
+	[Fact]
+	public void WriteUrlMapEntry_RewritesLegacyTabSeparatedUrlMapAsJson()
+	{
+		var urlMapPath = GetUrlMapPath();
+		File.WriteAllText(urlMapPath, "https://example.com/model.onnx\tegirl");
+
+		ModelDownloader.WriteUrlMapEntry(urlMapPath, "https://example.com/other.onnx", "homer");
+
+		var content = File.ReadAllText(urlMapPath);
+		Assert.StartsWith("{", content.TrimStart(), StringComparison.Ordinal);
+		var urlMap = ReadUrlMapJson(urlMapPath);
+		Assert.Equal("egirl", urlMap["https://example.com/model.onnx"]);
+		Assert.Equal("homer", urlMap["https://example.com/other.onnx"]);
+	}
+
+	[Fact]
+	public void WriteUrlMapEntry_AndLookupUrlMap_RoundTripNormalizedUrls()
+	{
+		var urlMapPath = GetUrlMapPath();
+
+		ModelDownloader.WriteUrlMapEntry
+		(
+			urlMapPath,
 			"HTTPS://EXAMPLE.COM/Models/KeepCase?Voice=Ryan",
 			"egirl"
 		);
 
-		var result = ModelDownloader.LookupRegistry
+		var result = ModelDownloader.LookupUrlMap
 		(
-			registryPath,
+			urlMapPath,
 			"https://example.com/Models/KeepCase?Voice=Ryan"
 		);
 
 		Assert.Equal("egirl", result);
+	}
+
+	private static Dictionary<string, string> ReadUrlMapJson(string urlMapPath)
+	{
+		return JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(urlMapPath))
+			?? throw new InvalidOperationException("URL map JSON should deserialize.");
 	}
 
 	[Theory]
@@ -642,7 +681,7 @@ public sealed class ModelDownloaderTests : IDisposable
 		Assert.True(jsonFiles.Length > 0, "metadata.json should be extracted");
 	}
 
-	private string GetRegistryPath()
+	private string GetUrlMapPath()
 	{
 		return Path.Combine(_artifactRoot, $"{Guid.NewGuid():N}.tsv");
 	}

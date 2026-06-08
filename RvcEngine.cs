@@ -19,7 +19,7 @@ static partial class RvcEngine
 	private const string RvcDirName = ".rvc";
 	private const string VoicesSubDir = "voices";
 	private const string InfraSubDir = "infra";
-	private const string RegistryFileName = "rvcs.json";
+	private const string UrlMapFileName = "rvcs.json";
 
 	private const string ContentVecUrl = "https://huggingface.co/NaruseMioShirakana/MoeSS-SUBModel/resolve/main/vec-768-layer-12.onnx";
 	private const string RmvpeUrl = "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.onnx";
@@ -212,15 +212,15 @@ static partial class RvcEngine
 
 		var rvcDir = EnsureRvcDirectory();
 		var voicesDir = Path.Combine(rvcDir, VoicesSubDir);
-		var registryPath = Path.Combine(rvcDir, RegistryFileName);
+		var urlMapPath = Path.Combine(rvcDir, UrlMapFileName);
 		Directory.CreateDirectory(voicesDir);
 
 		if (ModelDownloader.IsUrl(rvcQuery))
 		{
-			var cachedModelName = ModelDownloader.LookupRegistry(registryPath, rvcQuery);
+			var cachedModelName = ModelDownloader.LookupUrlMap(urlMapPath, rvcQuery);
 			if (cachedModelName is not null)
 			{
-				// Exact match only -- registry knows the precise directory name
+				// Exact match only -- the URL map knows the precise directory name
 				var cachedPath = FindCachedModelExact(voicesDir, cachedModelName);
 				if (cachedPath is not null)
 				{
@@ -296,7 +296,7 @@ static partial class RvcEngine
 				$"Ready: {modelName} ({sizeMb} MB)."
 			).ConfigureAwait(false);
 
-			ModelDownloader.WriteRegistry(registryPath, rvcQuery, modelName);
+			ModelDownloader.WriteUrlMapEntry(urlMapPath, rvcQuery, modelName);
 				return (downloadPath, modelName);
 		}
 
@@ -306,25 +306,15 @@ static partial class RvcEngine
 				return (namedModel, GetDisplayName(namedModel));
 		}
 
-		var registryNames = ReadRegistryLines(registryPath)
-			.Select
-			(
-				line =>
-				{
-					var tab = line.IndexOf('\t', StringComparison.Ordinal);
-					return tab >= 0 ? line[(tab + 1)..] : null;
-				}
-			)
-			.Where(static name => name is not null)
-			.ToArray();
+		var urlMapNames = ReadUrlMapModelNames(urlMapPath);
 
-		var bestRegistryMatch = FuzzyMatcher.FindBestMatch(registryNames!, rvcQuery);
-		if (!string.IsNullOrEmpty(bestRegistryMatch))
+		var bestUrlMapMatch = FuzzyMatcher.FindBestMatch(urlMapNames!, rvcQuery);
+		if (!string.IsNullOrEmpty(bestUrlMapMatch))
 		{
-			var resolvedPath = FindCachedModel(voicesDir, bestRegistryMatch);
+			var resolvedPath = FindCachedModel(voicesDir, bestUrlMapMatch);
 			if (resolvedPath is not null)
 			{
-				return (resolvedPath, bestRegistryMatch);
+				return (resolvedPath, bestUrlMapMatch);
 			}
 		}
 
@@ -345,10 +335,10 @@ static partial class RvcEngine
 	{
 		var rvcDir = EnsureRvcDirectory();
 		var voicesDir = Path.Combine(rvcDir, VoicesSubDir);
-		var registryPath = Path.Combine(rvcDir, RegistryFileName);
+		var urlMapPath = Path.Combine(rvcDir, UrlMapFileName);
 		Directory.CreateDirectory(voicesDir);
 
-		var cachedModelName = ModelDownloader.LookupRegistry(registryPath, zipPath);
+		var cachedModelName = ModelDownloader.LookupUrlMap(urlMapPath, zipPath);
 		if (cachedModelName is not null)
 		{
 			var cachedPath = FindCachedModel(voicesDir, cachedModelName);
@@ -368,12 +358,12 @@ static partial class RvcEngine
 				zipPath, voicesDir, cancellationToken: ct
 		).ConfigureAwait(false);
 
-		ModelDownloader.WriteRegistry(registryPath, zipPath, extractedName);
+		ModelDownloader.WriteUrlMapEntry(urlMapPath, zipPath, extractedName);
 		return modelPath;
 	}
 
 	/// <summary>
-	/// Exact-match lookup for registry-resolved names. No fuzzy matching.
+	/// Exact-match lookup for URL map-resolved names. No fuzzy matching.
 	/// </summary>
 	internal static string? FindCachedModelExact(string voicesDir, string modelName)
 	{
@@ -972,15 +962,16 @@ static partial class RvcEngine
 
 	[ExcludeFromCodeCoverage]
 	/// <summary>
-	/// Reads the model registry lines from disk.
+	/// Reads the model names from the URL map file.
 	/// </summary>
-	/// <param name="registryPath">The registry file path.</param>
-	/// <returns>The registry lines.</returns>
-	private static string[] ReadRegistryLines(string registryPath)
+	/// <param name="urlMapPath">The URL map file path.</param>
+	/// <returns>The URL map model names.</returns>
+	private static string[] ReadUrlMapModelNames(string urlMapPath)
 	{
-		return File.Exists(registryPath)
-			? File.ReadAllLines(registryPath)
-			: [];
+		return
+		[
+			.. ModelDownloader.ReadUrlMap(urlMapPath).Values
+		];
 	}
 
 	private static bool _dmlAvailable = true;
