@@ -14,26 +14,86 @@ say "Hello from Talktastic"
 # Use a Windows neural voice
 say "Good evening." -v "Microsoft Ryan"
 
-# Save to a file -- extension picks the encoder
-say "Hello" -v "Microsoft Aria" -o hello.mp3
-
-# Download a Piper voice by URL -- cached automatically for next time
-say "Hello" -v "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/amy/medium/en_US-amy-medium.onnx"
-
-# Or use the shorthand
+# Use a Piper voice (downloaded and cached automatically)
 say "Hello" -v "piper:en_US-ryan-high"
 
-# Apply RVC voice conversion on top of TTS
-say "Hello" -v "Microsoft Aria" --rvc "https://huggingface.co/Sunwest/Homer_Simpson_300"
+# Or download by URL
+say "Hello" -v "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/amy/medium/en_US-amy-medium.onnx"
 
-# Convert an existing audio file through RVC (no TTS)
-say --in dry.wav --rvc Homer --rvc-pitch 12 -o wet.ogg
+# Apply RVC voice conversion on top of any TTS voice
+say "D'oh!" -v "Microsoft Aria" --rvc homer
+
+# RVC models can be downloaded by URL too
+say "Hello" --rvc "https://huggingface.co/Sunwest/Homer_Simpson_300"
 
 # Read from stdin
 echo "Hello from a pipe" | say -
 
 # List everything -- voices, RVC models, audio devices
 say --list
+```
+
+## File I/O
+
+Export to `.wav`, `.mp3`, or `.ogg` -- the extension picks the encoder:
+
+```powershell
+say "Hello" -o hello.wav
+say "Hello" -v "Microsoft Aria" -o hello.mp3
+say "Hello" -v "piper:en_GB-alan-medium" -o hello.ogg
+```
+
+Import `.wav`, `.mp3`, or `.ogg` files to run through RVC without doing TTS:
+
+```powershell
+say --in recording.wav --rvc homer -o converted.wav
+say --in podcast.mp3 --rvc homer -o converted.mp3
+say --in clip.ogg --rvc homer -o converted.ogg
+```
+
+Mix and match any input format with any output format:
+
+```powershell
+say --in recording.wav --rvc homer -o converted.ogg
+say --in podcast.mp3 --rvc homer -o converted.wav
+```
+
+## Advanced Usage
+
+```powershell
+# SSML for fine-grained speech control
+say --ssml "<prosody rate='slow' pitch='-10%'>I am a distinguished raccoon.</prosody>"
+
+# Rate and pitch shortcuts (neural and SAPI voices)
+say "Hurry up!" -v "Microsoft Aria" --rate fast --pitch high
+
+# RVC pitch shifting (semitones: +12 = octave up, -12 = octave down)
+say --in vocals.wav --rvc homer --rvc-pitch 12 -o octave-up.wav
+
+# TTS + RVC + file output -- the full pipeline
+say "Witness the trenchcoat" -v "Microsoft Ryan" --rvc homer -o result.mp3
+
+# Play to a specific audio device
+say "Hello" -v "Microsoft Ryan" -d "Speakers (Realtek)"
+
+# Disable GPU acceleration (CPU-only RVC)
+say --in input.wav --rvc homer --no-gpu -o output.wav
+
+# Show RVC pipeline timing
+say "Hello" --rvc homer --perf
+
+# Voice type prefixes narrow the search
+say "Hello" -v "neural:Aria"
+say "Hello" -v "sapi:David"
+say "Hello" -v "piper:en_US-amy-medium"
+
+# Manage cached models
+say --list-voices
+say --list-rvcs
+say --rename-voice "en_US-amy-medium=Amy"
+say --rename-rvc "homer=Homer Simpson"
+say --remove-voice Amy
+say --remove-rvc "Homer Simpson"
 ```
 
 ## Features
@@ -43,6 +103,7 @@ say --list
 - **Piper voices** -- download and run open-source ONNX TTS models in-process (via sherpa-onnx)
 - **RVC voice conversion** -- `.onnx` and `.pth` models with FAISS index support, DirectML GPU acceleration
 - **Multiple output formats** -- play to any audio device, or write `.wav`, `.mp3`, `.ogg` (Opus)
+- **Multiple input formats** -- import `.wav`, `.mp3`, or `.ogg` for RVC-only processing
 - **Zero dependencies** -- NativeAOT single-file binary with embedded native DLLs, extracted and cached at runtime
 - **Fuzzy matching** -- voice names are case-insensitive partial matches; type prefixes like `neural:`, `sapi:`, `piper:` narrow the search
 - **Model management** -- `--list`, `--rename-voice`, `--rename-rvc`, `--remove-voice`, `--remove-rvc`
