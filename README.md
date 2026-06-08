@@ -113,12 +113,9 @@ say --remove-rvc "Homer Simpson"
 
 | Voice type | Backing technology | Discovery source | Notes |
 |---|---|---|---|
-| Neural | Microsoft Embedded Speech SDK | Installed `MicrosoftWindows.Voice.*` packages | Best SSML support; output format comes from `--format`. |
-| SAPI / Legacy | WinRT `SpeechSynthesizer` voice inventory | `SpeechSynthesizer.AllVoices` | Covers classic Windows voices such as David/Mark/Zira-style voices. |
-| Piper | Local ONNX model files | `.piper-tts\voices` cache | User-facing local models; downloaded on demand and synthesized in-process. |
-| Sherpa runtime | `org.k2fsa.sherpa.onnx` | Not a separate voice catalog | Execution backend for Piper models, plus token/espeak/metadata compatibility work. |
-
-> Note: `VoiceEnumerator` exposes user-selectable voice families as Neural, Legacy, and Piper. sherpa-onnx is the Piper execution backend, not a separate enumerated voice inventory.
+| Neural | Microsoft Embedded Speech SDK (Windows 11) | Installed `MicrosoftWindows.Voice.*` packages | Full SSML support; output format comes from `--format`. Requires Windows 11 neural voice packages. |
+| SAPI / Legacy | WinRT `SpeechSynthesizer` (Windows 10+) | `SpeechSynthesizer.AllVoices` | Classic Windows voices (David, Mark, Zira, etc.). Limited SSML support -- most prosody tags are ignored. |
+| Piper | Open-source neural TTS via local ONNX models | `.piper-tts\voices` cache | Downloaded on demand from HuggingFace and synthesized in-process via sherpa-onnx. No SSML support (tags stripped to plain text). |
 
 ## CLI Reference
 
