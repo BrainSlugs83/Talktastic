@@ -5,6 +5,19 @@
 
 Standalone Windows TTS CLI that speaks with neural, SAPI, and Piper voices -- with optional RVC voice conversion -- compiled to a single NativeAOT executable. No runtime, no installers, just `say.exe`.
 
+## Features
+
+- **Neural voices** -- Windows Embedded Speech SDK neural voices with full SSML support
+- **SAPI / legacy voices** -- classic Windows voices via WinRT
+- **Piper voices** -- download and run open-source ONNX TTS models in-process (via sherpa-onnx)
+- **RVC voice conversion** -- `.onnx` and `.pth` models with FAISS index support, DirectML GPU acceleration
+- **Multiple output formats** -- play to any audio device, or write `.wav`, `.mp3`, `.ogg` (Opus)
+- **Multiple input formats** -- import `.wav`, `.mp3`, or `.ogg` for RVC-only processing
+- **Zero dependencies** -- NativeAOT single-file binary with embedded native DLLs, extracted and cached at runtime
+- **Fuzzy matching** -- voice names are case-insensitive partial matches; type prefixes like `neural:`, `sapi:`, `piper:` narrow the search
+- **Model management** -- `--list`, `--rename-voice`, `--rename-rvc`, `--remove-voice`, `--remove-rvc`
+- **SSML** -- `--ssml` flag, `--help-ssml` for examples, `--rate`/`--pitch` shortcuts
+
 ## Usage
 
 ```powershell
@@ -95,19 +108,6 @@ say --rename-rvc "Homer=Homer Simpson"
 say --remove-voice Amy
 say --remove-rvc "Homer Simpson"
 ```
-
-## Features
-
-- **Neural voices** -- Windows Embedded Speech SDK neural voices with full SSML support
-- **SAPI / legacy voices** -- classic Windows voices via WinRT
-- **Piper voices** -- download and run open-source ONNX TTS models in-process (via sherpa-onnx)
-- **RVC voice conversion** -- `.onnx` and `.pth` models with FAISS index support, DirectML GPU acceleration
-- **Multiple output formats** -- play to any audio device, or write `.wav`, `.mp3`, `.ogg` (Opus)
-- **Multiple input formats** -- import `.wav`, `.mp3`, or `.ogg` for RVC-only processing
-- **Zero dependencies** -- NativeAOT single-file binary with embedded native DLLs, extracted and cached at runtime
-- **Fuzzy matching** -- voice names are case-insensitive partial matches; type prefixes like `neural:`, `sapi:`, `piper:` narrow the search
-- **Model management** -- `--list`, `--rename-voice`, `--rename-rvc`, `--remove-voice`, `--remove-rvc`
-- **SSML** -- `--ssml` flag, `--help-ssml` for examples, `--rate`/`--pitch` shortcuts
 
 ## Voice Types
 
