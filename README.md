@@ -30,11 +30,17 @@ say "This is Microsoft Ryan, a Windows 11 neural voice." -v "Microsoft Ryan"
 # Download and use an Open Source Piper voice by URL (cached automatically).
 say "Piper voices can be downloaded by URL!" -v "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/amy/medium/en_US-amy-medium.onnx"
 
+# You can download as many as you like!
+say "This is Piper Ryan, a British neural voice." -v "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/ryan/high/en_GB-ryan-high.onnx"
+
 # Once a Piper voice is installed, you can use it by name.
 say "Once a Piper voice is installed, you can use it by name!" -v "Amy"
 
+# Use type prefixes to disambiguate voices with the same name.
+say "This is how you disambiguate between two voices with the same name." -v "piper:Ryan"
+
 # Apply RVC voice conversion on top of any TTS voice.
-say "D'oh! This is Aria's voice, converted to sound like Homer Simpson." -v "Microsoft Aria" --rvc "Homer"
+say "D'oh! This is Piper Ryan's voice, converted to sound like Homer Simpson." -v "piper:Ryan" --rvc "Homer"
 
 # RVC models can be downloaded by URL too.
 say "RVC models can also be downloaded by URL." --rvc "https://huggingface.co/Sunwest/Homer_Simpson_300"
