@@ -32,6 +32,11 @@
     <NativeDebug>false</NativeDebug>
   </PropertyGroup>
 
+  <!-- Pass /Brepro to the MSVC linker so the PE timestamp is zeroed (deterministic native binary) -->
+  <ItemGroup Condition="'$(PublishAot)' == 'true'">
+    <LinkerArg Include="/Brepro" />
+  </ItemGroup>
+
   <ItemGroup>
     <Compile Remove="Tests\**\*.cs" />
     <PackageReference Include="BetterStringExtensions" Version="1.0.4" />
