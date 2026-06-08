@@ -113,6 +113,15 @@ internal static class VoiceEnumerator
 			return exactMatch;
 		}
 
+		// Substring match: if exactly one voice contains the query, use it.
+		// This catches "Microsoft Aria" → "Microsoft Aria (Natural)" before
+		// fuzzy matching can misfire on shared prefixes like "Microsoft".
+		var containsMatch = FindContainsMatch(searchPool, cleanQuery);
+		if (containsMatch is not null)
+		{
+			return containsMatch;
+		}
+
 		var fuzzyMatch = FindFuzzy(searchPool, cleanQuery);
 		if (fuzzyMatch is not null)
 		{
@@ -224,6 +233,29 @@ internal static class VoiceEnumerator
 	}
 
 	/// <summary>
+	/// Finds a unique substring match across all name fields.
+	/// Returns the voice only if exactly one voice contains the query.
+	/// </summary>
+	/// <param name="voices">The voices.</param>
+	/// <param name="query">The query.</param>
+	/// <returns>The matching voice, or <c>null</c> if zero or multiple matches.</returns>
+	internal static InstalledVoice? FindContainsMatch(InstalledVoice[] voices, string query)
+	{
+		var matches = voices
+			.Where
+			(
+				v =>
+					v.Name.ContainsIgnoreCase(query) ||
+					v.ShortName.ContainsIgnoreCase(query) ||
+					v.LocalName.ContainsIgnoreCase(query) ||
+					v.FriendlyName.ContainsIgnoreCase(query)
+			)
+			.ToArray();
+
+		return matches.Length == 1 ? matches[0] : null;
+	}
+
+	/// <summary>
 	/// Finds the fuzzy match.
 	/// </summary>
 	/// <param name="voices">The voices.</param>
@@ -232,6 +264,7 @@ internal static class VoiceEnumerator
 	internal static InstalledVoice? FindFuzzy(InstalledVoice[] voices, string query)
 	{
 		return FuzzyMatcher.FindBestMatch(voices, query, static v => v.FriendlyName)
+			?? FuzzyMatcher.FindBestMatch(voices, query, static v => v.LocalName)
 			?? FuzzyMatcher.FindBestMatch(voices, query, static v => v.Name)
 			?? FuzzyMatcher.FindBestMatch(voices, query, static v => v.ShortName);
 	}
