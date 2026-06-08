@@ -9,7 +9,7 @@ Standalone Windows TTS CLI that speaks with neural, SAPI, and Piper voices -- wi
 
 ```powershell
 # Speak with the default voice
-say "Hello from Talktastic"
+say "Hello, from Talktastic!"
 
 # Use a Windows neural voice
 say "Good evening." -v "Microsoft Ryan"
@@ -21,7 +21,7 @@ say "Hello" -v "piper:en_US-ryan-high"
 say "Hello" -v "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/amy/medium/en_US-amy-medium.onnx"
 
 # Apply RVC voice conversion on top of any TTS voice
-say "D'oh!" -v "Microsoft Aria" --rvc homer
+say "D'oh!" -v "Microsoft Aria" --rvc "Homer"
 
 # RVC models can be downloaded by URL too
 say "Hello" --rvc "https://huggingface.co/Sunwest/Homer_Simpson_300"
@@ -46,41 +46,41 @@ say "Hello" -v "piper:en_GB-alan-medium" -o hello.ogg
 Import `.wav`, `.mp3`, or `.ogg` files to run through RVC without doing TTS:
 
 ```powershell
-say --in recording.wav --rvc homer -o converted.wav
-say --in podcast.mp3 --rvc homer -o converted.mp3
-say --in clip.ogg --rvc homer -o converted.ogg
+say --in recording.wav --rvc "Homer" -o converted.wav
+say --in podcast.mp3 --rvc "Homer" -o converted.mp3
+say --in clip.ogg --rvc "Homer" -o converted.ogg
 ```
 
 Mix and match any input format with any output format:
 
 ```powershell
-say --in recording.wav --rvc homer -o converted.ogg
-say --in podcast.mp3 --rvc homer -o converted.wav
+say --in recording.wav --rvc "Homer" -o converted.ogg
+say --in podcast.mp3 --rvc "Homer" -o converted.wav
 ```
 
 ## Advanced Usage
 
 ```powershell
 # SSML for fine-grained speech control
-say --ssml "<prosody rate='slow' pitch='-10%'>I am a distinguished raccoon.</prosody>"
+say --ssml "<prosody rate='slow' pitch='-10%'>Take your time. There is no rush.</prosody>"
 
 # Rate and pitch shortcuts (neural and SAPI voices)
 say "Hurry up!" -v "Microsoft Aria" --rate fast --pitch high
 
 # RVC pitch shifting (semitones: +12 = octave up, -12 = octave down)
-say --in vocals.wav --rvc homer --rvc-pitch 12 -o octave-up.wav
+say --in vocals.wav --rvc "Homer" --rvc-pitch 12 -o octave-up.wav
 
 # TTS + RVC + file output -- the full pipeline
-say "Witness the trenchcoat" -v "Microsoft Ryan" --rvc homer -o result.mp3
+say "This is a test of the full pipeline." -v "Microsoft Ryan" --rvc "Homer" -o result.mp3
 
 # Play to a specific audio device
 say "Hello" -v "Microsoft Ryan" -d "Speakers (Realtek)"
 
 # Disable GPU acceleration (CPU-only RVC)
-say --in input.wav --rvc homer --no-gpu -o output.wav
+say --in input.wav --rvc "Homer" --no-gpu -o output.wav
 
 # Show RVC pipeline timing
-say "Hello" --rvc homer --perf
+say "Hello" --rvc "Homer" --perf
 
 # Voice type prefixes narrow the search
 say "Hello" -v "neural:Aria"
@@ -91,7 +91,7 @@ say "Hello" -v "piper:en_US-amy-medium"
 say --list-voices
 say --list-rvcs
 say --rename-voice "en_US-amy-medium=Amy"
-say --rename-rvc "homer=Homer Simpson"
+say --rename-rvc "Homer=Homer Simpson"
 say --remove-voice Amy
 say --remove-rvc "Homer Simpson"
 ```
