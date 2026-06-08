@@ -28,13 +28,13 @@ say "Hello, from Talktastic!"
 say "This is Microsoft Ryan, a Windows 11 neural voice." -v "Microsoft Ryan"
 
 # Download and use an Open Source Piper voice by URL (cached automatically).
-say "Piper voices can be downloaded by URL!" -v "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/amy/medium/en_US-amy-medium.onnx"
-
-# Silently download and install a Piper voice (no text = no speech).
-say -v "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/ryan/high/en_US-ryan-high.onnx"
+say "Piper voices can be downloaded by URL!" -v "https://huggingface.co/rhasspy/piper-voices/tree/v1.0.0/en/en_US/amy/medium"
 
 # Once a Piper voice is installed, you can use it by name.
 say "Once a Piper voice is installed, you can use it by name!" -v "Amy"
+
+# Silently download and install a Piper voice (no text = no speech).
+say -v "https://huggingface.co/rhasspy/piper-voices/tree/v1.0.0/en/en_US/ryan/high"
 
 # Use type prefixes to disambiguate voices with the same name.
 say "This is how you disambiguate between two voices with the same name." -v "piper:Ryan"
