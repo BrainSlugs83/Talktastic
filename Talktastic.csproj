@@ -5,7 +5,7 @@
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <AssemblyName>say</AssemblyName>
     <RootNamespace>Talktastic</RootNamespace>
-    <Version>0.6.0</Version>
+    <Version>0.7.0</Version>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <Product>Talktastic</Product>
     <Description>Standalone Windows TTS CLI</Description>
