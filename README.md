@@ -27,7 +27,7 @@ say "D'oh!" -v "Microsoft Aria" --rvc "Homer"
 say "Hello" --rvc "https://huggingface.co/Sunwest/Homer_Simpson_300"
 
 # Read from stdin
-echo "Hello from a pipe" | say -
+echo "Hello, from a pipe!" | say "-"
 
 # List everything -- voices, RVC models, audio devices
 say --list
