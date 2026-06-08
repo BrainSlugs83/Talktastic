@@ -115,7 +115,7 @@ say --remove-rvc "Homer Simpson"
 |---|---|---|---|
 | Neural | Microsoft Embedded Speech SDK (Windows 11) | Installed `MicrosoftWindows.Voice.*` packages | Full SSML support; output format comes from `--format`. Requires Windows 11 neural voice packages. |
 | SAPI / Legacy | WinRT `SpeechSynthesizer` (Windows 10+) | `SpeechSynthesizer.AllVoices` | Classic Windows voices (David, Mark, Zira, etc.). Limited SSML support -- most prosody tags are ignored. |
-| Piper | Open-source neural TTS via local ONNX models | `.piper-tts\voices` cache | Downloaded on demand from HuggingFace and synthesized in-process via sherpa-onnx. No SSML support (tags stripped to plain text). |
+| Piper | Open-source neural TTS via local ONNX models | `.piper-tts\voices` cache | Downloaded on demand from any URL and synthesized in-process via sherpa-onnx. Supports global rate and pitch controls. |
 
 ## CLI Reference
 
