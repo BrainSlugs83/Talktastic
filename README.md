@@ -21,28 +21,28 @@ Standalone Windows TTS CLI that speaks with neural, SAPI, and Piper voices -- wi
 ## Usage
 
 ```powershell
-# Speak with the default voice
+# Speak with the default voice.
 say "Hello, from Talktastic!"
 
-# Use a Windows neural voice
-say "Good evening." -v "Microsoft Ryan"
+# Use a Windows neural voice.
+say "This is Microsoft Ryan, a Windows neural voice." -v "Microsoft Ryan"
 
-# Use a Piper voice (downloaded and cached automatically)
-say "Hello" -v "piper:en_US-ryan-high"
+# Download and use a Piper voice by URL (cached automatically).
+say "Piper voices can be downloaded by URL!" -v "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/amy/medium/en_US-amy-medium.onnx"
 
-# Or download by URL
-say "Hello" -v "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/amy/medium/en_US-amy-medium.onnx"
+# Once a Piper voice is installed, you can use it by name.
+say "Once a Piper voice is installed, you can use it by name!" -v "Amy"
 
-# Apply RVC voice conversion on top of any TTS voice
-say "D'oh!" -v "Microsoft Aria" --rvc "Homer"
+# Apply RVC voice conversion on top of any TTS voice.
+say "D'oh! This is Aria's voice, converted to sound like Homer Simpson." -v "Microsoft Aria" --rvc "Homer"
 
-# RVC models can be downloaded by URL too
-say "Hello" --rvc "https://huggingface.co/Sunwest/Homer_Simpson_300"
+# RVC models can be downloaded by URL too.
+say "RVC models can also be downloaded by URL." --rvc "https://huggingface.co/Sunwest/Homer_Simpson_300"
 
-# Read from stdin
-echo "Hello, from a pipe!" | say "-"
+# Read from stdin.
+echo "You can also pipe text in from stdin!" | say "-"
 
-# List everything -- voices, RVC models, audio devices
+# List everything -- voices, RVC models, audio devices.
 say --list
 ```
 
@@ -51,9 +51,9 @@ say --list
 Export to `.wav`, `.mp3`, or `.ogg` -- the extension picks the encoder:
 
 ```powershell
-say "Hello" -o hello.wav
-say "Hello" -v "Microsoft Aria" -o hello.mp3
-say "Hello" -v "piper:en_GB-alan-medium" -o hello.ogg
+say "This will be saved as a WAV file." -o hello.wav
+say "You can export to MP3 as well!" -v "Microsoft Aria" -o hello.mp3
+say "And OGG Opus, if you fancy." -v "Alan" -o hello.ogg
 ```
 
 Import `.wav`, `.mp3`, or `.ogg` files to run through RVC without doing TTS:
@@ -75,37 +75,36 @@ say --in podcast.mp3 --rvc "Homer" -o converted.wav
 
 ```powershell
 # SSML for fine-grained speech control
-say --ssml "<prosody rate='slow' pitch='-10%'>Take your time. There is no rush.</prosody>"
+say --ssml "<prosody rate='slow' pitch='-10%'>SSML lets you control rate, pitch, and emphasis.</prosody>"
 
 # Rate and pitch shortcuts (neural and SAPI voices)
-say "Hurry up!" -v "Microsoft Aria" --rate fast --pitch high
+say "Rate and pitch can also be set with shorthand flags." -v "Microsoft Aria" --rate fast --pitch high
 
 # RVC pitch shifting (semitones: +12 = octave up, -12 = octave down)
 say --in vocals.wav --rvc "Homer" --rvc-pitch 12 -o octave-up.wav
 
 # TTS + RVC + file output -- the full pipeline
-say "This is a test of the full pipeline." -v "Microsoft Ryan" --rvc "Homer" -o result.mp3
+say "This runs the full pipeline: TTS, then RVC, then file export." -v "Microsoft Ryan" --rvc "Homer" -o result.mp3
 
 # Play to a specific audio device
-say "Hello" -v "Microsoft Ryan" -d "Speakers (Realtek)"
+say "You can route audio to a specific output device." -v "Microsoft Ryan" -d "Speakers (Realtek)"
 
 # Disable GPU acceleration (CPU-only RVC)
 say --in input.wav --rvc "Homer" --no-gpu -o output.wav
 
 # Show RVC pipeline timing
-say "Hello" --rvc "Homer" --perf
+say "The perf flag shows RVC pipeline timing." --rvc "Homer" --perf
 
 # Voice type prefixes narrow the search
-say "Hello" -v "neural:Aria"
-say "Hello" -v "sapi:David"
-say "Hello" -v "piper:en_US-amy-medium"
+say "Type prefixes let you pick exactly which engine to use." -v "neural:Aria"
+say "This forces the SAPI engine." -v "sapi:David"
 
 # Manage cached models
 say --list-voices
 say --list-rvcs
 say --rename-voice "en_US-amy-medium=Amy"
 say --rename-rvc "Homer=Homer Simpson"
-say --remove-voice Amy
+say --remove-voice "Amy"
 say --remove-rvc "Homer Simpson"
 ```
 
@@ -171,7 +170,7 @@ say [<text>] [options]
 dotnet build
 
 # Run directly from the build output
-dotnet run -- "Hello from source"
+dotnet run -- "Hello, from source!"
 
 # NativeAOT publish
 dotnet publish -c Release -r win-x64 /p:PublishAot=true
