@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.IO.Compression;
+using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
@@ -34,36 +35,71 @@ static partial class ModelDownloader
 		CancellationToken cancellationToken
 	)
 	{
-		using var response = await http.GetAsync
-		(
-			new Uri(url),
-			HttpCompletionOption.ResponseHeadersRead,
-			cancellationToken
-		).ConfigureAwait(false);
-
-		if (!response.IsSuccessStatusCode)
+		var sw = System.Diagnostics.Stopwatch.StartNew();
+		HttpResponseMessage response;
+		try
 		{
+			response = await http.GetAsync
+			(
+				new Uri(url),
+				HttpCompletionOption.ResponseHeadersRead,
+				cancellationToken
+			).ConfigureAwait(false);
+		}
+		catch (HttpRequestException ex)
+		{
+			// DNS failures, refused connections, TLS errors, dead CDNs
+			// (e.g. models.weights.gg returning NXDOMAIN). Surface a clean
+			// message naming the host so the user knows which source is dead,
+			// instead of echoing the cryptic Windows DNS error verbatim.
 			throw new InvalidOperationException
 			(
-				$"Failed to download {url}: HTTP {(int)response.StatusCode}"
+				$"Failed to download {url}: {DescribeNetworkFailure(url, ex)}",
+				ex
 			);
 		}
 
-		var tempPath = destPath + ".tmp";
-		try
+		using (response)
 		{
-			using (var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false))
-			using (var file = new FileStream(tempPath, FileMode.Create, FileAccess.Write))
+			if (!response.IsSuccessStatusCode)
 			{
-				await stream.CopyToAsync(file, cancellationToken).ConfigureAwait(false);
+				throw new InvalidOperationException
+				(
+					$"Failed to download {url}: HTTP {(int)response.StatusCode}"
+				);
 			}
 
-			File.Move(tempPath, destPath, overwrite: true);
-		}
-		catch (IOException)
-		{
-			try { File.Delete(tempPath); } catch (IOException) { }
-			throw;
+			var tempPath = destPath + ".tmp";
+			long bytesWritten = 0;
+			try
+			{
+				using (var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false))
+				using (var file = new FileStream(tempPath, FileMode.Create, FileAccess.Write))
+				{
+					await stream.CopyToAsync(file, cancellationToken).ConfigureAwait(false);
+					bytesWritten = file.Length;
+				}
+
+				File.Move(tempPath, destPath, overwrite: true);
+			}
+			catch (IOException)
+			{
+				try { File.Delete(tempPath); } catch (IOException) { }
+				throw;
+			}
+
+			var elapsedMs = sw.ElapsedMilliseconds;
+			var fileName = Path.GetFileName(destPath);
+			var mb = bytesWritten / 1_048_576.0;
+			var mbps = elapsedMs > 0 ? (bytesWritten * 1000.0 / elapsedMs) / 1_048_576.0 : 0.0;
+			Diagnostics.LogPerf
+			(
+				string.Create
+				(
+					System.Globalization.CultureInfo.InvariantCulture,
+					$"[download] {fileName}: {mb:F1} MB in {elapsedMs}ms ({mbps:F1} MB/s)"
+				)
+			);
 		}
 	}
 
@@ -77,6 +113,7 @@ static partial class ModelDownloader
 		HttpClient http,
 		string url,
 		string destDir,
+		string? preferredName,
 		CancellationToken cancellationToken
 	)
 	{
@@ -90,7 +127,7 @@ static partial class ModelDownloader
 		try
 		{
 			await DownloadFileAsync(http, url, tempZip, cancellationToken).ConfigureAwait(false);
-			return await ExtractZipAsync(tempZip, destDir, hintName, cancellationToken).ConfigureAwait(false);
+			return await ExtractZipAsync(tempZip, destDir, hintName, preferredName, cancellationToken).ConfigureAwait(false);
 		}
 		finally
 		{
@@ -109,6 +146,7 @@ static partial class ModelDownloader
 		string zipPath,
 		string destDir,
 		string? hintName = null,
+		string? preferredName = null,
 		CancellationToken cancellationToken = default
 	)
 	{
@@ -131,7 +169,7 @@ static partial class ModelDownloader
 					$"No .onnx or .pth model file found in zip archive: {Path.GetFileName(zipPath)}"
 				);
 
-			var modelName = ResolveModelName(modelFile, fallbackName);
+			var modelName = ResolveModelName(modelFile, fallbackName, preferredName);
 			var modelDir = Path.Combine(destDir, modelName);
 
 			// If the model dir already exists, nuke it for a clean re-download
@@ -178,35 +216,48 @@ static partial class ModelDownloader
 	}
 
 	/// <summary>
-	/// Generic names that should be replaced by the zip filename to avoid collisions.
+	/// Generic names that should be replaced by a better candidate to avoid collisions.
+	/// Covers internal zip filenames ("model.pth", "weights.pth"), URL-derived
+	/// placeholders ("download" from Drive's "?id=..." URLs, "file"/"archive" from
+	/// other CDN fallbacks), and the temp-file naming patterns we emit ourselves
+	/// ("download-{guid}", "drive_{fileId}").
 	/// </summary>
 	private static readonly string[] GenericModelNames =
 	[
 		"model", "weights", "checkpoint", "voice", "rvc",
+		"download", "file", "archive",
 	];
 
 	/// <summary>
-	/// Returns the best model name from the extracted file and the fallback hint.
-	/// Favors whichever name isn't generic ("model", "weights", etc.) and isn't a GUID.
-	/// If both are usable, prefers the internal filename.
+	/// Returns the best model name from three candidates, in priority order.
 	/// </summary>
-	internal static string ResolveModelName(string extractedPath, string fallbackName)
+	/// <param name="extractedPath">Path to the extracted model file. Its filename
+	/// (without extension) is the "internal" name -- often the trainer's working
+	/// filename like <c>G_3200.pth</c> or <c>added_IVF8000_Flat.index</c>.</param>
+	/// <param name="fallbackName">A last-resort hint, typically derived from the URL
+	/// or temp zip filename.</param>
+	/// <param name="preferredName">Optional curated name from the URL resolver
+	/// (e.g. voice-models.com H3 title, Drive Content-Disposition filename).
+	/// When usable, this always wins -- it's the name a human picked.</param>
+	internal static string ResolveModelName(string extractedPath, string fallbackName, string? preferredName = null)
 	{
-		var internalName = Path.GetFileNameWithoutExtension(extractedPath);
-		var internalUsable = IsUsableName(internalName);
-		var fallbackUsable = IsUsableName(fallbackName);
+		if (preferredName is not null && IsUsableName(preferredName))
+		{
+			return CleanModelName(SanitizeFileName(preferredName))!;
+		}
 
-		if (internalUsable)
+		var internalName = Path.GetFileNameWithoutExtension(extractedPath);
+		if (IsUsableName(internalName))
 		{
 			return CleanModelName(internalName)!;
 		}
 
-		if (fallbackUsable)
+		if (IsUsableName(fallbackName))
 		{
 			return CleanModelName(SanitizeFileName(fallbackName))!;
 		}
 
-		// Both are garbage -- return internal as-is (shouldn't happen in practice)
+		// All three are garbage -- return internal as-is (shouldn't happen in practice)
 		return CleanModelName(internalName)!;
 	}
 
@@ -265,6 +316,13 @@ static partial class ModelDownloader
 			return false;
 		}
 
+		// Drive fallback "drive_{fileId}" -- the resolver emits these when it
+		// can't recover the original filename from Content-Disposition.
+		if (name.StartsWith("drive_", StringComparison.OrdinalIgnoreCase))
+		{
+			return false;
+		}
+
 		return true;
 	}
 
@@ -291,6 +349,67 @@ static partial class ModelDownloader
 #pragma warning disable CA1308 // URLs are conventionally lowercase
 		return $"{uri.Scheme}://{uri.Host.ToLowerInvariant()}{uri.PathAndQuery}";
 #pragma warning restore CA1308
+	}
+
+	/// <summary>
+	/// Produces a human-readable description of a network failure during download.
+	/// Translates cryptic Windows DNS errors (SocketError <c>NoData</c>,
+	/// <c>HostNotFound</c>, etc.) into plain English that names the offending host,
+	/// rather than echoing the raw "The requested name is valid, but no data of the
+	/// requested type was found" text that makes users think their URL is malformed.
+	/// </summary>
+	internal static string DescribeNetworkFailure(string url, HttpRequestException ex)
+	{
+		string? host = null;
+		try
+		{
+			host = new Uri(url).Host;
+		}
+		catch (UriFormatException)
+		{
+		}
+
+		var socket = FindSocketException(ex);
+		if (socket is not null)
+		{
+			var hostPart = string.IsNullOrEmpty(host) ? "the remote host" : host;
+			return socket.SocketErrorCode switch
+			{
+				// All DNS-class failures collapse to the same user-facing message --
+				// the practical effect is "this host is unreachable" regardless of
+				// whether Windows reports HostNotFound or the technically-distinct
+				// "name is valid but no records of the requested type" (NoData),
+				// which is what Windows returns for a host that simply doesn't exist.
+				System.Net.Sockets.SocketError.HostNotFound
+				or System.Net.Sockets.SocketError.NoData
+				or System.Net.Sockets.SocketError.NoRecovery
+					=> $"DNS lookup for '{hostPart}' failed -- the CDN may be offline or the URL stale.",
+				System.Net.Sockets.SocketError.TryAgain
+					=> $"DNS lookup for '{hostPart}' timed out -- check your network connection.",
+				System.Net.Sockets.SocketError.ConnectionRefused
+					=> $"Connection to '{hostPart}' was refused (the server may be offline).",
+				System.Net.Sockets.SocketError.TimedOut
+					=> $"Connection to '{hostPart}' timed out.",
+				_ => $"Network error reaching '{hostPart}': {socket.SocketErrorCode}.",
+			};
+		}
+
+		return ex.Message;
+	}
+
+	private static System.Net.Sockets.SocketException? FindSocketException(Exception? ex)
+	{
+		while (ex is not null)
+		{
+			if (ex is System.Net.Sockets.SocketException sock)
+			{
+				return sock;
+			}
+
+			ex = ex.InnerException;
+		}
+
+		return null;
 	}
 
 	// ── URL map I/O ──
@@ -385,6 +504,427 @@ static partial class ModelDownloader
 		var urlMap = ReadUrlMap(urlMapPath);
 		urlMap[normalizedUrl] = modelName;
 		WriteUrlMap(urlMapPath, urlMap);
+	}
+
+	// ── Google Drive URL resolution ──
+
+	/// <summary>
+	/// Resolves a Google Drive share URL (e.g. <c>https://drive.google.com/file/d/{ID}/view</c>)
+	/// to a direct download URL. For small files Drive serves the bytes directly; for larger
+	/// files Drive interposes a "virus scan warning" HTML page that requires re-fetching with
+	/// a confirmation token parsed out of the page form. Returns the post-confirmation URL
+	/// plus the original filename (from <c>Content-Disposition</c>) when available.
+	/// </summary>
+	[ExcludeFromCodeCoverage]
+	public static async Task<(string FileUrl, string ModelName, bool IsZip, string[]? CompanionUrls)> ResolveGoogleDriveModelAsync
+	(
+		HttpClient http,
+		string url,
+		CancellationToken cancellationToken
+	)
+	{
+		var fileId = ExtractDriveFileId(url);
+		if (fileId is null)
+		{
+			throw new ArgumentException
+			(
+				$"Could not extract Google Drive file ID from URL: {url}"
+			);
+		}
+
+		Diagnostics.LogPerf
+		(
+			string.Create
+			(
+				System.Globalization.CultureInfo.InvariantCulture,
+				$"[resolve] google-drive file id={fileId}"
+			)
+		);
+
+		// First probe: the standard usercontent download endpoint. Drive returns the file
+		// directly for small files; for larger files it returns a virus-scan-warning HTML
+		// page that we have to parse for the confirm token.
+		var downloadUrl = $"https://drive.usercontent.google.com/download?id={fileId}&export=download&authuser=0";
+		var (finalUrl, fileName) = await ProbeDriveDownloadAsync(http, downloadUrl, cancellationToken).ConfigureAwait(false);
+
+		var (modelName, isZip) = DeriveDriveNameAndType(fileName, fileId);
+		return (finalUrl, modelName, isZip, null);
+	}
+
+	/// <summary>
+	/// Extracts the Google Drive file ID from any of the common share URL shapes:
+	/// <c>/file/d/{ID}/view</c>, <c>/open?id={ID}</c>, <c>/uc?id={ID}</c>,
+	/// <c>/download?id={ID}</c>.
+	/// </summary>
+	/// <param name="url">The Drive URL.</param>
+	/// <returns>The file ID, or null when no recognizable ID could be extracted.</returns>
+	internal static string? ExtractDriveFileId(string url)
+	{
+		// `/file/d/{id}/...`
+		var fileMatch = DriveFileIdPathPattern().Match(url);
+		if (fileMatch.Success)
+		{
+			return fileMatch.Groups[1].Value;
+		}
+
+		// `?id={id}` (used by /open, /uc, /download)
+		var queryMatch = DriveFileIdQueryPattern().Match(url);
+		if (queryMatch.Success)
+		{
+			return queryMatch.Groups[1].Value;
+		}
+
+		return null;
+	}
+
+	/// <summary>
+	/// GETs a Drive download URL, follows the virus-scan-warning HTML interstitial when
+	/// present, and returns the final URL (post-confirm) plus the response's reported
+	/// filename when it can be read out of <c>Content-Disposition</c>.
+	/// </summary>
+	[ExcludeFromCodeCoverage]
+	private static async Task<(string FinalUrl, string? FileName)> ProbeDriveDownloadAsync
+	(
+		HttpClient http,
+		string downloadUrl,
+		CancellationToken cancellationToken
+	)
+	{
+		using var firstProbe = await http.GetAsync
+		(
+			new Uri(downloadUrl),
+			HttpCompletionOption.ResponseHeadersRead,
+			cancellationToken
+		).ConfigureAwait(false);
+
+		if (!firstProbe.IsSuccessStatusCode)
+		{
+			throw new InvalidOperationException
+			(
+				$"Google Drive probe failed: HTTP {(int)firstProbe.StatusCode} for {downloadUrl}"
+			);
+		}
+
+		var firstContentType = firstProbe.Content.Headers.ContentType?.MediaType ?? "";
+		var firstFileName = ExtractFilenameFromContentDisposition
+		(
+			firstProbe.Content.Headers.ContentDisposition?.ToString()
+		);
+
+		if (!firstContentType.StartsWith("text/html", StringComparison.OrdinalIgnoreCase))
+		{
+			return (downloadUrl, firstFileName);
+		}
+
+		// Virus-scan warning page. Parse the form to find the action URL + confirm token.
+		var html = await firstProbe.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+		var confirmUrl = BuildDriveConfirmUrl(html, downloadUrl)
+			?? throw new InvalidOperationException
+			(
+				"Google Drive returned a virus-scan-warning page but no confirm form could be parsed. "
+				+ "The file may be too large for unattended download; try a direct .zip URL instead."
+			);
+
+		using var secondProbe = await http.GetAsync
+		(
+			new Uri(confirmUrl),
+			HttpCompletionOption.ResponseHeadersRead,
+			cancellationToken
+		).ConfigureAwait(false);
+
+		if (!secondProbe.IsSuccessStatusCode)
+		{
+			throw new InvalidOperationException
+			(
+				$"Google Drive confirm fetch failed: HTTP {(int)secondProbe.StatusCode}"
+			);
+		}
+
+		var secondFileName = ExtractFilenameFromContentDisposition
+		(
+			secondProbe.Content.Headers.ContentDisposition?.ToString()
+		);
+		return (confirmUrl, secondFileName ?? firstFileName);
+	}
+
+	/// <summary>
+	/// Builds the post-confirm download URL from the virus-scan-warning HTML by extracting
+	/// the form's <c>action</c> and hidden input values (notably <c>confirm</c> and
+	/// <c>uuid</c>). Returns null when no confirm form is found.
+	/// </summary>
+	internal static string? BuildDriveConfirmUrl(string html, string fallbackBaseUrl)
+	{
+		var formMatch = DriveConfirmFormPattern().Match(html);
+		if (!formMatch.Success)
+		{
+			return null;
+		}
+
+		var action = WebUtility.HtmlDecode(formMatch.Groups[1].Value);
+		var query = new System.Text.StringBuilder();
+		foreach (Match input in DriveConfirmInputPattern().Matches(html))
+		{
+			var name = WebUtility.HtmlDecode(input.Groups[1].Value);
+			var value = WebUtility.HtmlDecode(input.Groups[2].Value);
+			if (query.Length > 0)
+			{
+				query.Append('&');
+			}
+			query.Append(Uri.EscapeDataString(name));
+			query.Append('=');
+			query.Append(Uri.EscapeDataString(value));
+		}
+
+		if (query.Length == 0)
+		{
+			return null;
+		}
+
+		var separator = action.Contains('?', StringComparison.Ordinal) ? "&" : "?";
+		return string.Create
+		(
+			System.Globalization.CultureInfo.InvariantCulture,
+			$"{action}{separator}{query}"
+		);
+	}
+
+	/// <summary>
+	/// Reads the <c>filename</c> parameter out of a <c>Content-Disposition</c> header value,
+	/// preferring the RFC 5987 <c>filename*=UTF-8''...</c> form when present.
+	/// </summary>
+	internal static string? ExtractFilenameFromContentDisposition(string? header)
+	{
+		if (string.IsNullOrWhiteSpace(header))
+		{
+			return null;
+		}
+
+		var starMatch = ContentDispositionFilenameStarPattern().Match(header);
+		if (starMatch.Success)
+		{
+			try
+			{
+				return Uri.UnescapeDataString(starMatch.Groups[1].Value);
+			}
+			catch (UriFormatException)
+			{
+				// fall through to the plain `filename=` parse
+			}
+		}
+
+		var plainMatch = ContentDispositionFilenamePattern().Match(header);
+		if (plainMatch.Success)
+		{
+			return plainMatch.Groups[1].Value;
+		}
+
+		return null;
+	}
+
+	/// <summary>
+	/// Derives a (modelName, isZip) tuple from a Drive filename + file ID. The filename is
+	/// preferred when present; otherwise the file ID is used as a placeholder name. The
+	/// archive flag is true for .zip filenames and defaults to true when unknown (Drive
+	/// RVC shares are almost always zips).
+	/// </summary>
+	internal static (string ModelName, bool IsZip) DeriveDriveNameAndType(string? fileName, string fileId)
+	{
+		if (!string.IsNullOrWhiteSpace(fileName))
+		{
+			var nameNoExt = Path.GetFileNameWithoutExtension(fileName);
+			var isZip = fileName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase);
+			var cleaned = CleanModelName(nameNoExt);
+			if (cleaned is not null && IsUsableName(cleaned))
+			{
+				return (cleaned, isZip);
+			}
+		}
+
+		return ($"drive_{fileId}", IsZip: true);
+	}
+
+	[GeneratedRegex(@"/file/d/([A-Za-z0-9_-]+)")]
+	private static partial Regex DriveFileIdPathPattern();
+
+	[GeneratedRegex(@"[?&]id=([A-Za-z0-9_-]+)")]
+	private static partial Regex DriveFileIdQueryPattern();
+
+	[GeneratedRegex(@"<form[^>]+action=""([^""]+)""[^>]*>", RegexOptions.IgnoreCase)]
+	private static partial Regex DriveConfirmFormPattern();
+
+	[GeneratedRegex(@"<input[^>]+name=""([^""]+)""[^>]+value=""([^""]*)""", RegexOptions.IgnoreCase)]
+	private static partial Regex DriveConfirmInputPattern();
+
+	[GeneratedRegex(@"filename\*\s*=\s*UTF-8''([^;]+)", RegexOptions.IgnoreCase)]
+	private static partial Regex ContentDispositionFilenameStarPattern();
+
+	[GeneratedRegex(@"filename\s*=\s*""?([^"";]+)""?", RegexOptions.IgnoreCase)]
+	private static partial Regex ContentDispositionFilenamePattern();
+
+	// ── voice-models.com URL resolution ──
+
+	/// <summary>
+	/// Resolves a voice-models.com landing page to its hosted model download URL.
+	/// </summary>
+	[ExcludeFromCodeCoverage]
+	public static async Task<(string FileUrl, string ModelName, bool IsZip, string[]? CompanionUrls)> ResolveVoiceModelsComModelAsync
+	(
+		HttpClient http,
+		string url,
+		CancellationToken cancellationToken
+	)
+	{
+		using var response = await http.GetAsync
+		(
+			new Uri(url),
+			cancellationToken
+		).ConfigureAwait(false);
+
+		if (!response.IsSuccessStatusCode)
+		{
+			throw new InvalidOperationException
+			(
+				$"Failed to fetch voice-models.com page: HTTP {(int)response.StatusCode} from {url}"
+			);
+		}
+
+		var html = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+		var extractedHref = ExtractVoiceModelsDownloadLink(html);
+		if (!IsUrl(extractedHref))
+		{
+			throw new InvalidOperationException
+			(
+				$"voice-models.com Download Link is not an HTTP(S) URL: {extractedHref}"
+			);
+		}
+
+		Diagnostics.LogPerf($"[resolve] voice-models.com -> {extractedHref}");
+
+		var extractedHost = new Uri(extractedHref).Host;
+		try
+		{
+			var resolved = await ResolveModelUrlAsync(http, extractedHref, cancellationToken).ConfigureAwait(false);
+			var shortName = ExtractVoiceModelsShortNameFromHtml(html);
+			var chosenName = ChooseVoiceModelsName(resolved.ModelName, shortName);
+			return (resolved.FileUrl, chosenName, resolved.IsZip, resolved.CompanionUrls);
+		}
+		catch (ArgumentException ex) when (ex.Message.StartsWith("Unsupported URL pattern:", StringComparison.Ordinal))
+		{
+			throw new NotSupportedException
+			(
+				$"voice-models.com Download Link host '{extractedHost}' is not supported yet. "
+				+ "Paste a direct .onnx, .pth, or .zip file URL instead.",
+				ex
+			);
+		}
+	}
+
+	/// <summary>
+	/// Extracts the first Download Link anchor href from a voice-models.com HTML page.
+	/// </summary>
+	internal static string ExtractVoiceModelsDownloadLink(string html)
+	{
+		var match = VoiceModelsDownloadLinkPattern().Match(html);
+		if (!match.Success)
+		{
+			throw new InvalidOperationException
+			(
+				"voice-models.com page has no Download Link."
+			);
+		}
+
+		var rawHref = match.Groups[1].Success
+			? match.Groups[1].Value
+			: match.Groups[2].Success
+				? match.Groups[2].Value
+				: match.Groups[3].Value;
+
+		return (WebUtility.HtmlDecode(rawHref) ?? rawHref).Trim();
+	}
+
+	/// <summary>
+	/// Extracts a short display name from a voice-models.com title.
+	/// Strips HTML tags and sanitizes for use as a filename, but otherwise
+	/// keeps the title intact -- including epoch counts, RVC version, and
+	/// character context (e.g. "Princess Peach (2007 - 2024) (Super Mario)
+	/// [RVC v2] [300 Epochs]"). Useful metadata stays in the model name.
+	/// </summary>
+	internal static string ExtractVoiceModelsShortName(string h3Text)
+	{
+		var decoded = WebUtility.HtmlDecode(h3Text) ?? h3Text;
+		var title = StripHtmlTagsPattern().Replace(decoded, string.Empty).Trim();
+		if (title.Length == 0)
+		{
+			return title;
+		}
+
+		var sanitized = SanitizeFileName(title);
+		return CleanModelName(sanitized) ?? sanitized;
+	}
+
+	/// <summary>
+	/// Chooses the best display name for a voice-models.com-hosted model.
+	/// Policy: the voice-models.com page title is the curated layer and wins
+	/// whenever it's usable -- even when the underlying CDN URL gives back a
+	/// "usable-looking" slug like the HuggingFace repo name
+	/// <c>Princess-Peach-Samantha-Kelly</c> (which is the trainer's slug, not
+	/// a human display name). The inner-resolver name is only used when the
+	/// page title was missing or unusable.
+	/// </summary>
+	internal static string ChooseVoiceModelsName(string innerResolvedName, string? pageShortName)
+	{
+		if (pageShortName is not null && IsUsableName(pageShortName))
+		{
+			return pageShortName;
+		}
+
+		return innerResolvedName;
+	}
+
+	internal static string? ExtractVoiceModelsShortNameFromHtml(string html)
+	{
+		// voice-models.com always emits a <title> matching:
+		//   "{Model Name} ({extra qualifiers}) AI Voice Model"
+		// (mirrored in og:title). The trailer is the only definitive signal
+		// that this is a model page rather than the site index, a 404, etc.
+		// The first <h3> on the page is sidebar chrome like "Main / VM Models"
+		// and must not be used as a fallback -- it would pollute the model
+		// cache with names like "Main-VMModels".
+		var titleMatch = HtmlTitlePattern().Match(html);
+		if (!titleMatch.Success)
+		{
+			return null;
+		}
+
+		var (stripped, hadTrailer) = StripVoiceModelsTitleTrailer(titleMatch.Groups[1].Value);
+		if (!hadTrailer)
+		{
+			return null;
+		}
+
+		var shortName = ExtractVoiceModelsShortName(stripped);
+		return !string.IsNullOrWhiteSpace(shortName) && IsUsableName(shortName)
+			? shortName
+			: null;
+	}
+
+	/// <summary>
+	/// Strips the trailing " AI Voice Model" suffix from a voice-models.com page
+	/// title and reports whether the trailer was present. The trailer is the
+	/// site's deterministic marker that this is a model page (vs. site index,
+	/// 404, etc.), so callers should only trust the stripped title when
+	/// <c>hadTrailer</c> is <c>true</c>.
+	/// </summary>
+	internal static (string Stripped, bool HadTrailer) StripVoiceModelsTitleTrailer(string title)
+	{
+		var decoded = (WebUtility.HtmlDecode(title) ?? title).Trim();
+		const string trailer = " AI Voice Model";
+		if (decoded.EndsWith(trailer, StringComparison.OrdinalIgnoreCase))
+		{
+			return (decoded[..^trailer.Length].TrimEnd(), HadTrailer: true);
+		}
+
+		return (decoded, HadTrailer: false);
 	}
 
 	// ── HuggingFace URL resolution ──
@@ -661,6 +1201,24 @@ static partial class ModelDownloader
 			return await ResolveGitHubReleaseModelAsync(http, url, cancellationToken).ConfigureAwait(false);
 		}
 
+		if
+		(
+			string.Equals(host, "voice-models.com", StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(host, "www.voice-models.com", StringComparison.OrdinalIgnoreCase)
+		)
+		{
+			return await ResolveVoiceModelsComModelAsync(http, url, cancellationToken).ConfigureAwait(false);
+		}
+
+		if
+		(
+			host.EndsWith("drive.google.com", StringComparison.OrdinalIgnoreCase)
+			|| host.EndsWith("drive.usercontent.google.com", StringComparison.OrdinalIgnoreCase)
+		)
+		{
+			return await ResolveGoogleDriveModelAsync(http, url, cancellationToken).ConfigureAwait(false);
+		}
+
 		throw new ArgumentException($"Unsupported URL pattern: {url}");
 	}
 
@@ -734,6 +1292,34 @@ static partial class ModelDownloader
 	/// <returns>The generated regex.</returns>
 	[GeneratedRegex(@"""browser_download_url""\s*:\s*""([^""]+\.index)""")]
 	private static partial Regex GhIndexAssetPattern();
+
+	/// <summary>
+	/// Gets the voice-models.com Download Link anchor regex.
+	/// </summary>
+	/// <returns>The generated regex.</returns>
+	[GeneratedRegex(@"<b\b[^>]*>\s*Download\s+Link:\s*</b>\s*<a\b[^>]*\bhref\s*=\s*(?:""([^""]+)""|'([^']+)'|([^\s>]+))", RegexOptions.IgnoreCase)]
+	private static partial Regex VoiceModelsDownloadLinkPattern();
+
+	/// <summary>
+	/// Gets the voice-models.com H3 title regex.
+	/// </summary>
+	/// <returns>The generated regex.</returns>
+	[GeneratedRegex(@"<h3\b[^>]*>([\s\S]*?)</h3>", RegexOptions.IgnoreCase)]
+	private static partial Regex VoiceModelsTitlePattern();
+
+	/// <summary>
+	/// Gets the HTML &lt;title&gt; element regex.
+	/// </summary>
+	/// <returns>The generated regex.</returns>
+	[GeneratedRegex(@"<title\b[^>]*>([\s\S]*?)</title>", RegexOptions.IgnoreCase)]
+	private static partial Regex HtmlTitlePattern();
+
+	/// <summary>
+	/// Gets the HTML tag stripping regex.
+	/// </summary>
+	/// <returns>The generated regex.</returns>
+	[GeneratedRegex(@"<[^>]+>", RegexOptions.IgnoreCase)]
+	private static partial Regex StripHtmlTagsPattern();
 
 	/// <summary>
 	/// Gets the repository name regex.

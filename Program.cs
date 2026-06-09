@@ -8,6 +8,10 @@ using System.Xml;
 
 using Talktastic;
 
+// Touch Settings first so Settings.StartedAt captures DateTime.Now as early as possible
+// (otherwise lazy static init can leave the very first [t=...] line slightly negative).
+_ = Settings.StartedAt;
+
 Console.OutputEncoding = Encoding.UTF8;
 
 var fullVersion = Assembly.GetEntryAssembly()
@@ -140,12 +144,22 @@ var noGpuOption = new Option<bool>("--no-gpu")
 
 var perfOption = new Option<bool>("--perf")
 {
-	Description = "Show detailed RVC pipeline timing information",
+	Description = "Show detailed pipeline timing information",
 };
 
 var verboseOption = new Option<bool>("--verbose")
 {
 	Description = "Write detailed diagnostic instrumentation to stderr (streaming + RVC)",
+};
+
+var rvcChunkOption = new Option<double?>("--rvc-chunk-size")
+{
+	Description = "RVC streaming chunk size in seconds (default 2.0); must be > 0",
+};
+
+var rvcPadOption = new Option<double?>("--rvc-padding-length")
+{
+	Description = "RVC streaming per-side pad in seconds (default 0.3); must be >= 0",
 };
 
 var rootCommand = new RootCommand($"Talktastic v{version} - standalone Windows TTS CLI")
@@ -176,6 +190,8 @@ var rootCommand = new RootCommand($"Talktastic v{version} - standalone Windows T
 	noGpuOption,
 	perfOption,
 	verboseOption,
+	rvcChunkOption,
+	rvcPadOption,
 };
 
 rootCommand.SetAction
@@ -214,21 +230,50 @@ rootCommand.SetAction
 			var noGpu = parseResult.GetValue(noGpuOption);
 			var perf = parseResult.GetValue(perfOption);
 			var verbose = parseResult.GetValue(verboseOption);
+			var rvcChunk = parseResult.GetValue(rvcChunkOption);
+			var rvcPad = parseResult.GetValue(rvcPadOption);
 
 			if (noGpu)
 			{
-				RvcEngine.DisableGpu = true;
+				Settings.Cli.NoGpu = true;
 			}
 
 			if (verbose)
 			{
-				Diagnostics.Verbose = true;
+				Settings.Cli.Verbose = true;
 			}
 
 			if (perf)
 			{
-				RvcEngine.ShowPerf = true;
-				NativeExtractor.ShowPerf = true;
+				Settings.Cli.ShowPerf = true;
+			}
+
+			if (rvcChunk.HasValue)
+			{
+				if (rvcChunk.Value < 0.1)
+				{
+					await Console.Error.WriteLineAsync
+					(
+						"--rvc-chunk-size must be at least 0.1 seconds."
+					).ConfigureAwait(false);
+					return 2;
+				}
+
+				Settings.Cli.RvcChunkSecondsOverride = rvcChunk.Value;
+			}
+
+			if (rvcPad.HasValue)
+			{
+				if (rvcPad.Value < 0.0)
+				{
+					await Console.Error.WriteLineAsync
+					(
+						"--rvc-padding-length must be at least 0 seconds."
+					).ConfigureAwait(false);
+					return 2;
+				}
+
+				Settings.Cli.RvcPadSecondsOverride = rvcPad.Value;
 			}
 
 			if (superQuiet)
@@ -470,9 +515,13 @@ Notes:
 
 				var resolvedRvcOnly = await RvcEngine.ResolveRvcModelAsync(rvc, cancellationToken).ConfigureAwait(false);
 
+				// Start loading RVC sessions in the background while we read the input WAV
+				// so the model is ready by the time we hand audio to ConvertAsync.
+				RvcEngine.Prewarm(resolvedRvcOnly.Path);
+
 				if (!quiet && !superQuiet)
 				{
-					var accel = RvcEngine.DisableGpu ? "CPU" : "DirectML";
+					var accel = Settings.Cli.NoGpu ? "CPU" : "DirectML";
 					await Console.Error.WriteLineAsync
 					(
 						$"Applying RVC voice conversion with {accel} ({resolvedRvcOnly.DisplayName})..."
@@ -772,7 +821,7 @@ static int RenamePiperVoice(string arg)
 	var voicesDir = Path.GetDirectoryName(match.PrimaryPath)!;
 	var newOnnxPath = Path.Combine(voicesDir, newName + ".onnx");
 
-	if (File.Exists(newOnnxPath))
+	if (File.Exists(newOnnxPath) && !AppPaths.IsSamePath(newOnnxPath, match.PrimaryPath))
 	{
 		throw new InvalidOperationException($"A Piper voice named '{newName}' already exists.");
 	}
@@ -810,7 +859,7 @@ static int RenameRvcModel(string arg)
 	if (isSubDir)
 	{
 		var newDir = Path.Combine(voicesDir, newName);
-		if (Directory.Exists(newDir))
+		if (Directory.Exists(newDir) && !AppPaths.IsSamePath(newDir, modelDir))
 		{
 			throw new InvalidOperationException($"An RVC model named '{newName}' already exists.");
 		}
@@ -822,7 +871,7 @@ static int RenameRvcModel(string arg)
 		// Legacy flat file
 		var ext = Path.GetExtension(match.PrimaryPath);
 		var newPath = Path.Combine(voicesDir, newName + ext);
-		if (File.Exists(newPath))
+		if (File.Exists(newPath) && !AppPaths.IsSamePath(newPath, match.PrimaryPath))
 		{
 			throw new InvalidOperationException($"An RVC model named '{newName}' already exists.");
 		}

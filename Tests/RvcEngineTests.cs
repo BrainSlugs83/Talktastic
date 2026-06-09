@@ -1080,6 +1080,226 @@ public sealed class RvcEngineTests : IDisposable
 		Assert.Equal(0, result.PitchEnd);
 	}
 
+	// PlanStreamChunks: pure subdivision function. AbsorbThreshold = 2*chunk + 2*pad.
+	// All assertions use defaults chunk=2.0, pad=0.3 (absorbThreshold=4.6) unless noted.
+
+	[Fact]
+	public void PlanStreamChunks_ZeroInput_ReturnsEmpty()
+	{
+		var chunks = RvcEngine.PlanStreamChunks(0.0, 2.0, 0.3);
+
+		Assert.Empty(chunks);
+	}
+
+	[Fact]
+	public void PlanStreamChunks_NegativeTotal_ReturnsEmpty()
+	{
+		var chunks = RvcEngine.PlanStreamChunks(-1.5, 2.0, 0.3);
+
+		Assert.Empty(chunks);
+	}
+
+	[Theory]
+	[InlineData(0.5)]
+	[InlineData(1.0)]
+	[InlineData(2.0)]
+	[InlineData(2.5)]
+	[InlineData(4.0)]
+	[InlineData(4.5)]
+	public void PlanStreamChunks_BelowAbsorbThreshold_ReturnsSingleChunk(double totalSeconds)
+	{
+		var chunks = RvcEngine.PlanStreamChunks(totalSeconds, 2.0, 0.3);
+
+		Assert.Single(chunks);
+		Assert.Equal(0.0, chunks[0].StartSeconds);
+		Assert.Equal(totalSeconds, chunks[0].EndSeconds);
+	}
+
+	[Fact]
+	public void PlanStreamChunks_ExactlyAbsorbThreshold_SplitsBecauseStrictLessThan()
+	{
+		// remaining < threshold uses strict less-than, so at EXACTLY the absorb threshold
+		// we still split into two chunks: a full chunk plus an absorbed tail. This
+		// matches the algorithm's invariant that the first chunk is always full when
+		// the input is large enough to fit two minimum inferences.
+		var chunks = RvcEngine.PlanStreamChunks(totalSeconds: 4.6, chunkSeconds: 2.0, padSeconds: 0.3);
+
+		Assert.Equal(2, chunks.Count);
+		Assert.Equal(0.0, chunks[0].StartSeconds);
+		Assert.Equal(2.0, chunks[0].EndSeconds);
+		Assert.Equal(2.0, chunks[1].StartSeconds);
+		Assert.Equal(4.6, chunks[1].EndSeconds, 6);
+	}
+
+	[Fact]
+	public void PlanStreamChunks_JustUnderAbsorbThreshold_StaysSingleChunk()
+	{
+		// Just below the threshold, the whole input collapses to one chunk.
+		var chunks = RvcEngine.PlanStreamChunks(totalSeconds: 4.599, chunkSeconds: 2.0, padSeconds: 0.3);
+
+		Assert.Single(chunks);
+		Assert.Equal(0.0, chunks[0].StartSeconds);
+		Assert.Equal(4.599, chunks[0].EndSeconds, 6);
+	}
+
+	[Fact]
+	public void PlanStreamChunks_JustOverAbsorbThreshold_SplitsIntoTwo()
+	{
+		var chunks = RvcEngine.PlanStreamChunks(totalSeconds: 4.7, chunkSeconds: 2.0, padSeconds: 0.3);
+
+		Assert.Equal(2, chunks.Count);
+		Assert.Equal(0.0, chunks[0].StartSeconds);
+		Assert.Equal(2.0, chunks[0].EndSeconds);
+		Assert.Equal(2.0, chunks[1].StartSeconds);
+		Assert.Equal(4.7, chunks[1].EndSeconds, 6);
+	}
+
+	[Fact]
+	public void PlanStreamChunks_FiveSeconds_TailAbsorbedIntoSecondChunk()
+	{
+		var chunks = RvcEngine.PlanStreamChunks(totalSeconds: 5.0, chunkSeconds: 2.0, padSeconds: 0.3);
+
+		Assert.Equal(2, chunks.Count);
+		Assert.Equal(3.0, chunks[1].LengthSeconds, 6);
+	}
+
+	[Fact]
+	public void PlanStreamChunks_ThirteenSeconds_ProducesSixChunksWithThreeSecondTail()
+	{
+		var chunks = RvcEngine.PlanStreamChunks(totalSeconds: 13.0, chunkSeconds: 2.0, padSeconds: 0.3);
+
+		Assert.Equal(6, chunks.Count);
+		Assert.All(chunks.Take(5), c => Assert.Equal(2.0, c.LengthSeconds, 6));
+		Assert.Equal(3.0, chunks[^1].LengthSeconds, 6);
+		Assert.Equal(0.0, chunks[0].StartSeconds);
+		Assert.Equal(13.0, chunks[^1].EndSeconds);
+	}
+
+	[Fact]
+	public void PlanStreamChunks_FiftySeconds_ProducesTwentyFourChunksLastIsFour()
+	{
+		var chunks = RvcEngine.PlanStreamChunks(totalSeconds: 50.0, chunkSeconds: 2.0, padSeconds: 0.3);
+
+		Assert.Equal(24, chunks.Count);
+		Assert.Equal(4.0, chunks[^1].LengthSeconds, 6);
+	}
+
+	[Fact]
+	public void PlanStreamChunks_FiftyOneSeconds_ProducesTwentyFiveChunksLastIsThree()
+	{
+		var chunks = RvcEngine.PlanStreamChunks(totalSeconds: 51.0, chunkSeconds: 2.0, padSeconds: 0.3);
+
+		Assert.Equal(25, chunks.Count);
+		Assert.Equal(3.0, chunks[^1].LengthSeconds, 6);
+	}
+
+	[Fact]
+	public void PlanStreamChunks_ChunksAreContiguousAndCoverFullInput()
+	{
+		const double total = 17.3;
+		var chunks = RvcEngine.PlanStreamChunks(total, 2.0, 0.3);
+
+		Assert.Equal(0.0, chunks[0].StartSeconds);
+		Assert.Equal(total, chunks[^1].EndSeconds, 6);
+		for (var i = 1; i < chunks.Count; i++)
+		{
+			Assert.Equal(chunks[i - 1].EndSeconds, chunks[i].StartSeconds, 6);
+		}
+	}
+
+	[Fact]
+	public void PlanStreamChunks_LastChunkIsAlwaysAtLeastChunkSeconds()
+	{
+		// For every total > absorbThreshold, the LAST chunk must be in [chunkSec, 2*(chunkSec+padSec)).
+		const double chunk = 2.0;
+		const double pad = 0.3;
+		var absorbThreshold = (2.0 * chunk) + (2.0 * pad);
+
+		var totals = new[] { 4.7, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 13.0, 50.0, 51.0, 100.0, 123.456 };
+		foreach (var total in totals)
+		{
+			var chunks = RvcEngine.PlanStreamChunks(total, chunk, pad);
+			var tail = chunks[^1].LengthSeconds;
+			Assert.True
+			(
+				tail >= chunk - 1e-9 && tail < absorbThreshold,
+				$"total={total}: tail={tail} not in [chunk={chunk}, absorbThreshold={absorbThreshold})"
+			);
+		}
+	}
+
+	[Theory]
+	[InlineData(1.0, 0.5, 10.0)]
+	[InlineData(3.0, 0.2, 50.0)]
+	[InlineData(0.5, 0.1, 4.0)]
+	[InlineData(5.0, 1.0, 100.0)]
+	public void PlanStreamChunks_NonDefaultParameters_StillSatisfyInvariants(double chunkSec, double padSec, double totalSec)
+	{
+		var chunks = RvcEngine.PlanStreamChunks(totalSec, chunkSec, padSec);
+		var absorbThreshold = (2.0 * chunkSec) + (2.0 * padSec);
+
+		Assert.NotEmpty(chunks);
+		Assert.Equal(0.0, chunks[0].StartSeconds);
+		Assert.Equal(totalSec, chunks[^1].EndSeconds, 6);
+
+		if (totalSec >= absorbThreshold)
+		{
+			Assert.True(chunks[^1].LengthSeconds >= chunkSec - 1e-9);
+		}
+
+		for (var i = 0; i < chunks.Count - 1; i++)
+		{
+			Assert.Equal(chunkSec, chunks[i].LengthSeconds, 6);
+		}
+	}
+
+	[Fact]
+	public void PlanStreamChunks_ZeroPadding_StillWorks()
+	{
+		// padSec=0 is allowed; absorbThreshold collapses to 2*chunkSec.
+		var chunks = RvcEngine.PlanStreamChunks(totalSeconds: 5.0, chunkSeconds: 2.0, padSeconds: 0.0);
+
+		// absorbThreshold = 4.0; remaining starts at 5.0 (>=4.0 take chunk; pos=2, remaining=3 <4 absorb)
+		Assert.Equal(2, chunks.Count);
+		Assert.Equal(2.0, chunks[0].LengthSeconds, 6);
+		Assert.Equal(3.0, chunks[1].LengthSeconds, 6);
+	}
+
+	[Fact]
+	public void PlanStreamChunks_ChunkSecondsZero_Throws()
+	{
+		Assert.Throws<ArgumentOutOfRangeException>
+		(
+			() => RvcEngine.PlanStreamChunks(totalSeconds: 5.0, chunkSeconds: 0.0, padSeconds: 0.3)
+		);
+	}
+
+	[Fact]
+	public void PlanStreamChunks_NegativeChunkSeconds_Throws()
+	{
+		Assert.Throws<ArgumentOutOfRangeException>
+		(
+			() => RvcEngine.PlanStreamChunks(totalSeconds: 5.0, chunkSeconds: -1.0, padSeconds: 0.3)
+		);
+	}
+
+	[Fact]
+	public void PlanStreamChunks_NegativePadSeconds_Throws()
+	{
+		Assert.Throws<ArgumentOutOfRangeException>
+		(
+			() => RvcEngine.PlanStreamChunks(totalSeconds: 5.0, chunkSeconds: 2.0, padSeconds: -0.1)
+		);
+	}
+
+	[Fact]
+	public void StreamChunk_LengthSeconds_ReturnsEndMinusStart()
+	{
+		var chunk = new RvcEngine.StreamChunk(StartSeconds: 4.5, EndSeconds: 6.7);
+
+		Assert.Equal(2.2, chunk.LengthSeconds, 6);
+	}
+
 	private static string CreateVoicesDir(string baseDir)
 	{
 		Directory.CreateDirectory(baseDir);

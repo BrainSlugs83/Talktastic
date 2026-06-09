@@ -380,6 +380,256 @@ public sealed class VoiceEnumeratorTests : IDisposable
 		Assert.Equal("Ryan", voice.FriendlyName);
 	}
 
+	[Fact]
+	public async Task GetVoicesAsync_CanceledToken_ThrowsOperationCanceledException()
+	{
+		using var cancellationTokenSource = new CancellationTokenSource();
+		await cancellationTokenSource.CancelAsync();
+
+		await Assert.ThrowsAsync<OperationCanceledException>
+		(
+			() => VoiceEnumerator.GetVoicesAsync(cancellationTokenSource.Token)
+		);
+	}
+
+	[Theory]
+	[InlineData("PIPER:Ryan", (int)VoiceType.Piper, "Ryan")]
+	[InlineData("SAPI:", (int)VoiceType.Legacy, "")]
+	[InlineData("WinRT:Ava", (int)VoiceType.Neural, "Ava")]
+	public void ParseVoicePrefix_CaseInsensitivePrefix_ReturnsExpectedFilterAndQuery
+	(
+		string query,
+		int expectedFilter,
+		string expectedQuery
+	)
+	{
+		var (filter, cleanQuery) = VoiceEnumerator.ParseVoicePrefix(query);
+
+		Assert.Equal((VoiceType)expectedFilter, filter);
+		Assert.Equal(expectedQuery, cleanQuery);
+	}
+
+	[Fact]
+	public void ParseVoicePrefix_UnknownPrefixLikeQuery_ReturnsUnfilteredOriginalQuery()
+	{
+		var (filter, cleanQuery) = VoiceEnumerator.ParseVoicePrefix("custom:Jenny");
+
+		Assert.Null(filter);
+		Assert.Equal("custom:Jenny", cleanQuery);
+	}
+
+	[Fact]
+	public void FilterByType_NoMatchingType_ReturnsEmptyArray()
+	{
+		InstalledVoice[] voices =
+		[
+			CreateVoice(VoiceType.Neural, name: "Neural Voice", shortName: "neural-short", localName: "Microsoft Neural"),
+			CreateVoice(VoiceType.Legacy, name: "Legacy Voice", shortName: "legacy-short", localName: "Microsoft Legacy"),
+		];
+
+		var result = VoiceEnumerator.FilterByType(voices, VoiceType.Piper);
+
+		Assert.Empty(result);
+	}
+
+	[Fact]
+	public void FindContainsMatch_QueryMatchesSingleVoiceName_ReturnsVoice()
+	{
+		var expected = CreateVoice
+		(
+			VoiceType.Neural,
+			name: "Contoso Avalanche",
+			shortName: "avalanche-short",
+			localName: "Contoso Avalanche"
+		);
+		InstalledVoice[] voices =
+		[
+			CreateVoice(VoiceType.Legacy, name: "Microsoft David", shortName: "david-short", localName: "Microsoft David"),
+			expected,
+		];
+
+		var result = VoiceEnumerator.FindContainsMatch(voices, "aval");
+
+		Assert.Same(expected, result);
+	}
+
+	[Fact]
+	public void FindContainsMatch_QueryMatchesSingleShortName_ReturnsVoice()
+	{
+		var expected = CreateVoice
+		(
+			VoiceType.Legacy,
+			name: "Microsoft David",
+			shortName: "contoso-special-short",
+			localName: "Microsoft David"
+		);
+		InstalledVoice[] voices =
+		[
+			CreateVoice(VoiceType.Neural, name: "Microsoft Jenny", shortName: "jenny-short", localName: "Microsoft Jenny"),
+			expected,
+		];
+
+		var result = VoiceEnumerator.FindContainsMatch(voices, "SPECIAL");
+
+		Assert.Same(expected, result);
+	}
+
+	[Fact]
+	public void FindContainsMatch_QueryMatchesMultipleVoices_ReturnsNull()
+	{
+		InstalledVoice[] voices =
+		[
+			CreateVoice(VoiceType.Neural, name: "Microsoft Jenny", shortName: "jenny-short", localName: "Microsoft Jenny"),
+			CreateVoice(VoiceType.Legacy, name: "Microsoft Jane", shortName: "jane-short", localName: "Microsoft Jane"),
+		];
+
+		var result = VoiceEnumerator.FindContainsMatch(voices, "Microsoft");
+
+		Assert.Null(result);
+	}
+
+	[Fact]
+	public void FindContainsMatch_QueryMatchesNoVoices_ReturnsNull()
+	{
+		var result = VoiceEnumerator.FindContainsMatch(CreateTestVoices(), "missing-voice-name");
+
+		Assert.Null(result);
+	}
+
+	[Fact]
+	public void FindContainsMatch_EmptyVoiceList_ReturnsNull()
+	{
+		var result = VoiceEnumerator.FindContainsMatch([], "anything");
+
+		Assert.Null(result);
+	}
+
+	[Fact]
+	public void FindFuzzy_EmptyVoiceList_ReturnsNull()
+	{
+		var result = VoiceEnumerator.FindFuzzy([], "Jenny");
+
+		Assert.Null(result);
+	}
+
+	[Fact]
+	public void FindFuzzy_QueryMatchesLocalNameFallback_ReturnsVoice()
+	{
+		var expected = CreateVoice
+		(
+			VoiceType.Neural,
+			name: "Unexpected Name",
+			shortName: "unexpected-short",
+			localName: "Microsoft Zorblax"
+		);
+
+		var result = VoiceEnumerator.FindFuzzy([expected], "Microsoft");
+
+		Assert.Same(expected, result);
+	}
+
+	[Fact]
+	public void FindFuzzy_QueryMatchesNameFallback_ReturnsVoice()
+	{
+		var expected = CreateVoice
+		(
+			VoiceType.Legacy,
+			name: "AzureGargantua",
+			shortName: "unexpected-short",
+			localName: "Completely Different"
+		);
+
+		var result = VoiceEnumerator.FindFuzzy([expected], "Azure");
+
+		Assert.Same(expected, result);
+	}
+
+	[Fact]
+	public void FindFuzzy_QueryMatchesShortNameFallback_ReturnsVoice()
+	{
+		var expected = CreateVoice
+		(
+			VoiceType.Legacy,
+			name: "Completely Different",
+			shortName: "astro-voice",
+			localName: "Nothing Similar"
+		);
+
+		var result = VoiceEnumerator.FindFuzzy([expected], "astro");
+
+		Assert.Same(expected, result);
+	}
+
+	[Theory]
+	[InlineData("en_US-", "en_US-")]
+	[InlineData("en_US--high", "-high")]
+	public void ExtractPiperFriendlyName_UnusualModelName_ReturnsExpectedFriendlyName(string modelName, string expected)
+	{
+		var result = VoiceEnumerator.ExtractPiperFriendlyName(modelName);
+
+		Assert.Equal(expected, result);
+	}
+
+	[Fact]
+	public void ExtractPiperLocale_DashAtStart_ReturnsEmptyString()
+	{
+		var result = VoiceEnumerator.ExtractPiperLocale("-custom");
+
+		Assert.Equal(string.Empty, result);
+	}
+
+	[Theory]
+	[InlineData("microsoft Zira (Desktop)", "Zira")]
+	[InlineData("Contoso Ava (Preview)", "Contoso")]
+	public void ExtractPersonName_NameVariants_ReturnExpectedPersonName(string displayName, string expected)
+	{
+		var result = VoiceEnumerator.ExtractPersonName(displayName);
+
+		Assert.Equal(expected, result);
+	}
+
+	[Theory]
+	[InlineData("Microsoft Zira (Desktop)", "Zira")]
+	[InlineData("(System Voice)", "(System Voice)")]
+	[InlineData("microsoft Mark - English (US)", "Mark")]
+	public void ExtractWindowsFriendlyName_BoundarySuffixes_ReturnExpectedFriendlyName(string fullName, string expected)
+	{
+		var result = InstalledVoice.ExtractWindowsFriendlyName(fullName);
+
+		Assert.Equal(expected, result);
+	}
+
+	[Fact]
+	public void FriendlyName_WindowsVoiceWithBlankLocalName_UsesName()
+	{
+		var voice = CreateVoice
+		(
+			VoiceType.Neural,
+			name: "Microsoft Aria (Natural) - English (United States)",
+			localName: " "
+		);
+
+		Assert.Equal("Aria", voice.FriendlyName);
+	}
+
+	[Fact]
+	public void GetPiperVoices_CustomModelNameWithConfig_UsesFallbackDisplayAndEmptyLocale()
+	{
+		var searchBases = ConfigureSearchBases();
+		var voicesDir = Path.Combine(searchBases[0], ".piper-tts", "voices");
+		Directory.CreateDirectory(voicesDir);
+		File.WriteAllBytes(Path.Combine(voicesDir, "custommodel.onnx"), [0x08]);
+		File.WriteAllText(Path.Combine(voicesDir, "custommodel.onnx.json"), "{}");
+
+		var result = VoiceEnumerator.GetPiperVoices();
+
+		var voice = Assert.Single(result);
+		Assert.Equal("custommodel", voice.Name);
+		Assert.Equal("Piper (custommodel)", voice.LocalName);
+		Assert.Equal(string.Empty, voice.Locale);
+		Assert.Equal("custommodel", voice.FriendlyName);
+	}
+
 	private static InstalledVoice[] CreateTestVoices()
 	{
 		return

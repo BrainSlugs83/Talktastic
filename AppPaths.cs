@@ -40,4 +40,25 @@ internal static class AppPaths
 		Directory.CreateDirectory(dir);
 		return dir;
 	}
+
+	/// <summary>
+	/// Returns <c>true</c> when two paths refer to the same filesystem entry
+	/// after normalization (resolving relative segments and ignoring case on
+	/// Windows). Used by rename operations to allow case-only renames like
+	/// <c>homer</c> -&gt; <c>Homer</c>, which otherwise trip
+	/// <c>Directory.Exists</c>/<c>File.Exists</c> conflict checks on
+	/// case-insensitive filesystems.
+	/// </summary>
+	internal static bool IsSamePath(string a, string b)
+	{
+		if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b))
+		{
+			return false;
+		}
+
+		var fullA = Path.GetFullPath(a).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+		var fullB = Path.GetFullPath(b).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+		return string.Equals(fullA, fullB, StringComparison.OrdinalIgnoreCase);
+	}
 }

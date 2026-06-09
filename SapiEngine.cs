@@ -219,6 +219,7 @@ internal static partial class SapiEngine
 
 			// No SetOutput: ISpVoice lazily binds the default audio output and renders to it as the
 			// audio is generated, so speech starts playing before synthesis finishes.
+			Diagnostics.MarkFirstAudio("sapi-stream");
 			Speak(pVoice, text, isXml);
 		}
 		finally

@@ -148,8 +148,8 @@ internal sealed class PthLoader
 
 		var targetSampleRate = ConvertToInt32(config[^1], "config[-1]");
 		var version = GetOptionalString(rootMap, VersionKey, "v2");
-		var sampleRateLabel = GetOptionalString(rootMap, SampleRateKey, "unknown");
-		var f0 = GetOptionalInt32(rootMap, F0Key, 1);
+		var sampleRateLabel = ResolveSampleRateLabel(rootMap, targetSampleRate);
+		var f0 = ResolveF0Flag(rootMap);
 		var info = GetOptionalString(rootMap, InfoKey, string.Empty);
 
 		var weightMap = ExpectDictionary(GetRequiredValue(rootMap, WeightKey), "weight");
@@ -624,6 +624,200 @@ internal sealed class PthLoader
 		}
 
 		return ConvertToString(value, key);
+	}
+
+	/// <summary>
+	/// Resolves the model's sample-rate label ("32k" / "40k" / "48k"), used to pick the
+	/// right embedded ONNX skeleton template. Priority order:
+	/// <list type="number">
+	///   <item>The standard <c>sr</c> string key (stock RVC trainers store it here).</item>
+	///   <item>A label derived from <paramref name="numericTargetSampleRate"/>, but ONLY
+	///         when it lands in a plausible audio sample-rate band (~8 kHz - 96 kHz).
+	///         <c>config[-1]</c> is positional and unnamed, so this value check is the only
+	///         way to verify it really is a sample rate and not some other hyperparameter.</item>
+	///   <item>Any value in the root dict pickled by a trainer-specific class whose name
+	///         contains "SampleRate" (e.g. <c>ultimate_rvc.typing_extra.TrainingSampleRate</c>).</item>
+	///   <item>The literal string <c>"unknown"</c> as a last-ditch placeholder.</item>
+	/// </list>
+	/// </summary>
+	/// <param name="rootMap">The pickle root dictionary.</param>
+	/// <param name="numericTargetSampleRate">The numeric value at <c>config[-1]</c>.</param>
+	/// <returns>The sample-rate label.</returns>
+	private static string ResolveSampleRateLabel
+	(
+		Dictionary<string, object?> rootMap,
+		int numericTargetSampleRate
+	)
+	{
+		// 1. Preferred: the "sr" key is a plain string (stock RVC).
+		if (rootMap.TryGetValue(SampleRateKey, out var srValue) && srValue is string srString && srString.Length > 0)
+		{
+			return srString;
+		}
+
+		// 2. config[-1] when its value actually looks like a sample rate. RVC's `config`
+		//    list is positional and unnamed, so we can't trust the slot by name -- we can
+		//    only trust the value's magnitude.
+		if (numericTargetSampleRate is >= MinPlausibleSampleRate and <= MaxPlausibleSampleRate)
+		{
+			return string.Create
+			(
+				System.Globalization.CultureInfo.InvariantCulture,
+				$"{numericTargetSampleRate / 1000}k"
+			);
+		}
+
+		// 3. Fallback: scan for any value pickled by a trainer-specific class whose name
+		//    contains "SampleRate" (e.g. ultimate_rvc.typing_extra.TrainingSampleRate).
+		foreach (var pair in rootMap)
+		{
+			if (TryExtractSampleRateLabel(pair.Value) is { } label)
+			{
+				return label;
+			}
+		}
+
+		return "unknown";
+	}
+
+	// Plausible audio sample-rate band: anything from telephony (8 kHz) up to lossless
+	// studio (96 kHz). RVC itself only ships 32k/40k/48k models in practice.
+	private const int MinPlausibleSampleRate = 8000;
+	private const int MaxPlausibleSampleRate = 96000;
+
+	/// <summary>
+	/// Resolves the RVC <c>f0</c> flag (1 = pitch-aware, 0 = no F0). Stock RVC trainers
+	/// store this as a plain int; third-party trainers (e.g. <c>ultimate_rvc</c>) may
+	/// store an enum placeholder instead. Falls back to <c>1</c> -- the only meaningful
+	/// value for RVC voice-conversion models, which always use F0.
+	/// </summary>
+	/// <param name="rootMap">The pickle root dictionary.</param>
+	/// <returns>The f0 flag.</returns>
+	private static int ResolveF0Flag(Dictionary<string, object?> rootMap)
+	{
+		if (!rootMap.TryGetValue(F0Key, out var value) || value is null)
+		{
+			return 1;
+		}
+
+		if (value is bool boolValue)
+		{
+			return boolValue ? 1 : 0;
+		}
+
+		// Boolean-flavored placeholders from third-party trainers: try the args.
+		if (value is PickleParser.UnknownReduceTarget target)
+		{
+			foreach (var arg in target.Args)
+			{
+				if (arg is bool ab)
+				{
+					return ab ? 1 : 0;
+				}
+
+				if (arg is byte or ushort or int or long or BigInteger)
+				{
+					return ConvertToInt32(arg, F0Key);
+				}
+			}
+
+			Diagnostics.Log
+			(
+				string.Create
+				(
+					System.Globalization.CultureInfo.InvariantCulture,
+					$"[pth] f0 stored as opaque '{target.Module}.{target.Name}' placeholder; "
+					+ $"defaulting to 1 (pitch-aware)"
+				)
+			);
+			return 1;
+		}
+
+		// Plain numeric value (stock RVC, possibly long-encoded): strict 32-bit conversion
+		// preserves overflow detection.
+		return ConvertToInt32(value, F0Key);
+	}
+
+	/// <summary>
+	/// Attempts to read a sample-rate label like "32k" / "40k" / "48k" from a value pickled
+	/// by an unknown trainer-specific class whose name contains "SampleRate". Returns null
+	/// when the value is not a recognized placeholder.
+	/// </summary>
+	/// <param name="value">The value to inspect.</param>
+	/// <returns>The sample-rate label, or null.</returns>
+	private static string? TryExtractSampleRateLabel(object? value)
+	{
+		if (value is not PickleParser.UnknownReduceTarget target)
+		{
+			return null;
+		}
+
+		if (target.Name.IndexOf("SampleRate", StringComparison.OrdinalIgnoreCase) < 0
+			&& target.Module.IndexOf("SampleRate", StringComparison.OrdinalIgnoreCase) < 0)
+		{
+			return null;
+		}
+
+		foreach (var arg in target.Args)
+		{
+			if (arg is string s && s.Length > 0)
+			{
+				return NormalizeSampleRateLabel(s);
+			}
+
+			if (arg is int i && i >= 1000)
+			{
+				return string.Create
+				(
+					System.Globalization.CultureInfo.InvariantCulture,
+					$"{i / 1000}k"
+				);
+			}
+
+			if (arg is long l && l >= 1000)
+			{
+				return string.Create
+				(
+					System.Globalization.CultureInfo.InvariantCulture,
+					$"{l / 1000}k"
+				);
+			}
+		}
+
+		return null;
+	}
+
+	/// <summary>
+	/// Normalizes a free-form sample-rate string (e.g. "SR_40K", "40K", "40000", "40k")
+	/// into the canonical "<c>{kHz}k</c>" form used by the embedded skeleton resource keys.
+	/// </summary>
+	/// <param name="raw">The raw sample-rate string.</param>
+	/// <returns>The canonical label.</returns>
+	private static string NormalizeSampleRateLabel(string raw)
+	{
+		var trimmed = raw.Trim();
+		var sansPrefix = trimmed.StartsWith("SR_", StringComparison.OrdinalIgnoreCase)
+			? trimmed[3..]
+			: trimmed;
+
+		// Already short ("40k" / "40K"): just lowercase the suffix.
+		if (sansPrefix.Length > 0 && (sansPrefix[^1] == 'k' || sansPrefix[^1] == 'K'))
+		{
+			return string.Concat(sansPrefix.AsSpan(0, sansPrefix.Length - 1), "k");
+		}
+
+		// Pure number ("40000" or "40"): collapse to kHz.
+		if (int.TryParse(sansPrefix, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var n))
+		{
+			var khz = n >= 1000 ? n / 1000 : n;
+			return string.Create
+			(
+				System.Globalization.CultureInfo.InvariantCulture,
+				$"{khz}k"
+			);
+		}
+
+		return trimmed;
 	}
 
 	/// <summary>
@@ -1193,9 +1387,38 @@ internal sealed class PthLoader
 				"torch" when global.Name == "device" => tuple.Length > 0
 					? ConvertToString(tuple[0] ?? throw new InvalidDataException("torch.device argument is null."), "torch.device")
 					: "cpu",
-				_ => throw new NotSupportedException($"Unsupported REDUCE target '{global.Module}.{global.Name}'."),
+				_ => HandleUnknownReduce(global, tuple),
 			};
 		}
+
+		/// <summary>
+		/// Returns an opaque placeholder for a REDUCE target the loader does not understand.
+		/// RVC checkpoints written by add-on tooling (e.g. <c>ultimate_rvc</c>) embed metadata
+		/// classes -- training settings, sample-rate enums, dataclasses -- that we never use
+		/// for inference. Failing the whole load on these would refuse otherwise-valid models;
+		/// instead we keep a typed marker so they can pass through OrderedDicts unharmed and
+		/// any code that DOES try to dereference them will fail with a clear message.
+		/// </summary>
+		private static UnknownReduceTarget HandleUnknownReduce(GlobalReference global, object?[] args)
+		{
+			Diagnostics.Log
+			(
+				string.Create
+				(
+					System.Globalization.CultureInfo.InvariantCulture,
+					$"[pth] tolerating unsupported REDUCE target '{global.Module}.{global.Name}' "
+					+ $"as opaque placeholder ({args.Length} args)"
+				)
+			);
+			return new UnknownReduceTarget(global.Module, global.Name, args);
+		}
+
+		/// <summary>
+		/// Opaque sentinel for REDUCE targets the loader does not natively understand.
+		/// Tensor consumers ignore these; any non-tensor consumer that dereferences one
+		/// surfaces a clear "unknown REDUCE target" trace.
+		/// </summary>
+		internal sealed record UnknownReduceTarget(string Module, string Name, object?[] Args);
 
 		/// <summary>
 		/// Applies a supported pickle BUILD operation.
@@ -1208,6 +1431,14 @@ internal sealed class PthLoader
 			if (state is null)
 			{
 				return instance ?? throw new InvalidDataException("BUILD instance is null.");
+			}
+
+			// Opaque placeholders for unsupported REDUCE targets (e.g. ultimate_rvc enums) get
+			// arbitrary state attached during normal pickling. We don't introspect either piece;
+			// the placeholder just needs to keep flowing.
+			if (instance is UnknownReduceTarget)
+			{
+				return instance;
 			}
 
 			if (state is Dictionary<string, object?> dictionary && dictionary.Count == 0)

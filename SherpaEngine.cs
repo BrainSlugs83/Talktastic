@@ -31,8 +31,20 @@ internal static class SherpaEngine
 		double? lengthScale
 	)
 	{
+		var sw = System.Diagnostics.Stopwatch.StartNew();
 		using var tts = CreateTts(modelPath, lengthScale);
+		var tLoad = sw.ElapsedMilliseconds;
 		var audio = tts.Generate(text, speed: 1.0f, speakerId: 0);
+		var tGen = sw.ElapsedMilliseconds;
+
+		Diagnostics.LogPerf
+		(
+			string.Create
+			(
+				System.Globalization.CultureInfo.InvariantCulture,
+				$"[piper] load={tLoad}ms generate={tGen - tLoad}ms samples={audio.Samples.Length} sampleRate={tts.SampleRate}"
+			)
+		);
 
 		return BuildWav(audio.Samples, tts.SampleRate);
 	}
@@ -52,8 +64,12 @@ internal static class SherpaEngine
 		Action<float[]> onChunk
 	)
 	{
+		var sw = System.Diagnostics.Stopwatch.StartNew();
 		using var tts = CreateTts(modelPath, lengthScale);
+		var tLoad = sw.ElapsedMilliseconds;
 		onStart(tts.SampleRate);
+
+		var chunkCount = 0;
 
 		// sherpa invokes this synchronously per generated segment with a pointer to n float samples.
 		var callback = new OfflineTtsCallback((samples, n) =>
@@ -63,6 +79,7 @@ internal static class SherpaEngine
 				var floats = new float[n];
 				Marshal.Copy(samples, floats, 0, n);
 				onChunk(floats);
+				chunkCount++;
 			}
 
 			return 1; // non-zero = continue generating
@@ -70,6 +87,16 @@ internal static class SherpaEngine
 
 		_ = tts.GenerateWithCallback(text, speed: 1.0f, speakerId: 0, callback);
 		GC.KeepAlive(callback);
+
+		Diagnostics.LogPerf
+		(
+			string.Create
+			(
+				System.Globalization.CultureInfo.InvariantCulture,
+				$"[piper] load={tLoad}ms generate={sw.ElapsedMilliseconds - tLoad}ms "
+				+ $"chunks={chunkCount} sampleRate={tts.SampleRate}"
+			)
+		);
 	}
 
 	/// <summary>

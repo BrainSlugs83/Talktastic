@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 
 namespace Talktastic;
@@ -17,6 +18,7 @@ internal static class LicenseProvider
 	/// Extracts the embedded speech license text.
 	/// </summary>
 	/// <returns>The resulting string.</returns>
+	[ExcludeFromCodeCoverage]
 	public static string GetLicenseText()
 	{
 		if (!File.Exists(EmbeddedSpeechExtensionPath))
@@ -28,7 +30,17 @@ internal static class LicenseProvider
 		}
 
 		var bytes = File.ReadAllBytes(EmbeddedSpeechExtensionPath);
-		var fileText = Encoding.UTF8.GetString(bytes);
+		return ExtractLicenseText(bytes);
+	}
+
+	/// <summary>
+	/// Extracts the embedded speech license text from raw extension bytes.
+	/// </summary>
+	/// <param name="fileBytes">The extension file bytes.</param>
+	/// <returns>The resulting string.</returns>
+	internal static string ExtractLicenseText(byte[] fileBytes)
+	{
+		var fileText = Encoding.UTF8.GetString(fileBytes);
 		var markerIndex = fileText.IndexOf(EulaMarker, StringComparison.Ordinal);
 		if (markerIndex < 0)
 		{
@@ -47,8 +59,9 @@ internal static class LicenseProvider
 			);
 		}
 
-		var extracted = fileText[markerIndex..terminatorIndex].Trim();
-		if (string.IsNullOrWhiteSpace(extracted))
+		var licenseBodyStart = markerIndex + EulaMarker.Length;
+		var licenseBody = fileText[licenseBodyStart..terminatorIndex];
+		if (string.IsNullOrWhiteSpace(licenseBody))
 		{
 			throw new InvalidOperationException
 			(
@@ -56,6 +69,6 @@ internal static class LicenseProvider
 			);
 		}
 
-		return extracted;
+		return fileText[markerIndex..terminatorIndex].Trim();
 	}
 }

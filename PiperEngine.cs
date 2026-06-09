@@ -131,6 +131,7 @@ static partial class PiperEngine
 	/// Supports: "piper:en_US-ryan-high", direct .onnx URLs, HuggingFace folder URLs,
 	/// and GitHub release URLs. Uses a local voices.json URL map to avoid re-downloading.
 	/// </summary>
+	[ExcludeFromCodeCoverage]
 	public static async Task<string> EnsureVoiceModelAsync
 	(
 		string voiceQuery,
@@ -756,7 +757,7 @@ static partial class PiperEngine
 	// ── Internals ──
 
 	[ExcludeFromCodeCoverage]
-	private static async Task DownloadFileAsync
+	private static Task DownloadFileAsync
 	(
 		HttpClient http,
 		string url,
@@ -764,32 +765,8 @@ static partial class PiperEngine
 		CancellationToken cancellationToken
 	)
 	{
-		using var response = await http.GetAsync(new Uri(url), HttpCompletionOption.ResponseHeadersRead, cancellationToken)
-			.ConfigureAwait(false);
-
-		if (!response.IsSuccessStatusCode)
-		{
-			throw new InvalidOperationException
-			(
-				$"Failed to download {url}: HTTP {(int)response.StatusCode}"
-			);
-		}
-
-		var tempPath = destPath + ".tmp";
-		try
-		{
-			using (var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false))
-			using (var file = new FileStream(tempPath, FileMode.Create, FileAccess.Write))
-			{
-				await stream.CopyToAsync(file, cancellationToken).ConfigureAwait(false);
-			}
-
-			File.Move(tempPath, destPath, overwrite: true);
-		}
-		catch (IOException)
-		{
-			try { File.Delete(tempPath); } catch (IOException) { }
-			throw;
-		}
+		// Single source of truth for downloads; gives us the same `[download]` timing line
+		// that ModelDownloader emits for RVC zips.
+		return ModelDownloader.DownloadFileAsync(http, url, destPath, cancellationToken);
 	}
 }

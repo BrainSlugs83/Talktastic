@@ -89,8 +89,9 @@ public class CliIntegrationTests
 
 		Assert.Equal(0, exitCode);
 		Assert.Contains("RVC models:", stdout, StringComparison.Ordinal);
-		// homer should be cached from previous test / download
-		Assert.Contains("homer", stdout, StringComparison.Ordinal);
+		// homer should be cached from previous test / download (case-insensitive
+		// since the user may have renamed it to "Homer" or similar)
+		Assert.Contains("homer", stdout, StringComparison.OrdinalIgnoreCase);
 	}
 
 	[Fact]

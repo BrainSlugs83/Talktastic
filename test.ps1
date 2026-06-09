@@ -5,11 +5,13 @@
 .PARAMETER Html
 	Generate and open an HTML coverage report.
 .PARAMETER Threshold
-	Minimum line coverage percentage to pass (default: 0 = no gate).
+	Minimum line coverage percentage to pass (default: 80; values below 80 still use 80).
 .PARAMETER Stt
 	Also run the Whisper speech-to-text integration tests against dist\say.exe.
-	Requires a built AOT exe (build.bat), local audio hardware, and a conda env
-	(auto-created at $env:STT_ENV, default C:\projects\Temp\sttenv). Plays audio aloud.
+	If dist\say.exe is missing or older than any source file, build.bat is invoked first.
+	A conda env is auto-created on first run at $env:STT_ENV
+	(default: $env:LOCALAPPDATA\talktastic\sttenv) and faster-whisper / soundcard / numpy
+	are installed into it. Requires conda on PATH and local audio hardware. Plays audio aloud.
 #>
 [CmdletBinding()]
 param(
@@ -161,15 +163,31 @@ if ($Stt)
 
 	$sayExe = Join-Path $root 'dist\say.exe'
 	$sttScript = Join-Path $root 'scripts\stt-integration.py'
-	$sttEnv = if ($env:STT_ENV) { $env:STT_ENV } else { 'C:\projects\Temp\sttenv' }
-	$envPython = Join-Path $sttEnv 'python.exe'
-
-	if (-not (Test-Path $sayExe))
+	$defaultSttEnv = if ($env:LOCALAPPDATA)
 	{
-		Write-Host "  [FAIL] $sayExe not found. Run build.bat first." -ForegroundColor Red
-		$sttExit = 1
+		Join-Path $env:LOCALAPPDATA 'talktastic\sttenv'
 	}
 	else
+	{
+		Join-Path $env:TEMP 'talktastic-sttenv'
+	}
+	$sttEnv = if ($env:STT_ENV) { $env:STT_ENV } else { $defaultSttEnv }
+	$envPython = Join-Path $sttEnv 'python.exe'
+
+	# Auto-build dist\say.exe if it is missing -- test.bat owns the toolchain.
+	if (-not (Test-Path $sayExe))
+	{
+		Write-Host "  $sayExe not found; running build.bat..." -ForegroundColor DarkGray
+		$buildBat = Join-Path $root 'build.bat'
+		& $buildBat | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
+		if ($LASTEXITCODE -ne 0)
+		{
+			Write-Host "  [FAIL] build.bat failed (exit code $LASTEXITCODE)." -ForegroundColor Red
+			$sttExit = 1
+		}
+	}
+
+	if ($sttExit -eq 0)
 	{
 		$conda = (Get-Command conda -ErrorAction SilentlyContinue).Source
 
@@ -177,17 +195,29 @@ if ($Stt)
 		{
 			if (-not $conda)
 			{
-				Write-Host '  [FAIL] conda not found and STT env missing.' -ForegroundColor Red
+				Write-Host '  [FAIL] conda not found on PATH and STT env missing.' -ForegroundColor Red
+				Write-Host '         Install conda (or set $env:STT_ENV to point at an existing Python 3.11+ env).' -ForegroundColor DarkGray
 				$sttExit = 1
 			}
 			else
 			{
+				$envParent = Split-Path $sttEnv -Parent
+				if ($envParent -and -not (Test-Path $envParent))
+				{
+					New-Item -ItemType Directory -Path $envParent -Force | Out-Null
+				}
+
 				Write-Host "  Creating conda env at $sttEnv (python 3.11)..." -ForegroundColor DarkGray
 				& $conda create -y -p $sttEnv python=3.11 *>&1 | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
+				if (-not (Test-Path $envPython))
+				{
+					Write-Host "  [FAIL] conda create did not produce $envPython." -ForegroundColor Red
+					$sttExit = 1
+				}
 			}
 		}
 
-		if ($sttExit -eq 0 -and (Test-Path $envPython))
+		if ($sttExit -eq 0)
 		{
 			# Install any missing python deps into the env.
 			& $envPython -c 'import faster_whisper, soundcard, numpy' 2>$null
@@ -196,17 +226,23 @@ if ($Stt)
 				Write-Host '  Installing missing deps (faster-whisper soundcard numpy)...' -ForegroundColor DarkGray
 				& $envPython -m pip install --quiet faster-whisper soundcard numpy |
 					ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
-			}
 
+				# Re-verify after install so we fail fast if pip did not actually deliver.
+				& $envPython -c 'import faster_whisper, soundcard, numpy' 2>$null
+				if ($LASTEXITCODE -ne 0)
+				{
+					Write-Host '  [FAIL] STT deps still missing after pip install.' -ForegroundColor Red
+					$sttExit = 1
+				}
+			}
+		}
+
+		if ($sttExit -eq 0)
+		{
 			Write-Host '  Running STT integration (plays audio aloud)...' -ForegroundColor DarkGray
 			Write-Host ''
 			& $envPython $sttScript 2>&1 | ForEach-Object { Write-Host "  $_" }
 			$sttExit = $LASTEXITCODE
-		}
-		elseif ($sttExit -eq 0)
-		{
-			Write-Host "  [FAIL] STT env python not found at $envPython." -ForegroundColor Red
-			$sttExit = 1
 		}
 	}
 
@@ -225,6 +261,19 @@ if ($Stt)
 
 # -- Final verdict
 $exitCode = 0
+$lineThreshold = [math]::Max(80.0, $Threshold)
+$branchThreshold = 80.0
+$coverageFailures = @()
+
+if ($lineCov -ne $null -and $lineCov -lt $lineThreshold)
+{
+	$coverageFailures += "line $lineCov% < $lineThreshold%"
+}
+
+if ($branchCov -ne $null -and $branchCov -lt $branchThreshold)
+{
+	$coverageFailures += "branch $branchCov% < $branchThreshold%"
+}
 
 if ($testExit -ne 0)
 {
@@ -236,9 +285,9 @@ elseif ($sttExit -ne 0)
 	Write-Host "  [FAIL] STT integration failed (exit code $sttExit)." -ForegroundColor Red
 	$exitCode = $sttExit
 }
-elseif ($Threshold -gt 0 -and $lineCov -ne $null -and $lineCov -lt $Threshold)
+elseif ($coverageFailures.Count -gt 0)
 {
-	Write-Host "  [FAIL] Line coverage $lineCov% is below threshold $Threshold%." -ForegroundColor Red
+	Write-Host "  [FAIL] Coverage below threshold: $($coverageFailures -join ' / ')." -ForegroundColor Red
 	$exitCode = 1
 }
 else

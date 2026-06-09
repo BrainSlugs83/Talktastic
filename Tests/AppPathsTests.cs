@@ -73,6 +73,28 @@ public sealed class AppPathsTests : IDisposable
 		Assert.True(Directory.Exists(created));
 	}
 
+	[Theory]
+	[InlineData("C:\\models\\homer", "C:\\models\\homer", true)]
+	[InlineData("C:\\models\\homer", "C:\\models\\Homer", true)]
+	[InlineData("C:\\models\\homer", "C:\\Models\\HOMER", true)]
+	[InlineData("C:\\models\\homer\\", "C:\\models\\homer", true)]
+	[InlineData("C:\\models\\homer", "C:\\models\\bart", false)]
+	[InlineData("C:\\models\\homer", "C:\\models\\homer2", false)]
+	public void IsSamePath_RecognizesCaseInsensitiveAndTrailingSlashEquivalence(string a, string b, bool expected)
+	{
+		Assert.Equal(expected, AppPaths.IsSamePath(a, b));
+	}
+
+	[Theory]
+	[InlineData(null, "C:\\models\\homer")]
+	[InlineData("C:\\models\\homer", null)]
+	[InlineData("", "C:\\models\\homer")]
+	[InlineData("C:\\models\\homer", "")]
+	public void IsSamePath_NullOrEmpty_ReturnsFalse(string? a, string? b)
+	{
+		Assert.False(AppPaths.IsSamePath(a!, b!));
+	}
+
 	private string[] ConfigureSearchBases()
 	{
 		var bases = new[]

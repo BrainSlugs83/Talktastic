@@ -99,8 +99,8 @@ say "You can route audio to a specific output device." -v "Microsoft Ryan" -d "S
 # Disable GPU acceleration (CPU-only RVC)
 say --in input.wav --rvc "Homer" --no-gpu -o output.wav
 
-# Show RVC pipeline timing
-say "The perf flag shows RVC pipeline timing." --rvc "Homer" --perf
+# Show pipeline timing (DLL loads, model downloads, synthesis, RVC conversion, playback)
+say "The perf flag shows detailed timing across the whole pipeline." -v "Amy" --perf
 
 # Voice type prefixes narrow the search
 say "Type prefixes let you pick exactly which engine to use." -v "neural:Aria"
@@ -125,9 +125,9 @@ say --remove-rvc "Homer Simpson"
 
 > **Windows N / KN editions:** These editions ship without Media Foundation (until the [Media Feature Pack](https://support.microsoft.com/topic/media-feature-pack-list-for-windows-n-editions-c1c6fffa-d052-8338-7a79-a4bb980a700a) is installed). Talktastic detects this and automatically routes audio playback through the classic `winmm waveOut` API instead of the WinRT media player, so device playback (including `--device` selection) works on N out of the box. Legacy/SAPI synthesis drives the classic SAPI5 `ISpVoice` engine via direct COM, which likewise has no Media Foundation dependency. When Media Foundation is present, the faster WinRT playback path is used.
 
-> **Streaming playback:** When you do not pass `--device`, audio plays on the default output device and **streams as it is synthesized**, so speech starts before synthesis finishes -- neural voices via the Embedded Speech SDK, SAPI voices via `ISpVoice` rendering straight to the device, and Piper voices via a `winmm waveOut` FIFO fed from sherpa-onnx as each chunk is generated. RVC voice conversion (`--rvc`) also streams to the default device, playing each converted segment through the same FIFO as it is produced; note RVC still synthesizes the full source clip first (its pitch and feature extraction span the whole signal), so only the converted output streams, not the source. Selecting a specific `--device`, writing to a file (`--output`), or applying `--pitch` (for SAPI/Piper/neural voices) uses the buffered path instead. No temporary files are written -- all intermediate audio stays in memory.
+> **Streaming playback:** When you do not pass `--device`, audio plays on the default output device and **streams as it is synthesized**, so speech starts before synthesis finishes -- neural voices via the Embedded Speech SDK, SAPI voices via `ISpVoice` rendering straight to the device, and Piper voices via a `winmm waveOut` FIFO fed from sherpa-onnx as each chunk is generated. RVC voice conversion (`--rvc`) also streams to the default device, **producing the converted audio in ~2-second sub-chunks** (configurable via `--rvc-chunk-size` / `--rvc-padding-length`) that the FIFO consumes as they are generated -- so playback starts roughly 6x sooner than synthesizing the whole utterance up front. The RVC source still needs the full input for pitch and feature extraction, but the per-chunk RVC and ContentVec inferences are small enough to stream cleanly even on memory-constrained DirectML GPUs. Selecting a specific `--device`, writing to a file (`--output`), or applying `--pitch` (for SAPI/Piper/neural voices) uses the buffered path instead. No temporary files are written -- all intermediate audio stays in memory.
 
-> **RVC low-frequency "rumble" on constrained GPUs:** On memory-constrained DirectML GPUs (small embedded/integrated parts), long RVC conversions can intermittently produce a degenerate low-frequency drone instead of speech -- a soft inference corruption that leaves no Windows TDR/display-reset event. Talktastic detects this on the produced audio and prints a warning recommending a retry. CPU conversion (`--no-gpu`) is fully reliable; use it if you hit the rumble. Add `--verbose` to see the per-conversion zero-crossing/RMS diagnostics behind the detector.
+> **RVC output validation on constrained GPUs:** On memory-constrained DirectML GPUs (small embedded/integrated parts), one giant whole-utterance RVC inference can intermittently produce corrupt output (a continuous low-frequency drone instead of speech) -- a soft inference failure that leaves no Windows TDR/display-reset event. Talktastic defends against this in three layers: (1) the streaming sub-chunked architecture above keeps each per-chunk inference small enough that the iGPU handles it cleanly; (2) a CPU copy of the RVC generator is preloaded in parallel and any single chunk whose output looks corrupt (low zero-crossing rate relative to real speech) is silently re-run on CPU before reaching the FIFO -- you can watch the `retries=N/M` counter in `--verbose` output; (3) `--no-gpu` forces CPU conversion as a fully reliable fallback. The final stderr warning only fires if even the per-chunk retry could not produce clean audio.
 
 ## CLI Reference
 
@@ -147,6 +147,8 @@ say [<text>] [options]
 | `-i, --in <file>` | Process an existing `.wav`, `.mp3`, or `.ogg` through RVC (no TTS). |
 | `--rvc <model>` | Apply RVC conversion using a local path, cached name, or URL. |
 | `--rvc-pitch <semitones>` | Shift the RVC input pitch before conversion. |
+| `--rvc-chunk-size <seconds>` | RVC streaming chunk size in seconds (default 2.0; min 0.1). |
+| `--rvc-padding-length <seconds>` | RVC streaming per-side context pad in seconds (default 0.3; min 0). |
 | `-r, --rate <rate>` | Speech rate adjustment. |
 | `-p, --pitch <pitch>` | Pitch adjustment (`high`, `low`, `+10%`, `-5st`, etc.). |
 | `-f, --format <format>` | Speech SDK output format (neural voices). |

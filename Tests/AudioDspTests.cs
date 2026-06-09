@@ -410,35 +410,35 @@ public sealed class AudioDspTests
 	}
 
 	[Fact]
-	public void IsDegenerateRumble_LowFrequencyDrone_IsFlagged()
+	public void IsLikelyCorruptOutput_LowFrequencyDrone_IsFlagged()
 	{
-		var rumble = MakeSine(frequency: 300, sampleRate: 48000, seconds: 1.0, amplitude: 0.5f);
+		var drone = MakeSine(frequency: 300, sampleRate: 48000, seconds: 1.0, amplitude: 0.5f);
 
-		Assert.True(AudioDsp.IsDegenerateRumble(rumble, 48000));
+		Assert.True(AudioDsp.IsLikelyCorruptOutput(drone, 48000));
 	}
 
 	[Fact]
-	public void IsDegenerateRumble_SpeechLikeHighFrequency_IsNotFlagged()
+	public void IsLikelyCorruptOutput_SpeechLikeHighFrequency_IsNotFlagged()
 	{
 		var speech = MakeSine(frequency: 2500, sampleRate: 48000, seconds: 1.0, amplitude: 0.5f);
 
-		Assert.False(AudioDsp.IsDegenerateRumble(speech, 48000));
+		Assert.False(AudioDsp.IsLikelyCorruptOutput(speech, 48000));
 	}
 
 	[Fact]
-	public void IsDegenerateRumble_Silence_IsNotFlagged()
+	public void IsLikelyCorruptOutput_Silence_IsNotFlagged()
 	{
 		var silence = new float[48000];
 
-		Assert.False(AudioDsp.IsDegenerateRumble(silence, 48000));
+		Assert.False(AudioDsp.IsLikelyCorruptOutput(silence, 48000));
 	}
 
 	[Fact]
-	public void IsDegenerateRumble_TooShortClip_IsNotFlagged()
+	public void IsLikelyCorruptOutput_TooShortClip_IsNotFlagged()
 	{
-		var shortRumble = MakeSine(frequency: 300, sampleRate: 48000, seconds: 0.2, amplitude: 0.5f);
+		var shortDrone = MakeSine(frequency: 300, sampleRate: 48000, seconds: 0.2, amplitude: 0.5f);
 
-		Assert.False(AudioDsp.IsDegenerateRumble(shortRumble, 48000));
+		Assert.False(AudioDsp.IsLikelyCorruptOutput(shortDrone, 48000));
 	}
 
 	private static float[] MakeSine(double frequency, int sampleRate, double seconds, float amplitude)
@@ -837,6 +837,708 @@ public sealed class AudioDspTests
 		finally
 		{
 			File.Delete(path);
+		}
+	}
+
+	[Fact]
+	public void ParseWavToFloat_NotWave_ThrowsInvalidDataException()
+	{
+		var wavBytes = BuildWavBytes
+		(
+			sampleRate: 16000,
+			channels: 1,
+			bitsPerSample: 16,
+			rawSamples: BuildPcm16Bytes(0)
+		);
+		Encoding.ASCII.GetBytes("NOPE").CopyTo(wavBytes, 8);
+
+		Assert.Throws<InvalidDataException>
+		(
+			() => AudioDsp.ParseWavToFloat(wavBytes)
+		);
+	}
+
+	[Fact]
+	public void ParseWavToFloat_WithFactChunk_ReturnsSamples()
+	{
+		var factBytes = new byte[4];
+		BinaryPrimitives.WriteInt32LittleEndian(factBytes, 2);
+		var wavBytes = BuildWavBytes
+		(
+			sampleRate: 24000,
+			channels: 1,
+			bitsPerSample: 16,
+			rawSamples: BuildPcm16Bytes(-8192, 8192),
+			extraChunks:
+			[
+				("fact", factBytes),
+			]
+		);
+
+		var (samples, sampleRate, channels) = AudioDsp.ParseWavToFloat(wavBytes);
+
+		Assert.Equal(24000, sampleRate);
+		Assert.Equal(1, channels);
+		AssertEqualWithinTolerance([-0.25f, 0.25f], samples);
+	}
+
+	[Fact]
+	public void ParseWavToFloat_ExtensiblePcm16Format_UsesSubFormatTag()
+	{
+		var wavBytes = BuildWavBytes
+		(
+			sampleRate: 48000,
+			channels: 2,
+			bitsPerSample: 16,
+			rawSamples: BuildPcm16Bytes(-32768, 0, 16384, 32767),
+			formatTag: 0xFFFE,
+			extraFormatBytes: BuildExtensibleFormatBytes(1)
+		);
+
+		var (samples, sampleRate, channels) = AudioDsp.ParseWavToFloat(wavBytes);
+
+		Assert.Equal(48000, sampleRate);
+		Assert.Equal(2, channels);
+		AssertEqualWithinTolerance
+		(
+			[-1.0f, 0.0f, 0.5f, 32767.0f / 32768.0f],
+			samples
+		);
+	}
+
+	[Fact]
+	public void ParseWavToFloat_Float32ClampsOutOfRangeSamples()
+	{
+		var wavBytes = BuildWavBytes
+		(
+			sampleRate: 16000,
+			channels: 1,
+			bitsPerSample: 32,
+			rawSamples: BuildFloat32Bytes(-2.0f, -0.5f, 0.5f, 2.0f),
+			formatTag: 3
+		);
+
+		var (samples, _, _) = AudioDsp.ParseWavToFloat(wavBytes);
+
+		AssertEqualWithinTolerance([-1.0f, -0.5f, 0.5f, 1.0f], samples);
+	}
+
+	[Fact]
+	public void ParseWavToFloat_Unsupported8BitPcm_ThrowsNotSupportedException()
+	{
+		var wavBytes = BuildWavBytes
+		(
+			sampleRate: 16000,
+			channels: 1,
+			bitsPerSample: 8,
+			rawSamples: [0x00, 0x80, 0xFF]
+		);
+
+		Assert.Throws<NotSupportedException>
+		(
+			() => AudioDsp.ParseWavToFloat(wavBytes)
+		);
+	}
+
+	[Fact]
+	public void ParseWavToFloat_Unsupported32BitPcm_ThrowsNotSupportedException()
+	{
+		var wavBytes = BuildWavBytes
+		(
+			sampleRate: 16000,
+			channels: 1,
+			bitsPerSample: 32,
+			rawSamples: BuildFloat32Bytes(0.25f),
+			formatTag: 1
+		);
+
+		Assert.Throws<NotSupportedException>
+		(
+			() => AudioDsp.ParseWavToFloat(wavBytes)
+		);
+	}
+
+	[Fact]
+	public void ParseWavToFloat_NegativeChunkSize_ThrowsInvalidDataException()
+	{
+		var wavBytes = BuildWavBytes
+		(
+			sampleRate: 16000,
+			channels: 1,
+			bitsPerSample: 16,
+			rawSamples: BuildPcm16Bytes(0)
+		);
+		BinaryPrimitives.WriteInt32LittleEndian(wavBytes.AsSpan(16, 4), -1);
+
+		Assert.Throws<InvalidDataException>
+		(
+			() => AudioDsp.ParseWavToFloat(wavBytes)
+		);
+	}
+
+	[Fact]
+	public void ParseWavToFloat_ChunkExtendsBeyondEnd_ThrowsInvalidDataException()
+	{
+		var wavBytes = BuildWavBytes
+		(
+			sampleRate: 16000,
+			channels: 1,
+			bitsPerSample: 16,
+			rawSamples: BuildPcm16Bytes(0)
+		);
+		BinaryPrimitives.WriteInt32LittleEndian(wavBytes.AsSpan(16, 4), 1000);
+
+		Assert.Throws<InvalidDataException>
+		(
+			() => AudioDsp.ParseWavToFloat(wavBytes)
+		);
+	}
+
+	[Fact]
+	public void ParseWavToFloat_FmtChunkTooSmall_ThrowsInvalidDataException()
+	{
+		var wavBytes = BuildWavBytes
+		(
+			sampleRate: 16000,
+			channels: 1,
+			bitsPerSample: 16,
+			rawSamples: BuildPcm16Bytes(0)
+		);
+		BinaryPrimitives.WriteInt32LittleEndian(wavBytes.AsSpan(16, 4), 15);
+
+		Assert.Throws<InvalidDataException>
+		(
+			() => AudioDsp.ParseWavToFloat(wavBytes)
+		);
+	}
+
+	[Fact]
+	public void ParseWavToFloat_ExtensibleFmtChunkTooSmall_ThrowsInvalidDataException()
+	{
+		var wavBytes = BuildWavBytes
+		(
+			sampleRate: 16000,
+			channels: 1,
+			bitsPerSample: 16,
+			rawSamples: BuildPcm16Bytes(0),
+			formatTag: 0xFFFE
+		);
+
+		Assert.Throws<InvalidDataException>
+		(
+			() => AudioDsp.ParseWavToFloat(wavBytes)
+		);
+	}
+
+	[Fact]
+	public void ParseWavToFloat_InvalidChannelCount_ThrowsInvalidDataException()
+	{
+		var wavBytes = BuildWavBytes
+		(
+			sampleRate: 16000,
+			channels: 1,
+			bitsPerSample: 16,
+			rawSamples: BuildPcm16Bytes(0)
+		);
+		BinaryPrimitives.WriteUInt16LittleEndian(wavBytes.AsSpan(22, 2), 0);
+
+		Assert.Throws<InvalidDataException>
+		(
+			() => AudioDsp.ParseWavToFloat(wavBytes)
+		);
+	}
+
+	[Fact]
+	public void ParseWavToFloat_InvalidSampleRate_ThrowsInvalidDataException()
+	{
+		var wavBytes = BuildWavBytes
+		(
+			sampleRate: 16000,
+			channels: 1,
+			bitsPerSample: 16,
+			rawSamples: BuildPcm16Bytes(0)
+		);
+		BinaryPrimitives.WriteInt32LittleEndian(wavBytes.AsSpan(24, 4), 0);
+
+		Assert.Throws<InvalidDataException>
+		(
+			() => AudioDsp.ParseWavToFloat(wavBytes)
+		);
+	}
+
+	[Fact]
+	public void ParseWavToFloat_InvalidBlockAlign_ThrowsInvalidDataException()
+	{
+		var wavBytes = BuildWavBytes
+		(
+			sampleRate: 16000,
+			channels: 1,
+			bitsPerSample: 16,
+			rawSamples: BuildPcm16Bytes(0)
+		);
+		BinaryPrimitives.WriteUInt16LittleEndian(wavBytes.AsSpan(32, 2), 0);
+
+		Assert.Throws<InvalidDataException>
+		(
+			() => AudioDsp.ParseWavToFloat(wavBytes)
+		);
+	}
+
+	[Fact]
+	public void ParseWavToFloat_MisalignedPcm16Payload_ThrowsInvalidDataException()
+	{
+		var wavBytes = BuildWavBytes
+		(
+			sampleRate: 16000,
+			channels: 1,
+			bitsPerSample: 16,
+			rawSamples: [0x01]
+		);
+
+		Assert.Throws<InvalidDataException>
+		(
+			() => AudioDsp.ParseWavToFloat(wavBytes)
+		);
+	}
+
+	[Fact]
+	public void ParseWavToFloat_MisalignedFloat32Payload_ThrowsInvalidDataException()
+	{
+		var wavBytes = BuildWavBytes
+		(
+			sampleRate: 16000,
+			channels: 1,
+			bitsPerSample: 32,
+			rawSamples: [0x01, 0x02],
+			formatTag: 3
+		);
+
+		Assert.Throws<InvalidDataException>
+		(
+			() => AudioDsp.ParseWavToFloat(wavBytes)
+		);
+	}
+
+	[Fact]
+	public void ResampleToMono16k_NullInput_ThrowsArgumentNullException()
+	{
+		Assert.Throws<ArgumentNullException>
+		(
+			() => AudioDsp.ResampleToMono16k(null!, 16000, 1)
+		);
+	}
+
+	[Fact]
+	public void ResampleToMono16k_InvalidSampleRate_ThrowsArgumentOutOfRangeException()
+	{
+		Assert.Throws<ArgumentOutOfRangeException>
+		(
+			() => AudioDsp.ResampleToMono16k([1.0f], 0, 1)
+		);
+	}
+
+	[Fact]
+	public void ResampleToMono16k_InvalidChannelCount_ThrowsArgumentOutOfRangeException()
+	{
+		Assert.Throws<ArgumentOutOfRangeException>
+		(
+			() => AudioDsp.ResampleToMono16k([1.0f], 16000, 0)
+		);
+	}
+
+	[Fact]
+	public void ResampleToMono16k_EmptyInput_ReturnsEmptyArray()
+	{
+		var result = AudioDsp.ResampleToMono16k([], 16000, 1);
+
+		Assert.Empty(result);
+	}
+
+	[Fact]
+	public void ResampleToMono16k_UpsamplesMonoWithLinearInterpolation()
+	{
+		var result = AudioDsp.ResampleToMono16k([0.0f, 8.0f], 8000, 1);
+
+		AssertEqualWithinTolerance([0.0f, 4.0f, 8.0f, 8.0f], result);
+	}
+
+	[Fact]
+	public void ResampleToMono16k_SameRateThreeChannel_MixesToMono()
+	{
+		float[] samples =
+		[
+			1.0f, 2.0f, 3.0f,
+			4.0f, 5.0f, 6.0f,
+		];
+
+		var result = AudioDsp.ResampleToMono16k(samples, 16000, 3);
+
+		AssertEqualWithinTolerance([2.0f, 5.0f], result);
+	}
+
+	[Fact]
+	public void ResampleToMono16k_SingleFrameDifferentRate_ReturnsFirstMonoFrame()
+	{
+		var result = AudioDsp.ResampleToMono16k([2.0f, 6.0f], 48000, 2);
+
+		AssertEqualWithinTolerance([4.0f], result);
+	}
+
+	[Fact]
+	public void ButterworthHighPass_NullInput_ThrowsArgumentNullException()
+	{
+		Assert.Throws<ArgumentNullException>
+		(
+			() => AudioDsp.ButterworthHighPass(null!)
+		);
+	}
+
+	[Fact]
+	public void ButterworthHighPass_EmptyInput_ReturnsEmptyArray()
+	{
+		var filtered = AudioDsp.ButterworthHighPass([]);
+
+		Assert.Empty(filtered);
+	}
+
+	[Fact]
+	public void ButterworthHighPass_MinimalValidLength_ReturnsSameLength()
+	{
+		var samples = MakeSine(frequency: 250, sampleRate: 16000, seconds: 19.0 / 16000.0, amplitude: 0.25f);
+
+		var filtered = AudioDsp.ButterworthHighPass(samples);
+
+		Assert.Equal(samples.Length, filtered.Length);
+		AssertAllFinite(filtered);
+	}
+
+	[Fact]
+	public void ButterworthHighPass_LargeAmplitudeSignal_ReturnsFiniteSamples()
+	{
+		var samples = new float[64];
+		for (var index = 0; index < samples.Length; index++)
+		{
+			samples[index] = index % 2 == 0 ? 1000.0f : -1000.0f;
+		}
+
+		var filtered = AudioDsp.ButterworthHighPass(samples);
+
+		Assert.Equal(samples.Length, filtered.Length);
+		AssertAllFinite(filtered);
+	}
+
+	[Fact]
+	public void ReflectPad_NegativePad_ThrowsArgumentOutOfRangeException()
+	{
+		Assert.Throws<ArgumentOutOfRangeException>
+		(
+			() => AudioDsp.ReflectPad([1.0f], -1)
+		);
+	}
+
+	[Fact]
+	public void ReflectPad_EmptySignalWithPositivePad_ThrowsArgumentException()
+	{
+		Assert.Throws<ArgumentException>
+		(
+			() => AudioDsp.ReflectPad([], 1)
+		);
+	}
+
+	[Fact]
+	public void ReflectPad_SingleSampleSignal_RepeatsValue()
+	{
+		var padded = AudioDsp.ReflectPad([4.0f], 3);
+
+		AssertEqualWithinTolerance([4.0f, 4.0f, 4.0f, 4.0f, 4.0f, 4.0f, 4.0f], padded);
+	}
+
+	[Fact]
+	public void ReflectPad_PadLargerThanSignal_WrapsReflection()
+	{
+		var padded = AudioDsp.ReflectPad([1.0f, 2.0f, 3.0f], 5);
+
+		AssertEqualWithinTolerance
+		(
+			[2.0f, 1.0f, 2.0f, 3.0f, 2.0f, 1.0f, 2.0f, 3.0f, 2.0f, 1.0f, 2.0f, 3.0f, 2.0f],
+			padded
+		);
+	}
+
+	[Fact]
+	public void ComputeStft_NullInput_ThrowsArgumentNullException()
+	{
+		Assert.Throws<ArgumentNullException>
+		(
+			() => AudioDsp.ComputeStft(null!, 4, 2, 4, center: false)
+		);
+	}
+
+	[Fact]
+	public void ComputeStft_InvalidArguments_ThrowArgumentOutOfRangeException()
+	{
+		Assert.Throws<ArgumentOutOfRangeException>
+		(
+			() => AudioDsp.ComputeStft([1.0f], 0, 1, 1, center: false)
+		);
+		Assert.Throws<ArgumentOutOfRangeException>
+		(
+			() => AudioDsp.ComputeStft([1.0f], 4, 0, 1, center: false)
+		);
+		Assert.Throws<ArgumentOutOfRangeException>
+		(
+			() => AudioDsp.ComputeStft([1.0f], 4, 1, 0, center: false)
+		);
+	}
+
+	[Fact]
+	public void ComputeStft_WindowLongerThanFft_ThrowsArgumentOutOfRangeException()
+	{
+		Assert.Throws<ArgumentOutOfRangeException>
+		(
+			() => AudioDsp.ComputeStft([1.0f], 4, 1, 5, center: false)
+		);
+	}
+
+	[Fact]
+	public void ComputeStft_CenterTrue_AddsPaddingAndExtraFrames()
+	{
+		var spectrogram = AudioDsp.ComputeStft
+		(
+			audio: [1.0f, 2.0f, 3.0f, 4.0f],
+			nFft: 4,
+			hopLength: 2,
+			winLength: 4,
+			center: true
+		);
+
+		Assert.Equal(3, spectrogram.GetLength(0));
+		Assert.Equal(3, spectrogram.GetLength(1));
+		AssertAllFinite(Enumerate(spectrogram));
+	}
+
+	[Fact]
+	public void ComputeStft_NonPowerOfTwoFft_ReturnsExpectedShape()
+	{
+		var spectrogram = AudioDsp.ComputeStft
+		(
+			audio: [1.0f, 0.5f, -0.5f, -1.0f, 1.0f, 0.5f, -0.5f, -1.0f, 1.0f, 0.5f, -0.5f, -1.0f],
+			nFft: 6,
+			hopLength: 3,
+			winLength: 4,
+			center: false
+		);
+
+		Assert.Equal(4, spectrogram.GetLength(0));
+		Assert.Equal(3, spectrogram.GetLength(1));
+		Assert.Contains(Enumerate(spectrogram), value => value > 0.0f);
+	}
+
+	[Fact]
+	public void ComputeMelFilterbank_FMaxAtOrBelowFMin_ThrowsArgumentOutOfRangeException()
+	{
+		Assert.Throws<ArgumentOutOfRangeException>
+		(
+			() => AudioDsp.ComputeMelFilterbank(16000, 512, 4, 100.0f, 100.0f)
+		);
+	}
+
+	[Fact]
+	public void ComputeMelFilterbank_InvalidArguments_ThrowArgumentOutOfRangeException()
+	{
+		Assert.Throws<ArgumentOutOfRangeException>
+		(
+			() => AudioDsp.ComputeMelFilterbank(0, 512, 4, 30.0f, 4000.0f)
+		);
+		Assert.Throws<ArgumentOutOfRangeException>
+		(
+			() => AudioDsp.ComputeMelFilterbank(16000, 0, 4, 30.0f, 4000.0f)
+		);
+		Assert.Throws<ArgumentOutOfRangeException>
+		(
+			() => AudioDsp.ComputeMelFilterbank(16000, 512, 0, 30.0f, 4000.0f)
+		);
+		Assert.Throws<ArgumentOutOfRangeException>
+		(
+			() => AudioDsp.ComputeMelFilterbank(16000, 512, 4, -1.0f, 4000.0f)
+		);
+		Assert.Throws<ArgumentOutOfRangeException>
+		(
+			() => AudioDsp.ComputeMelFilterbank(16000, 512, 4, 30.0f, 0.0f)
+		);
+	}
+
+	[Fact]
+	public void ComputeMelSpectrogram_NullInput_ThrowsArgumentNullException()
+	{
+		Assert.Throws<ArgumentNullException>
+		(
+			() => AudioDsp.ComputeMelSpectrogram(null!, center: false)
+		);
+	}
+
+	[Fact]
+	public void ComputeMelSpectrogram_CenterTrue_ProducesMoreFramesThanUncentered()
+	{
+		var audio = new float[1024];
+		var centered = AudioDsp.ComputeMelSpectrogram(audio, center: true);
+		var uncentered = AudioDsp.ComputeMelSpectrogram(audio, center: false);
+
+		Assert.Equal(128, centered.GetLength(0));
+		Assert.Equal(128, uncentered.GetLength(0));
+		Assert.True(centered.GetLength(1) > uncentered.GetLength(1));
+	}
+
+	[Fact]
+	public void ComputeMelSpectrogram_NonSilentAudio_ProducesFiniteValuesAboveClamp()
+	{
+		var audio = MakeSine(frequency: 440, sampleRate: 16000, seconds: 0.1, amplitude: 0.5f);
+		var mel = AudioDsp.ComputeMelSpectrogram(audio, center: false);
+		var clampedLog = MathF.Log(1e-5f);
+
+		AssertAllFinite(Enumerate(mel));
+		Assert.Contains(Enumerate(mel), value => value > clampedLog);
+	}
+
+	[Fact]
+	public void ComputeRms_NullInput_ThrowsArgumentNullException()
+	{
+		Assert.Throws<ArgumentNullException>
+		(
+			() => AudioDsp.ComputeRms(null!, 4, 2)
+		);
+	}
+
+	[Fact]
+	public void ComputeRms_InvalidArguments_ThrowArgumentOutOfRangeException()
+	{
+		Assert.Throws<ArgumentOutOfRangeException>
+		(
+			() => AudioDsp.ComputeRms([1.0f], 0, 1)
+		);
+		Assert.Throws<ArgumentOutOfRangeException>
+		(
+			() => AudioDsp.ComputeRms([1.0f], 4, 0)
+		);
+	}
+
+	[Fact]
+	public void ComputeRms_EmptyAudio_ReturnsSingleZeroFrame()
+	{
+		var rms = AudioDsp.ComputeRms([], 4, 2);
+
+		AssertEqualWithinTolerance([0.0f], rms);
+	}
+
+	[Fact]
+	public void ComputeRms_EdgeWindowsUseCenteredPadding()
+	{
+		var rms = AudioDsp.ComputeRms
+		(
+			audio: [1.0f, 2.0f, 3.0f, 4.0f, 5.0f],
+			frameLength: 4,
+			hopLength: 3
+		);
+
+		AssertEqualWithinTolerance
+		(
+			[MathF.Sqrt(5.0f / 4.0f), MathF.Sqrt(54.0f / 4.0f)],
+			rms
+		);
+	}
+
+	[Fact]
+	public void InterpolateLinear_NullInput_ThrowsArgumentNullException()
+	{
+		Assert.Throws<ArgumentNullException>
+		(
+			() => AudioDsp.InterpolateLinear(null!, 1)
+		);
+	}
+
+	[Fact]
+	public void InterpolateLinear_NegativeTargetLength_ThrowsArgumentOutOfRangeException()
+	{
+		Assert.Throws<ArgumentOutOfRangeException>
+		(
+			() => AudioDsp.InterpolateLinear([1.0f], -1)
+		);
+	}
+
+	[Fact]
+	public void InterpolateLinear_EmptySourceOrZeroTarget_ReturnsEmptyArray()
+	{
+		Assert.Empty(AudioDsp.InterpolateLinear([], 4));
+		Assert.Empty(AudioDsp.InterpolateLinear([1.0f, 2.0f], 0));
+	}
+
+	[Fact]
+	public void InterpolateLinear_ShorterTarget_InterpolatesAcrossSourceRange()
+	{
+		var interpolated = AudioDsp.InterpolateLinear([0.0f, 10.0f, 20.0f, 30.0f], 2);
+
+		AssertEqualWithinTolerance([0.0f, 15.0f], interpolated);
+	}
+
+	[Fact]
+	public void InterpolateLinear_LongerTarget_UsesFractionalSourcePositions()
+	{
+		var interpolated = AudioDsp.InterpolateLinear([0.0f, 10.0f], 5);
+
+		AssertEqualWithinTolerance([0.0f, 2.0f, 4.0f, 6.0f, 8.0f], interpolated);
+	}
+
+	[Fact]
+	public void EncodeWav_NullSamples_ThrowsArgumentNullException()
+	{
+		Assert.Throws<ArgumentNullException>
+		(
+			() => AudioDsp.EncodeWav(null!, 16000)
+		);
+	}
+
+	[Fact]
+	public void EncodeWav_InvalidSampleRate_ThrowsArgumentOutOfRangeException()
+	{
+		Assert.Throws<ArgumentOutOfRangeException>
+		(
+			() => AudioDsp.EncodeWav([], 0)
+		);
+	}
+
+	[Fact]
+	public void EncodeWav_EmptySamples_ProducesHeaderOnlyWave()
+	{
+		var wavBytes = AudioDsp.EncodeWav([], 16000);
+		var (samples, sampleRate, channels) = AudioDsp.ParseWavToFloat(wavBytes);
+
+		Assert.Equal(44, wavBytes.Length);
+		Assert.Empty(samples);
+		Assert.Equal(16000, sampleRate);
+		Assert.Equal(1, channels);
+	}
+
+	[Fact]
+	public void EncodeWav_MultipleSampleRates_RoundTripSampleRate()
+	{
+		int[] sampleRates = [8000, 16000, 48000];
+
+		foreach (var sampleRate in sampleRates)
+		{
+			var wavBytes = AudioDsp.EncodeWav([0.25f, -0.25f], sampleRate);
+			var (_, parsedSampleRate, channels) = AudioDsp.ParseWavToFloat(wavBytes);
+
+			Assert.Equal(sampleRate, parsedSampleRate);
+			Assert.Equal(sampleRate, AudioDsp.ReadWavSampleRate(wavBytes));
+			Assert.Equal(1, channels);
+		}
+	}
+
+	private static void AssertAllFinite(IEnumerable<float> values)
+	{
+		foreach (var value in values)
+		{
+			Assert.True(float.IsFinite(value), $"Expected finite value, actual {value}.");
 		}
 	}
 }

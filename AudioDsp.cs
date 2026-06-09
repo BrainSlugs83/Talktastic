@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Numerics;
 
 #pragma warning disable CA1814
 
@@ -326,9 +327,27 @@ internal static class AudioDsp
 		}
 
 		var sum = 0.0;
-		foreach (var s in samples)
+		var i = 0;
+
+		// SIMD path: sum of squares accumulates in a Vector<float> (one lane per CPU vector
+		// element). For typical normalized speech (|x| <= 1) the per-frame sum stays well
+		// inside float32 precision; reduced to double at the end for the final mean+sqrt.
+		if (Vector.IsHardwareAccelerated && samples.Length >= Vector<float>.Count)
 		{
-			sum += (double)s * s;
+			var vSum = Vector<float>.Zero;
+			var width = Vector<float>.Count;
+			for (; i <= samples.Length - width; i += width)
+			{
+				var v = new Vector<float>(samples.Slice(i, width));
+				vSum += v * v;
+			}
+
+			sum = Vector.Sum(vSum);
+		}
+
+		for (; i < samples.Length; i++)
+		{
+			sum += (double)samples[i] * samples[i];
 		}
 
 		return Math.Sqrt(sum / samples.Length);
@@ -362,31 +381,30 @@ internal static class AudioDsp
 
 	// Real RVC speech (David/homer) runs a zero-crossing rate of roughly 2000-3500/s thanks to
 	// fricatives and sibilants; corrupt DirectML output collapses into a ~300 Hz drone (~600/s).
-	private const double RumbleMaxZeroCrossingRate = 900.0;
-	private const double RumbleMinRms = 0.02;
-	private const double RumbleMinSeconds = 0.5;
+	// Thresholds live in Settings.OutputValidation.
 
 	/// <summary>
-	/// Detects the degenerate low-frequency "rumble" that intermittent DirectML inference failures
-	/// produce on memory-constrained GPUs: audible energy with a zero-crossing rate far below real
-	/// speech. Silence and short clips are never flagged.
+	/// Detects corrupt RVC output: audible energy paired with a zero-crossing rate far below
+	/// real speech (typical signature of a continuous low-frequency drone produced by an
+	/// intermittent DirectML inference failure on memory-constrained GPUs). Silence and short
+	/// clips are never flagged.
 	/// </summary>
 	/// <param name="samples">The produced audio samples.</param>
 	/// <param name="sampleRate">The sample rate in Hz.</param>
-	/// <returns><c>true</c> if the audio looks like corrupt rumble; otherwise <c>false</c>.</returns>
-	internal static bool IsDegenerateRumble(ReadOnlySpan<float> samples, int sampleRate)
+	/// <returns><c>true</c> if the audio looks corrupt; otherwise <c>false</c>.</returns>
+	internal static bool IsLikelyCorruptOutput(ReadOnlySpan<float> samples, int sampleRate)
 	{
-		if (sampleRate <= 0 || samples.Length < sampleRate * RumbleMinSeconds)
+		if (sampleRate <= 0 || samples.Length < sampleRate * Settings.OutputValidation.MinSeconds)
 		{
 			return false;
 		}
 
-		if (Rms(samples) < RumbleMinRms)
+		if (Rms(samples) < Settings.OutputValidation.MinRms)
 		{
 			return false;
 		}
 
-		return ZeroCrossingRate(samples, sampleRate) < RumbleMaxZeroCrossingRate;
+		return ZeroCrossingRate(samples, sampleRate) < Settings.OutputValidation.MaxZeroCrossingRate;
 	}
 
 	/// <summary>
@@ -707,7 +725,23 @@ internal static class AudioDsp
 		{
 			var start = frame * hopLength;
 			double sumSquares = 0;
-			for (var index = 0; index < frameLength; index++)
+			var index = 0;
+
+			// SIMD inner sum-of-squares.
+			if (Vector.IsHardwareAccelerated && frameLength >= Vector<float>.Count)
+			{
+				var vSum = Vector<float>.Zero;
+				var width = Vector<float>.Count;
+				for (; index <= frameLength - width; index += width)
+				{
+					var v = new Vector<float>(padded.AsSpan(start + index, width));
+					vSum += v * v;
+				}
+
+				sumSquares = Vector.Sum(vSum);
+			}
+
+			for (; index < frameLength; index++)
 			{
 				var sample = padded[start + index];
 				sumSquares += sample * sample;

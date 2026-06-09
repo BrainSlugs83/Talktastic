@@ -195,6 +195,7 @@ internal static class AudioOutput
 		var tcs = new TaskCompletionSource();
 		player.MediaEnded += (_, _) => tcs.TrySetResult();
 		player.MediaFailed += (_, e) => tcs.TrySetException(new InvalidOperationException(e.ErrorMessage));
+		Diagnostics.MarkFirstAudio("winrt-media");
 		player.Play();
 		await tcs.Task.ConfigureAwait(false);
 	}
@@ -487,6 +488,7 @@ internal static partial class WaveOut
 			Marshal.WriteInt32(header, WaveHdrBufferLengthOffset, dataLength);
 
 			Check(waveOutPrepareHeader(hwo, header, WaveHdrSize), nameof(waveOutPrepareHeader));
+			Diagnostics.MarkFirstAudio("waveout-buffered");
 			Check(waveOutWrite(hwo, header, WaveHdrSize), nameof(waveOutWrite));
 
 			while ((Marshal.ReadInt32(header, WaveHdrFlagsOffset) & WhdrDone) == 0)
@@ -648,39 +650,32 @@ internal static partial class WaveOut
 	/// <summary>
 	/// Streams 16-bit PCM to an output device as audio is produced. A single producer pushes float
 	/// samples via <see cref="Write"/> into a bounded FIFO; a dedicated reader thread drains the
-	/// FIFO, converts to PCM, and feeds the device in ~<see cref="ChunkSeconds"/> buffers, keeping
+	/// FIFO, converts to PCM, and feeds the device in ~<see cref="Settings.Stream.ChunkSeconds"/>
+	/// buffers, keeping
 	/// the device fed ahead of the drain. <see cref="Dispose"/> completes the FIFO, waits for
 	/// playback to finish, and closes the device.
 	/// </summary>
 	[ExcludeFromCodeCoverage]
 	internal sealed class StreamingPlayer : IDisposable
 	{
-		// Cap of queued-but-unfinished waveOut buffers, bounding driver-side latency.
-		private const int MaxInFlight = 16;
-
-		// Number of float buffers the producer may queue ahead of the reader before it blocks.
-		private const int FifoCapacity = 8;
-
-		// Target size of each waveOut buffer, in seconds of audio. Oversized single buffers can be
-		// garbled or played at the wrong rate by some drivers, so the reader splits its output into
-		// frame-aligned buffers of about this duration.
-		private const double ChunkSeconds = 2.0;
-
 		private readonly nint _hwo;
 		private readonly int _chunkBytes;
-		private readonly BlockingCollection<float[]> _fifo = new(FifoCapacity);
+		private readonly BlockingCollection<float[]> _fifo = new(Settings.Stream.FifoCapacity);
 		private readonly Queue<(nint Header, nint Data)> _inFlight = new();
 		private readonly Thread _reader;
 		private Exception? _readerError;
 		private bool _disposed;
 
-		private static readonly System.Diagnostics.Stopwatch _sw = System.Diagnostics.Stopwatch.StartNew();
 		private static void D(string m)
 		{
-			if (Diagnostics.Verbose)
-			{
-				Console.Error.WriteLine(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"[strm {_sw.ElapsedMilliseconds,7}ms] {m}"));
-			}
+			Diagnostics.Log
+			(
+				string.Create
+				(
+					System.Globalization.CultureInfo.InvariantCulture,
+					$"[strm] {m}"
+				)
+			);
 		}
 
 		/// <summary>
@@ -692,9 +687,9 @@ internal static partial class WaveOut
 			var deviceId = ResolveDeviceId(deviceQuery);
 			var blockAlign = (ushort)(channels * (bitsPerSample / 8));
 
-			// Frame-aligned chunk of roughly ChunkSeconds of audio (blockAlign divides byteRate).
+			// Frame-aligned chunk of roughly Settings.Stream.ChunkSeconds (blockAlign divides byteRate).
 			var byteRate = sampleRate * blockAlign;
-			_chunkBytes = Math.Max(blockAlign, (int)(byteRate * ChunkSeconds));
+			_chunkBytes = Math.Max(blockAlign, (int)(byteRate * Settings.Stream.ChunkSeconds));
 
 			var format = new WaveFormatEx
 			{
@@ -787,7 +782,7 @@ internal static partial class WaveOut
 		{
 			ReclaimCompleted();
 
-			while (_inFlight.Count >= MaxInFlight)
+			while (_inFlight.Count >= Settings.Stream.MaxInFlight)
 			{
 				WaitForOldest();
 			}
@@ -800,6 +795,7 @@ internal static partial class WaveOut
 			Marshal.WriteInt32(header, WaveHdrBufferLengthOffset, count);
 
 			Check(waveOutPrepareHeader(_hwo, header, WaveHdrSize), nameof(waveOutPrepareHeader));
+			Diagnostics.MarkFirstAudio("stream");
 			Check(waveOutWrite(_hwo, header, WaveHdrSize), nameof(waveOutWrite));
 			_inFlight.Enqueue((header, data));
 		}
@@ -1015,6 +1011,7 @@ internal static partial class LameEncoder
 	/// <param name="sampleRate">The sample rate.</param>
 	/// <param name="channels">The channel count.</param>
 	/// <returns>The resulting bytes.</returns>
+	[ExcludeFromCodeCoverage]
 	public static byte[] EncodePcmToMp3(byte[] pcmData, int sampleRate, int channels)
 	{
 		NativeExtractor.EnsureAvailable(DllGroup.Lame);

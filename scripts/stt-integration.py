@@ -40,9 +40,12 @@ TMP = tempfile.mkdtemp(prefix="say-stt-")
 DEV = os.environ.get("STT_DEVICE", "Speakers (High")
 
 SHORT = "The quick brown fox jumps over the lazy dog"
+MEDIUM = ("The quick brown fox jumps over the lazy dog. "
+          "She sells sea shells by the sea shore.")
 LONG = ("The quick brown fox jumps over the lazy dog. She sells sea shells by the sea shore. "
         "Peter Piper picked a peck of pickled peppers. "
         "How much wood would a wood chuck chuck if a wood chuck could chuck wood.")
+TINY = "Hello there friend."
 
 THRESH = 0.6
 
@@ -75,7 +78,7 @@ def transcribe(source):
     return " ".join(s.text for s in segs).strip()
 
 
-def run_capture(args, timeout=240):
+def run_capture(args, timeout=240, capture_stderr=False):
     frames = []
     stop = threading.Event()
 
@@ -92,6 +95,8 @@ def run_capture(args, timeout=240):
     stop.set()
     t.join()
     a = np.concatenate(frames).flatten().astype(np.float32)
+    if capture_stderr:
+        return transcribe(a), p.returncode, p.stderr
     return transcribe(a), p.returncode
 
 
@@ -106,7 +111,11 @@ CASES = [
     ("piper-device-buf", [SHORT, "-v", "amy", "-d", DEV],                                 SHORT, "dev",  None),
     ("piper-file",       [SHORT, "-v", "amy", "-o", os.path.join(TMP, "v_piper.wav")],    SHORT, "file", os.path.join(TMP, "v_piper.wav")),
     ("rvc-stream-short", [SHORT, "-v", "David", "--rvc", "homer"],                        SHORT, "dev",  None),
+    ("rvc-tiny",         [TINY,  "-v", "David", "--rvc", "homer"],                        TINY,  "dev",  None),
+    ("rvc-medium",       [MEDIUM,"-v", "David", "--rvc", "homer"],                        MEDIUM,"dev",  None),
     ("rvc-stream-long",  [LONG,  "-v", "David", "--rvc", "homer"],                        LONG,  "dev",  None),
+    ("rvc-stream-long-cpu",  [LONG, "-v", "David", "--rvc", "homer", "--no-gpu"],         LONG,  "dev",  None),
+    ("rvc-cli-flags",    [LONG,  "-v", "David", "--rvc", "homer", "--rvc-chunk-size", "1.0", "--rvc-padding-length", "0.2"], LONG, "dev", None),
     ("rvc-device-buf",   [SHORT, "-v", "David", "--rvc", "homer", "-d", DEV],             SHORT, "dev",  None),
     ("rvc-file",         [SHORT, "-v", "David", "--rvc", "homer", "-o", os.path.join(TMP, "v_rvc.wav")], SHORT, "file", os.path.join(TMP, "v_rvc.wav")),
 ]
@@ -136,7 +145,40 @@ print("\n\n================ SUMMARY ================")
 for name, ok, r, tx in results:
     print(f"  [{'PASS' if ok else 'FAIL'}] {name:18s} recall={r:.2f}")
 fails = [n for n, ok, r, tx in results if not ok]
-print(f"\n{len(results) - len(fails)}/{len(results)} passed")
+
+# Extra: verify the corrupt-output detector + ZCR speech-range + auto-retry-on-CPU instrumentation
+# on a long GPU run. The retry path SHOULD be present and warm even if it never fires.
+print("\n=== rvc-stream-long-verbose (stderr inspection) ===", flush=True)
+try:
+    tx, rc, err = run_capture([LONG, "-v", "David", "--rvc", "homer", "--verbose"], capture_stderr=True)
+    # The final "warning: RVC output looks corrupt" line is what we DON'T want; the per-chunk
+    # "GPU output looks corrupt; retrying on CPU" lines and the "retries=N/M" token are
+    # diagnostics that should always be present (N=0 is the healthy case).
+    final_corrupt_warned = "looks corrupt even after cpu retry" in err.lower()
+    zcr_match = re.search(r"\[rvc\] output:.*zcr=(\d+(?:\.\d+)?)/s", err)
+    zcr = float(zcr_match.group(1)) if zcr_match else None
+    retries_match = re.search(r"retries=(\d+)/(\d+)", err)
+    retries = (int(retries_match.group(1)), int(retries_match.group(2))) if retries_match else None
+    r = recall(LONG, tx)
+    speech_zcr = zcr is not None and zcr >= 1500.0
+    retries_instrumented = retries is not None and retries[1] > 0
+    ok = (
+        rc == 0
+        and not final_corrupt_warned
+        and speech_zcr
+        and retries_instrumented
+        and r >= THRESH
+    )
+    print(f"rc={rc} recall={r:.2f} zcr={zcr} retries={retries} final_warned={final_corrupt_warned} -> {'PASS' if ok else 'FAIL'}")
+    if not ok:
+        fails.append("rvc-stream-long-verbose")
+        print(f"  expected: zcr>=1500, retries instrumented (N/M with M>0), no final corrupt-output warning")
+        print(f"  stderr:\n{err}")
+except Exception as e:
+    print(f"  ERROR: {e}")
+    fails.append("rvc-stream-long-verbose")
+
+print(f"\n{len(results) + 1 - len(fails)}/{len(results) + 1} passed")
 if fails:
     print("FAILURES:", ", ".join(fails))
 sys.exit(1 if fails else 0)

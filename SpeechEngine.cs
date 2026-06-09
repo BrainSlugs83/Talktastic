@@ -76,6 +76,11 @@ internal static partial class SpeechEngine
 		var (rvcModelPath, rvcDisplayName) = rvc;
 		var sourceVoiceName = voice.VoiceType == VoiceType.Piper ? voice.LocalName : voice.Name;
 
+		// Start loading RVC sessions in the background NOW, before any TTS work runs. By the
+		// time the source voice (SAPI / Neural / Piper) finishes synthesizing wav bytes, the
+		// ~1.8s RVC model load has already happened in parallel.
+		RvcEngine.Prewarm(rvcModelPath);
+
 		byte[] wavBytes;
 		if (voice.VoiceType == VoiceType.Piper)
 		{
@@ -96,7 +101,7 @@ internal static partial class SpeechEngine
 		}
 
 		// Step 2: Apply RVC voice conversion
-		var accel = RvcEngine.DisableGpu ? "CPU" : "DirectML";
+		var accel = Settings.Cli.NoGpu ? "CPU" : "DirectML";
 		await Console.Error.WriteLineAsync
 		(
 			$"Applying RVC voice conversion with {accel} ({rvcDisplayName})..."
@@ -499,6 +504,7 @@ internal static partial class SpeechEngine
 		using var audioConfig = AudioConfig.FromDefaultSpeakerOutput();
 		using var synthesizer = new SpeechSynthesizer(config, audioConfig);
 
+		Diagnostics.MarkFirstAudio("neural-default");
 		var result = await SpeakAsync(synthesizer, request, voice).ConfigureAwait(false);
 		EnsureSuccess(result);
 		return $"Spoke {result.AudioData.Length} bytes with {voice.Name}.";

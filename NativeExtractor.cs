@@ -67,9 +67,6 @@ internal static class NativeExtractor
 	private static NativePayloadManifestEntry[]? _cachedManifest;
 	private static bool _staleCleaned;
 
-	/// <summary>When true, emits per-DLL extraction timing to stderr.</summary>
-	internal static bool ShowPerf { get; set; }
-
 	/// <summary>
 	/// Ensures that all native DLLs in the requested groups are available and loadable.
 	/// Only resolves DLLs for the specified groups; others are ignored entirely.
@@ -82,7 +79,7 @@ internal static class NativeExtractor
 			return;
 		}
 
-		var sw = ShowPerf ? System.Diagnostics.Stopwatch.StartNew() : null;
+		var sw = Settings.Cli.ShowPerf ? System.Diagnostics.Stopwatch.StartNew() : null;
 
 		lock (SyncRoot)
 		{
@@ -118,7 +115,7 @@ internal static class NativeExtractor
 
 				var resolved = new ConcurrentBag<ResolvedDll>();
 				var cwd = Path.GetFullPath(Directory.GetCurrentDirectory());
-				var perDll = ShowPerf
+				var perDll = Settings.Cli.ShowPerf
 					? new System.Collections.Concurrent.ConcurrentDictionary<string, long>()
 					: null;
 
@@ -127,7 +124,7 @@ internal static class NativeExtractor
 					entries,
 					entry =>
 					{
-						var dllSw = ShowPerf
+						var dllSw = Settings.Cli.ShowPerf
 							? System.Diagnostics.Stopwatch.StartNew()
 							: null;
 						var result = FindOrExtract(assembly, entry, cwd);
@@ -153,15 +150,22 @@ internal static class NativeExtractor
 				{
 					foreach (var kvp in perDll.OrderByDescending(x => x.Value))
 					{
-						Console.Error.WriteLine
+						Diagnostics.LogPerf
 						(
-							$"[dll] {kvp.Key}: {kvp.Value}ms"
+							string.Create
+							(
+								System.Globalization.CultureInfo.InvariantCulture,
+								$"[dll] {kvp.Key}: {kvp.Value}ms"
+							)
 						);
 					}
-					Console.Error.WriteLine
+					Diagnostics.LogPerf
 					(
-						$"[dll] total: {sw.ElapsedMilliseconds}ms "
-						+ $"({entries.Length} DLLs)"
+						string.Create
+						(
+							System.Globalization.CultureInfo.InvariantCulture,
+							$"[dll] total: {sw.ElapsedMilliseconds}ms ({entries.Length} DLLs)"
+						)
 					);
 				}
 			}

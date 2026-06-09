@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Globalization;
 using System.IO.Compression;
+using System.Numerics;
 using System.Text;
 
 namespace Talktastic.Tests;
@@ -1244,6 +1245,1194 @@ public sealed class PthLoaderTests
 		Assert.Throws<InvalidDataException>(() => PthLoader.Load(stream));
 	}
 
+	[Fact]
+	public void Load_EmptyTupleConfigValue_ConvertsToEmptyList()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer =>
+			{
+				writer.WriteEmptyList();
+				writer.WriteEmptyTuple();
+				writer.WriteAppend();
+				writer.WriteInt32(48000);
+				writer.WriteAppend();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		var value = Assert.IsType<List<object>>(model.Config[0]);
+		Assert.Empty(value);
+		Assert.Equal(48000, model.TargetSampleRate);
+	}
+
+	[Fact]
+	public void Load_BooleanConfigValues_ConvertsToBooleans()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer =>
+			{
+				writer.WriteEmptyList();
+				writer.WriteBool(true);
+				writer.WriteAppend();
+				writer.WriteBool(false);
+				writer.WriteAppend();
+				writer.WriteInt32(48000);
+				writer.WriteAppend();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.True(Assert.IsType<bool>(model.Config[0]));
+		Assert.False(Assert.IsType<bool>(model.Config[1]));
+	}
+
+	[Fact]
+	public void Load_NullConfigValue_ThrowsInvalidDataException()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer =>
+			{
+				writer.WriteEmptyList();
+				writer.WriteNone();
+				writer.WriteAppend();
+				writer.WriteInt32(48000);
+				writer.WriteAppend();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var exception = Assert.Throws<InvalidDataException>
+		(
+			() => PthLoader.Load(stream)
+		);
+
+		Assert.Equal("Config values cannot be null.", exception.Message);
+	}
+
+	[Fact]
+	public void Load_LegacyStringOpcodesInMetadata_ConvertToStrings()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer => WriteDefaultConfig(writer),
+			writeVersion: static writer => writer.WriteShortBinString("legacy-v1"),
+			writeSampleRate: static writer => writer.WriteBinString("40k"),
+			writeInfo: static writer => writer.WriteBinString("legacy-info")
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal("legacy-v1", model.Version);
+		Assert.Equal("40k", model.SampleRateLabel);
+		Assert.Equal("legacy-info", model.Info);
+	}
+
+	[Fact]
+	public void Load_BytesAndUnicode8ConfigValues_ParseCorrectly()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer =>
+			{
+				writer.WriteEmptyList();
+				writer.WriteBinUnicode8("wide-string");
+				writer.WriteAppend();
+				writer.WriteBinBytes([0x10, 0x20]);
+				writer.WriteAppend();
+				writer.WriteBinBytes8([0xCA, 0xFE]);
+				writer.WriteAppend();
+				writer.WriteInt32(48000);
+				writer.WriteAppend();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal("wide-string", model.Config[0]);
+		Assert.Equal([0x10, 0x20], Assert.IsType<byte[]>(model.Config[1]));
+		Assert.Equal([0xCA, 0xFE], Assert.IsType<byte[]>(model.Config[2]));
+	}
+
+	[Fact]
+	public void Load_Long1ConfigValueInsideInt64Range_ConvertsToInt64()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer =>
+			{
+				writer.WriteEmptyList();
+				writer.WriteLong1((long)int.MaxValue + 1L);
+				writer.WriteAppend();
+				writer.WriteInt32(48000);
+				writer.WriteAppend();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal((long)int.MaxValue + 1L, Assert.IsType<long>(model.Config[0]));
+	}
+
+	[Fact]
+	public void Load_Long1ConfigValueOutsideInt64Range_PreservesBigInteger()
+	{
+		var value = BigInteger.One << 80;
+		var archive = BuildModelArchive
+		(
+			writer =>
+			{
+				writer.WriteEmptyList();
+				writer.WriteLong1(value);
+				writer.WriteAppend();
+				writer.WriteInt32(48000);
+				writer.WriteAppend();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal(value, Assert.IsType<BigInteger>(model.Config[0]));
+	}
+
+	[Fact]
+	public void Load_Long1F0OutsideInt32Range_ThrowsInvalidDataException()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer => WriteDefaultConfig(writer),
+			writeF0: static writer => writer.WriteLong1((long)int.MaxValue + 1L)
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var exception = Assert.Throws<InvalidDataException>
+		(
+			() => PthLoader.Load(stream)
+		);
+
+		Assert.Equal("Expected 'f0' to be a 32-bit integer.", exception.Message);
+	}
+
+	[Theory]
+	[InlineData(true, 1)]
+	[InlineData(false, 0)]
+	public void Load_BooleanF0_ConvertsToIntFlag(bool value, int expected)
+	{
+		var archive = BuildModelArchive
+		(
+			static writer => WriteDefaultConfig(writer),
+			writeF0: writer => writer.WriteBool(value)
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal(expected, model.F0);
+	}
+
+	[Fact]
+	public void Load_StopWithEmptyStack_ThrowsInvalidDataException()
+	{
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteStop();
+		var archive = BuildArchive(writer.ToArray(), []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var exception = Assert.Throws<InvalidDataException>
+		(
+			() => PthLoader.Load(stream)
+		);
+
+		Assert.Equal("Pickle STOP encountered with an empty stack.", exception.Message);
+	}
+
+	[Fact]
+	public void Load_StopWithNullStack_ThrowsInvalidDataException()
+	{
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteNone();
+		writer.WriteStop();
+		var archive = BuildArchive(writer.ToArray(), []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var exception = Assert.Throws<InvalidDataException>
+		(
+			() => PthLoader.Load(stream)
+		);
+
+		Assert.Equal("Pickle STOP encountered with null on stack.", exception.Message);
+	}
+
+	[Fact]
+	public void Load_TruncatedProtocolOpcode_ThrowsEndOfStreamException()
+	{
+		var writer = new PickleWriter();
+		writer.WriteRawByte(0x80);
+		var archive = BuildArchive(writer.ToArray(), []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		Assert.Throws<EndOfStreamException>
+		(
+			() => PthLoader.Load(stream)
+		);
+	}
+
+	[Fact]
+	public void Load_NegativeBinBytesLength_ThrowsInvalidDataException()
+	{
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteRawByte(0x42);
+		writer.WriteRawInt32(-1);
+		writer.WriteStop();
+		var archive = BuildArchive(writer.ToArray(), []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var exception = Assert.Throws<InvalidDataException>
+		(
+			() => PthLoader.Load(stream)
+		);
+
+		Assert.Equal("Pickle length cannot be negative.", exception.Message);
+	}
+
+	[Fact]
+	public void Load_BinUnicode8TooLarge_ThrowsInvalidDataException()
+	{
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteRawByte(0x8D);
+		writer.WriteRawUInt64((ulong)int.MaxValue + 1UL);
+		writer.WriteStop();
+		var archive = BuildArchive(writer.ToArray(), []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var exception = Assert.Throws<InvalidDataException>
+		(
+			() => PthLoader.Load(stream)
+		);
+
+		Assert.Equal("Pickle object is too large.", exception.Message);
+	}
+
+	[Fact]
+	public void Load_MissingMemoSlot_ThrowsInvalidDataException()
+	{
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteBinGet(7);
+		writer.WriteStop();
+		var archive = BuildArchive(writer.ToArray(), []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var exception = Assert.Throws<InvalidDataException>
+		(
+			() => PthLoader.Load(stream)
+		);
+
+		Assert.Equal("Pickle memo slot 7 was not initialized.", exception.Message);
+	}
+
+	[Fact]
+	public void Load_TupleWithoutMark_ThrowsInvalidDataException()
+	{
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteTuple();
+		writer.WriteStop();
+		var archive = BuildArchive(writer.ToArray(), []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var exception = Assert.Throws<InvalidDataException>
+		(
+			() => PthLoader.Load(stream)
+		);
+
+		Assert.Equal("Pickle MARK not found.", exception.Message);
+	}
+
+	[Theory]
+	[InlineData(0x61, "APPEND target is not a list.")]
+	[InlineData(0x65, "APPENDS target is not a list.")]
+	[InlineData(0x73, "SETITEM target is not a dictionary.")]
+	[InlineData(0x75, "SETITEMS key is not a string.")]
+	public void Load_InvalidStackMutationTarget_ThrowsInvalidDataException(int opcode, string expectedMessage)
+	{
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		WriteInvalidStackMutation(writer, opcode);
+		writer.WriteStop();
+		var archive = BuildArchive(writer.ToArray(), []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var exception = Assert.Throws<InvalidDataException>
+		(
+			() => PthLoader.Load(stream)
+		);
+
+		Assert.Equal(expectedMessage, exception.Message);
+	}
+
+	[Fact]
+	public void Load_SetItemsOddItemCount_ThrowsInvalidDataException()
+	{
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteEmptyDictionary();
+		writer.WriteMark();
+		writer.WriteString("key");
+		writer.WriteSetItems();
+		writer.WriteStop();
+		var archive = BuildArchive(writer.ToArray(), []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var exception = Assert.Throws<InvalidDataException>
+		(
+			() => PthLoader.Load(stream)
+		);
+
+		Assert.Equal("SETITEMS received an odd number of stack items.", exception.Message);
+	}
+
+	[Fact]
+	public void Load_ReduceTorchDeviceWithArgument_ReturnsDeviceString()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer =>
+			{
+				writer.WriteEmptyList();
+				writer.WriteGlobalReference("torch", "device");
+				writer.WriteString("cuda:0");
+				writer.WriteTuple1();
+				writer.WriteReduce();
+				writer.WriteAppend();
+				writer.WriteInt32(48000);
+				writer.WriteAppend();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal("cuda:0", model.Config[0]);
+	}
+
+	[Fact]
+	public void Load_ReduceTorchDeviceWithListArgs_ReturnsDefaultCpu()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer =>
+			{
+				writer.WriteEmptyList();
+				writer.WriteGlobalReference("torch", "device");
+				writer.WriteEmptyList();
+				writer.WriteReduce();
+				writer.WriteAppend();
+				writer.WriteInt32(48000);
+				writer.WriteAppend();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal("cpu", model.Config[0]);
+	}
+
+	[Fact]
+	public void Load_OrderedDictReduceRoot_ParsesModel()
+	{
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteGlobalReference("collections", "OrderedDict");
+		writer.WriteEmptyTuple();
+		writer.WriteReduce();
+		WriteMinimalModelEntries(writer);
+		writer.WriteStop();
+		var archive = BuildArchive(writer.ToArray(), []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal(48000, model.TargetSampleRate);
+		Assert.Empty(model.Weights);
+	}
+
+	[Theory]
+	[InlineData(0x4E)]
+	[InlineData(0x7D)]
+	[InlineData(0x29)]
+	[InlineData(0x43)]
+	public void Load_BuildWithEmptyState_ReturnsInstance(int stateOpcode)
+	{
+		var archive = BuildModelArchive
+		(
+			writer =>
+			{
+				writer.WriteEmptyList();
+				writer.WriteString("ready");
+				WriteBuildState(writer, stateOpcode);
+				writer.WriteBuild();
+				writer.WriteAppend();
+				writer.WriteInt32(48000);
+				writer.WriteAppend();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal("ready", model.Config[0]);
+	}
+
+	[Fact]
+	public void Load_BuildWithUnsupportedState_ThrowsNotSupportedException()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer =>
+			{
+				writer.WriteEmptyList();
+				writer.WriteString("ready");
+				writer.WriteString("state");
+				writer.WriteBuild();
+				writer.WriteAppend();
+				writer.WriteInt32(48000);
+				writer.WriteAppend();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		Assert.Throws<NotSupportedException>
+		(
+			() => PthLoader.Load(stream)
+		);
+	}
+
+	[Fact]
+	public void Load_ReduceWithNonGlobalCallable_ThrowsInvalidDataException()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer =>
+			{
+				writer.WriteEmptyList();
+				writer.WriteString("not-global");
+				writer.WriteEmptyTuple();
+				writer.WriteReduce();
+				writer.WriteAppend();
+				writer.WriteInt32(48000);
+				writer.WriteAppend();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var exception = Assert.Throws<InvalidDataException>
+		(
+			() => PthLoader.Load(stream)
+		);
+
+		Assert.Equal("REDUCE callable is not a global reference.", exception.Message);
+	}
+
+	[Fact]
+	public void Load_UnsupportedReduceTarget_TreatsAsOpaquePlaceholder()
+	{
+		// REDUCE targets we don't know about (e.g. trainer-specific dataclasses or enums
+		// like `ultimate_rvc.typing_extra.TrainingSampleRate`) are now tolerated as opaque
+		// placeholders so the model weights can still load. Here we put the placeholder
+		// exactly where ultimate_rvc does -- as the value of the `sr` key in the root dict.
+		// The resolver should fall back to deriving the label from config[-1].
+		var archive = BuildModelArchive
+		(
+			static writer => WriteDefaultConfig(writer),
+			writeSampleRate: static writer =>
+			{
+				writer.WriteGlobalReference("math", "sqrt");
+				writer.WriteEmptyTuple();
+				writer.WriteReduce();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		// Load should not throw; the unknown REDUCE collapses into a typed placeholder, and
+		// SampleRateLabel falls back to the value derived from config[-1] (48000 -> "48k").
+		var model = PthLoader.Load(stream);
+		Assert.NotNull(model);
+		Assert.Equal("48k", model.SampleRateLabel);
+	}
+
+	[Theory]
+	[InlineData("_rebuild_parameter")]
+	[InlineData("_rebuild_parameter_with_state")]
+	public void Load_RebuildParameterWeight_UnwrapsTensorManifest(string rebuildName)
+	{
+		var archive = BuildModelArchive
+		(
+			static writer => WriteDefaultConfig(writer),
+			writeWeight: writer =>
+			{
+				writer.WriteEmptyDictionary();
+				writer.WriteString("wrapped.weight");
+				writer.WriteGlobalReference("torch._utils", rebuildName);
+				writer.WriteMark();
+				writer.WriteTensorManifest("HalfStorage", "0", 0, [2], [1], 2);
+				if (string.Equals(rebuildName, "_rebuild_parameter_with_state", StringComparison.Ordinal))
+				{
+					writer.WriteEmptyDictionary();
+				}
+
+				writer.WriteTuple();
+				writer.WriteReduce();
+				writer.WriteSetItem();
+			},
+			storages: [("0", Float16Bytes(1f, 2f))]
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		var tensor = Assert.Single(model.Weights).Value;
+		Assert.Equal([2], tensor.Shape);
+		Assert.Equal(Float16Bytes(1f, 2f), tensor.Data);
+	}
+
+	[Fact]
+	public void Load_ZeroElementTensor_LoadsEmptyData()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer => WriteDefaultConfig(writer),
+			writeWeight: static writer => WriteSingleTensorWeight(writer, "empty.weight", "HalfStorage", "0", 0, [0], [1], 0),
+			storages: [("0", [])]
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		var tensor = Assert.Single(model.Weights).Value;
+		Assert.Equal([0], tensor.Shape);
+		Assert.Empty(tensor.Data);
+		Assert.Equal(0, tensor.ElementCount);
+	}
+
+	[Fact]
+	public void Load_NonContiguousTensor_ReordersData()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer => WriteDefaultConfig(writer),
+			writeWeight: static writer => WriteSingleTensorWeight(writer, "noncontiguous.weight", "HalfStorage", "0", 0, [2, 2], [1, 2], 4),
+			storages: [("0", Float16Bytes(1f, 2f, 3f, 4f))]
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		var tensor = Assert.Single(model.Weights).Value;
+		Assert.Equal(Float16Bytes(1f, 3f, 2f, 4f), tensor.Data);
+	}
+
+	[Fact]
+	public void Load_ContiguousTensorPastStorage_ThrowsInvalidDataException()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer => WriteDefaultConfig(writer),
+			writeWeight: static writer => WriteSingleTensorWeight(writer, "short.weight", "HalfStorage", "0", 1, [2], [1], 3),
+			storages: [("0", Float16Bytes(1f, 2f))]
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var exception = Assert.Throws<InvalidDataException>
+		(
+			() => PthLoader.Load(stream)
+		);
+
+		Assert.Equal("Tensor 'short.weight' extends past the backing storage.", exception.Message);
+	}
+
+	[Fact]
+	public void Load_NonContiguousTensorPastStorage_ThrowsInvalidDataException()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer => WriteDefaultConfig(writer),
+			writeWeight: static writer => WriteSingleTensorWeight(writer, "strided.weight", "HalfStorage", "0", 0, [2, 2], [1, 3], 4),
+			storages: [("0", Float16Bytes(1f, 2f, 3f, 4f))]
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var exception = Assert.Throws<InvalidDataException>
+		(
+			() => PthLoader.Load(stream)
+		);
+
+		Assert.Equal("Tensor 'strided.weight' references data past the end of storage '0'.", exception.Message);
+	}
+
+	[Fact]
+	public void Load_MissingStorageEntry_ThrowsInvalidDataException()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer => WriteDefaultConfig(writer),
+			writeWeight: static writer => WriteSingleTensorWeight(writer, "missing.weight", "HalfStorage", "0", 0, [1], [1], 1)
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var exception = Assert.Throws<InvalidDataException>
+		(
+			() => PthLoader.Load(stream)
+		);
+
+		Assert.Equal("Checkpoint archive is missing 'archive/data/0'.", exception.Message);
+	}
+
+	[Fact]
+	public void Load_UnsupportedStorageType_ThrowsNotSupportedException()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer => WriteDefaultConfig(writer),
+			writeWeight: static writer => WriteSingleTensorWeight(writer, "bad.weight", "ComplexFloatStorage", "0", 0, [1], [1], 1)
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var exception = Assert.Throws<NotSupportedException>
+		(
+			() => PthLoader.Load(stream)
+		);
+
+		Assert.Equal("Unsupported storage type 'torch.ComplexFloatStorage'.", exception.Message);
+	}
+
+	[Theory]
+	[InlineData("DoubleStorage", "float64", 8)]
+	[InlineData("BFloat16Storage", "bfloat16", 2)]
+	[InlineData("LongStorage", "int64", 8)]
+	[InlineData("IntStorage", "int32", 4)]
+	[InlineData("ShortStorage", "int16", 2)]
+	[InlineData("ByteStorage", "uint8", 1)]
+	[InlineData("CharStorage", "int8", 1)]
+	[InlineData("BoolStorage", "bool", 1)]
+	public void Load_SupportedStorageType_MapsDTypeAndElementSize(string storageType, string expectedDType, int elementSize)
+	{
+		var storage = Enumerable.Range(1, elementSize).Select(static value => (byte)value).ToArray();
+		var archive = BuildModelArchive
+		(
+			static writer => WriteDefaultConfig(writer),
+			writeWeight: writer => WriteSingleTensorWeight(writer, "typed.weight", storageType, "0", 0, [1], [1], 1),
+			storages: [("0", storage)]
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		var tensor = Assert.Single(model.Weights).Value;
+		Assert.Equal(expectedDType, tensor.DType);
+		Assert.Equal(elementSize, tensor.Data.Length);
+		Assert.Equal(storage, tensor.Data);
+	}
+
+	[Fact]
+	public void Load_WeightValueNotTensor_ThrowsInvalidDataException()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer => WriteDefaultConfig(writer),
+			writeWeight: static writer =>
+			{
+				writer.WriteEmptyDictionary();
+				writer.WriteString("bad.weight");
+				writer.WriteInt32(1);
+				writer.WriteSetItem();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var exception = Assert.Throws<InvalidDataException>
+		(
+			() => PthLoader.Load(stream)
+		);
+
+		Assert.Equal("Weight 'bad.weight' is not a tensor.", exception.Message);
+	}
+
+	[Fact]
+	public void Load_RootNotDictionary_ThrowsInvalidDataException()
+	{
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteInt32(48000);
+		writer.WriteStop();
+		var archive = BuildArchive(writer.ToArray(), []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var exception = Assert.Throws<InvalidDataException>
+		(
+			() => PthLoader.Load(stream)
+		);
+
+		Assert.Equal("Expected checkpoint root to be a dictionary.", exception.Message);
+	}
+
+	[Fact]
+	public void Load_WeightNotDictionary_ThrowsInvalidDataException()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer => WriteDefaultConfig(writer),
+			writeWeight: static writer => writer.WriteEmptyList()
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var exception = Assert.Throws<InvalidDataException>
+		(
+			() => PthLoader.Load(stream)
+		);
+
+		Assert.Equal("Expected weight to be a dictionary.", exception.Message);
+	}
+
+	[Fact]
+	public void Load_OptionalMetadataMissing_UsesFallbacks()
+	{
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteEmptyDictionary();
+		writer.WriteString("config");
+		WriteDefaultConfig(writer);
+		writer.WriteSetItem();
+		writer.WriteString("weight");
+		writer.WriteEmptyDictionary();
+		writer.WriteSetItem();
+		writer.WriteStop();
+		var archive = BuildArchive(writer.ToArray(), []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal("v2", model.Version);
+		// `sr` key is missing, but config[-1]=48000 is a plausible sample rate -- the
+		// resolver derives "48k" rather than falling back to "unknown".
+		Assert.Equal("48k", model.SampleRateLabel);
+		Assert.Equal(1, model.F0);
+		Assert.Equal(string.Empty, model.Info);
+	}
+
+	[Theory]
+	[InlineData(0)]
+	[InlineData(1)]
+	[InlineData(2)]
+	[InlineData(3)]
+	public void Load_MalformedPersistentId_ThrowsExpectedException(int scenario)
+	{
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		WriteMalformedPersistentId(writer, scenario);
+		writer.WriteBinPersId();
+		writer.WriteStop();
+		var archive = BuildArchive(writer.ToArray(), []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		if (scenario == 1)
+		{
+			Assert.Throws<NotSupportedException>
+			(
+				() => PthLoader.Load(stream)
+			);
+		}
+		else
+		{
+			Assert.Throws<InvalidDataException>
+			(
+				() => PthLoader.Load(stream)
+			);
+		}
+	}
+
+	[Fact]
+	public void Load_TensorRebuildTupleMalformed_ThrowsInvalidDataException()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer => WriteDefaultConfig(writer),
+			writeWeight: static writer =>
+			{
+				writer.WriteEmptyDictionary();
+				writer.WriteString("bad.weight");
+				writer.WriteGlobalReference("torch._utils", "_rebuild_tensor_v2");
+				writer.WriteEmptyTuple();
+				writer.WriteReduce();
+				writer.WriteSetItem();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var exception = Assert.Throws<InvalidDataException>
+		(
+			() => PthLoader.Load(stream)
+		);
+
+		Assert.Equal("Tensor rebuild tuple is malformed.", exception.Message);
+	}
+
+	[Fact]
+	public void Load_TensorShapeAndStrideRankMismatch_ThrowsInvalidDataException()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer => WriteDefaultConfig(writer),
+			writeWeight: static writer => WriteSingleTensorWeight(writer, "bad.weight", "HalfStorage", "0", 0, [2], [1, 1], 2)
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var exception = Assert.Throws<InvalidDataException>
+		(
+			() => PthLoader.Load(stream)
+		);
+
+		Assert.Equal("Tensor shape and stride rank do not match.", exception.Message);
+	}
+
+	[Fact]
+	public void Load_TensorShapeContainsNull_ThrowsInvalidDataException()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer => WriteDefaultConfig(writer),
+			writeWeight: static writer =>
+			{
+				writer.WriteEmptyDictionary();
+				writer.WriteString("bad.weight");
+				writer.WriteGlobalReference("torch._utils", "_rebuild_tensor_v2");
+				writer.WriteMark();
+				writer.WritePersistentStorageReference("HalfStorage", "0", 1);
+				writer.WriteInt32(0);
+				writer.WriteMark();
+				writer.WriteNone();
+				writer.WriteTuple();
+				writer.WriteTuple([1]);
+				writer.WriteTuple();
+				writer.WriteReduce();
+				writer.WriteSetItem();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var exception = Assert.Throws<InvalidDataException>
+		(
+			() => PthLoader.Load(stream)
+		);
+
+		Assert.Equal("Tensor shape contains null.", exception.Message);
+	}
+
+	[Theory]
+	[InlineData(0x8F)]
+	[InlineData(0x91)]
+	[InlineData(0x6F)]
+	[InlineData(0x81)]
+	[InlineData(0x69)]
+	public void Load_UnsupportedCollectionAndObjectOpcode_ThrowsNotSupportedException(int opcode)
+	{
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteRawByte((byte)opcode);
+		writer.WriteStop();
+		var archive = BuildArchive(writer.ToArray(), []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		Assert.Throws<NotSupportedException>
+		(
+			() => PthLoader.Load(stream)
+		);
+	}
+
+	private static byte[] BuildModelArchive
+	(
+		Action<PickleWriter> writeConfig,
+		Action<PickleWriter>? writeWeight = null,
+		Action<PickleWriter>? writeVersion = null,
+		Action<PickleWriter>? writeSampleRate = null,
+		Action<PickleWriter>? writeF0 = null,
+		Action<PickleWriter>? writeInfo = null,
+		IEnumerable<(string StorageKey, byte[] Data)>? storages = null
+	)
+	{
+		ArgumentNullException.ThrowIfNull(writeConfig);
+
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteEmptyDictionary();
+
+		writer.WriteString("config");
+		writeConfig(writer);
+		writer.WriteSetItem();
+
+		writer.WriteString("weight");
+		if (writeWeight is null)
+		{
+			writer.WriteEmptyDictionary();
+		}
+		else
+		{
+			writeWeight(writer);
+		}
+
+		writer.WriteSetItem();
+
+		writer.WriteString("version");
+		if (writeVersion is null)
+		{
+			writer.WriteString("v2");
+		}
+		else
+		{
+			writeVersion(writer);
+		}
+
+		writer.WriteSetItem();
+
+		writer.WriteString("sr");
+		if (writeSampleRate is null)
+		{
+			writer.WriteString("48k");
+		}
+		else
+		{
+			writeSampleRate(writer);
+		}
+
+		writer.WriteSetItem();
+
+		writer.WriteString("f0");
+		if (writeF0 is null)
+		{
+			writer.WriteInt32(1);
+		}
+		else
+		{
+			writeF0(writer);
+		}
+
+		writer.WriteSetItem();
+
+		writer.WriteString("info");
+		if (writeInfo is null)
+		{
+			writer.WriteString("test");
+		}
+		else
+		{
+			writeInfo(writer);
+		}
+
+		writer.WriteSetItem();
+		writer.WriteStop();
+
+		return BuildArchive(writer.ToArray(), storages ?? Array.Empty<(string StorageKey, byte[] Data)>());
+	}
+
+	private static void WriteDefaultConfig(PickleWriter writer)
+	{
+		writer.WriteEmptyList();
+		writer.WriteInt32(48000);
+		writer.WriteAppend();
+	}
+
+	private static void WriteMinimalModelEntries(PickleWriter writer)
+	{
+		writer.WriteString("config");
+		WriteDefaultConfig(writer);
+		writer.WriteSetItem();
+		writer.WriteString("weight");
+		writer.WriteEmptyDictionary();
+		writer.WriteSetItem();
+		writer.WriteString("version");
+		writer.WriteString("v2");
+		writer.WriteSetItem();
+		writer.WriteString("sr");
+		writer.WriteString("48k");
+		writer.WriteSetItem();
+		writer.WriteString("f0");
+		writer.WriteInt32(1);
+		writer.WriteSetItem();
+		writer.WriteString("info");
+		writer.WriteString("test");
+		writer.WriteSetItem();
+	}
+
+	private static void WriteSingleTensorWeight
+	(
+		PickleWriter writer,
+		string weightName,
+		string storageTypeName,
+		string storageKey,
+		int storageOffset,
+		int[] shape,
+		int[] stride,
+		int storageElementCount
+	)
+	{
+		writer.WriteEmptyDictionary();
+		writer.WriteString(weightName);
+		writer.WriteTensorManifest(storageTypeName, storageKey, storageOffset, shape, stride, storageElementCount);
+		writer.WriteSetItem();
+	}
+
+	private static void WriteInvalidStackMutation(PickleWriter writer, int opcode)
+	{
+		switch (opcode)
+		{
+			case 0x61:
+				writer.WriteEmptyDictionary();
+				writer.WriteInt32(1);
+				writer.WriteAppend();
+				break;
+
+			case 0x65:
+				writer.WriteEmptyDictionary();
+				writer.WriteMark();
+				writer.WriteInt32(1);
+				writer.WriteAppends();
+				break;
+
+			case 0x73:
+				writer.WriteEmptyList();
+				writer.WriteString("key");
+				writer.WriteString("value");
+				writer.WriteSetItem();
+				break;
+
+			case 0x75:
+				writer.WriteEmptyDictionary();
+				writer.WriteMark();
+				writer.WriteInt32(1);
+				writer.WriteString("value");
+				writer.WriteSetItems();
+				break;
+
+			default:
+				throw new ArgumentOutOfRangeException(nameof(opcode), opcode, "Unexpected opcode.");
+		}
+	}
+
+	private static void WriteBuildState(PickleWriter writer, int stateOpcode)
+	{
+		switch (stateOpcode)
+		{
+			case 0x4E:
+				writer.WriteNone();
+				break;
+
+			case 0x7D:
+				writer.WriteEmptyDictionary();
+				break;
+
+			case 0x29:
+				writer.WriteEmptyTuple();
+				break;
+
+			case 0x43:
+				writer.WriteShortBinBytes([]);
+				break;
+
+			default:
+				throw new ArgumentOutOfRangeException(nameof(stateOpcode), stateOpcode, "Unexpected opcode.");
+		}
+	}
+
+	private static void WriteMalformedPersistentId(PickleWriter writer, int scenario)
+	{
+		if (scenario == 0)
+		{
+			writer.WriteEmptyTuple();
+			return;
+		}
+
+		writer.WriteMark();
+		writer.WriteString(scenario == 1 ? "view" : "storage");
+		if (scenario == 2)
+		{
+			writer.WriteString("not-a-global");
+		}
+		else
+		{
+			writer.WriteGlobalReference("torch", "HalfStorage");
+		}
+
+		if (scenario == 3)
+		{
+			writer.WriteNone();
+		}
+		else
+		{
+			writer.WriteString("0");
+		}
+
+		writer.WriteString("cpu");
+		writer.WriteInt32(1);
+		writer.WriteTuple();
+	}
+
 	private static byte[] BuildPthZip
 	(
 		List<object> config,
@@ -1493,6 +2682,11 @@ public sealed class PthLoaderTests
 			_buffer.Add(0x74);
 		}
 
+		public void WriteEmptyTuple()
+		{
+			_buffer.Add(0x29);
+		}
+
 		public void WriteSetItem()
 		{
 			_buffer.Add(0x73);
@@ -1518,9 +2712,24 @@ public sealed class PthLoaderTests
 			_buffer.Add(0x52);
 		}
 
+		public void WriteBuild()
+		{
+			_buffer.Add(0x62);
+		}
+
 		public void WriteStop()
 		{
 			_buffer.Add(0x2E);
+		}
+
+		public void WriteNone()
+		{
+			_buffer.Add(0x4E);
+		}
+
+		public void WriteBool(bool value)
+		{
+			_buffer.Add(value ? (byte)0x88 : (byte)0x89);
 		}
 
 		public void WriteString(string value)
@@ -1559,11 +2768,11 @@ public sealed class PthLoaderTests
 					return;
 
 				case bool boolValue:
-					_buffer.Add(boolValue ? (byte)0x88 : (byte)0x89);
+					WriteBool(boolValue);
 					return;
 
 				case byte[] bytes:
-					WriteBytes(bytes);
+					WriteBinBytes(bytes);
 					return;
 
 				case List<object> list:
@@ -1611,14 +2820,14 @@ public sealed class PthLoaderTests
 			}
 		}
 
-		private void WriteBytes(byte[] value)
+		public void WriteBinBytes(byte[] value)
 		{
 			_buffer.Add(0x42);
 			_buffer.AddRange(BitConverter.GetBytes(value.Length));
 			_buffer.AddRange(value);
 		}
 
-		private void WriteGlobalReference(string module, string name)
+		public void WriteGlobalReference(string module, string name)
 		{
 			WriteString(module);
 			WriteString(name);
@@ -1627,26 +2836,47 @@ public sealed class PthLoaderTests
 
 		private void WriteTensor(TensorEntry entry)
 		{
-			WriteGlobalReference("torch._utils", "_rebuild_tensor_v2");
-			WriteMark();
-			WritePersistentStorageReference(entry);
-			WriteInt32(0);
-			WriteTuple(entry.Shape.Select(static value => (object)value));
-			WriteTuple(ComputeContiguousStride(entry.Shape).Select(static value => (object)value));
-			WriteTuple();
-			WriteReduce();
+			WriteTensorManifest
+			(
+				GetStorageTypeName(entry.DType),
+				entry.StorageKey,
+				0,
+				entry.Shape,
+				ComputeContiguousStride(entry.Shape),
+				ComputeElementCount(entry.Shape)
+			);
 		}
 
-		private void WritePersistentStorageReference(TensorEntry entry)
+		public void WritePersistentStorageReference(string storageTypeName, string storageKey, int storageElementCount)
 		{
 			WriteMark();
 			WriteString("storage");
-			WriteGlobalReference("torch", GetStorageTypeName(entry.DType));
-			WriteString(entry.StorageKey);
+			WriteGlobalReference("torch", storageTypeName);
+			WriteString(storageKey);
 			WriteString("cpu");
-			WriteInt32(ComputeElementCount(entry.Shape));
+			WriteInt32(storageElementCount);
 			WriteTuple();
 			WriteBinPersId();
+		}
+
+		public void WriteTensorManifest
+		(
+			string storageTypeName,
+			string storageKey,
+			int storageOffset,
+			int[] shape,
+			int[] stride,
+			int storageElementCount
+		)
+		{
+			WriteGlobalReference("torch._utils", "_rebuild_tensor_v2");
+			WriteMark();
+			WritePersistentStorageReference(storageTypeName, storageKey, storageElementCount);
+			WriteInt32(storageOffset);
+			WriteTuple(shape.Select(static value => (object)value));
+			WriteTuple(stride.Select(static value => (object)value));
+			WriteTuple();
+			WriteReduce();
 		}
 
 		public void WriteFrame(ulong size)
@@ -1689,6 +2919,30 @@ public sealed class PthLoaderTests
 			_buffer.AddRange(bytes);
 		}
 
+		public void WriteLong1(BigInteger value)
+		{
+			_buffer.Add(0x8A);
+			var bytes = value.ToByteArray();
+			_buffer.Add((byte)bytes.Length);
+			_buffer.AddRange(bytes);
+		}
+
+		public void WriteShortBinString(string value)
+		{
+			var bytes = Encoding.UTF8.GetBytes(value);
+			_buffer.Add(0x55);
+			_buffer.Add((byte)bytes.Length);
+			_buffer.AddRange(bytes);
+		}
+
+		public void WriteBinString(string value)
+		{
+			var bytes = Encoding.UTF8.GetBytes(value);
+			_buffer.Add(0x54);
+			_buffer.AddRange(BitConverter.GetBytes(bytes.Length));
+			_buffer.AddRange(bytes);
+		}
+
 		public void WriteBinUnicode(string value)
 		{
 			var bytes = Encoding.UTF8.GetBytes(value);
@@ -1697,10 +2951,25 @@ public sealed class PthLoaderTests
 			_buffer.AddRange(bytes);
 		}
 
+		public void WriteBinUnicode8(string value)
+		{
+			var bytes = Encoding.UTF8.GetBytes(value);
+			_buffer.Add(0x8D);
+			_buffer.AddRange(BitConverter.GetBytes((ulong)bytes.Length));
+			_buffer.AddRange(bytes);
+		}
+
 		public void WriteShortBinBytes(byte[] data)
 		{
 			_buffer.Add(0x43);
 			_buffer.Add((byte)data.Length);
+			_buffer.AddRange(data);
+		}
+
+		public void WriteBinBytes8(byte[] data)
+		{
+			_buffer.Add(0x8E);
+			_buffer.AddRange(BitConverter.GetBytes((ulong)data.Length));
 			_buffer.AddRange(data);
 		}
 
@@ -1765,6 +3034,16 @@ public sealed class PthLoaderTests
 		public void WriteRawByte(byte value)
 		{
 			_buffer.Add(value);
+		}
+
+		public void WriteRawInt32(int value)
+		{
+			_buffer.AddRange(BitConverter.GetBytes(value));
+		}
+
+		public void WriteRawUInt64(ulong value)
+		{
+			_buffer.AddRange(BitConverter.GetBytes(value));
 		}
 
 		private static byte[] GetSignedLittleEndianBytes(long value)

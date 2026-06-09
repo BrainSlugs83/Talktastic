@@ -1,5 +1,7 @@
+using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Numerics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
@@ -24,16 +26,8 @@ static partial class RvcEngine
 	private const string ContentVecUrl = "https://huggingface.co/NaruseMioShirakana/MoeSS-SUBModel/resolve/main/vec-768-layer-12.onnx";
 	private const string RmvpeUrl = "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.onnx";
 
-	private const int InputSampleRate = 16000;
-	private const int Window = 160;
-	private const int XPadSeconds = 3;
-	private const int XQuerySeconds = 10;
-	private const int XCenterSeconds = 50;
-	private const int XMaxSeconds = 50;
-	private const float RmsMixRate = 0.25f;
 	private const float Protect = 0.33f;
 	private const float DefaultIndexRate = 0.75f;
-	private const int SpeakerId = 0;
 	private const int NoiseChannels = 192;
 	private const float RmvpeThreshold = 0.03f;
 	private const int DefaultTargetSampleRate = 40000;
@@ -242,7 +236,7 @@ static partial class RvcEngine
 
 				var (modelPath, extractedName) = await ModelDownloader.DownloadAndExtractZipAsync
 				(
-					Http, resolved.FileUrl, voicesDir, ct
+					Http, resolved.FileUrl, voicesDir, preferredName: resolved.ModelName, ct
 				).ConfigureAwait(false);
 
 				downloadPath = modelPath;
@@ -591,7 +585,7 @@ static partial class RvcEngine
 		var mono16k = AudioDsp.ResampleToMono16k(samples, sampleRate, channels);
 		var normalized = NormalizePeak(mono16k, 0.95f);
 		var filtered = AudioDsp.ButterworthHighPass(normalized);
-		var analysisPad = AudioDsp.ReflectPad(filtered, Window / 2);
+		var analysisPad = AudioDsp.ReflectPad(filtered, Settings.Rvc.Window / 2);
 		var (optTs, inferenceAudio) = FindOptimalTimestamps(filtered, analysisPad);
 		var tPrep = sw.ElapsedMilliseconds;
 
@@ -601,46 +595,95 @@ static partial class RvcEngine
 
 		NativeExtractor.EnsureAvailable(DllGroup.OnnxRuntime);
 
-		// Load all 3 ORT sessions in parallel -- they're independent
+		// Load all 3 ORT sessions in parallel -- they're independent. Sessions come from
+		// the process-wide prewarm cache (populated by `RvcEngine.Prewarm`), so when
+		// SpeechEngine has called it ahead of TTS, these awaits are essentially free.
 		InferenceSession? vecSession = null;
 		InferenceSession? rmvpeSession = null;
 		InferenceSession? rvcSession = null;
+		InferenceSession? cpuRvcSession = null;
 		int targetSampleRate = 0;
 
-		// RMVPE on CPU (DML is 22x slower), ContentVec + RVC on GPU
-		var vecTask = Task.Run(() => vecSession = CreateSession(vecPath, useGpu: true), ct);
-		var rmvpeTask = Task.Run(() => rmvpeSession = CreateSession(rmvpePath, useGpu: false), ct);
-		var rvcTask = Task.Run
+		// Per-task stopwatches measure how long the inference path WAITED for each session
+		// (which is roughly zero when the prewarm fired early enough). Cache-hit logs are
+		// emitted by CreatePthSession etc. inside the task body on the first miss.
+		long tVecLoad = 0, tRmvpeLoad = 0, tRvcLoad = 0, tCpuRvcLoad = 0, tFaissLoad = 0;
+		var vecTask = Task.Run
 		(
-			() =>
+			async () =>
 			{
-				if (IsPthFile(rvcModelPath))
-				{
-					(rvcSession, targetSampleRate) = CreatePthSession(rvcModelPath);
-				}
-				else if (IsCachedOnnxFile(rvcModelPath))
-				{
-					rvcSession = CreateSession(rvcModelPath);
-					targetSampleRate = ReadCachedMetaSampleRate(rvcModelPath);
-				}
-				else
-				{
-					rvcSession = CreateSession(rvcModelPath);
-					targetSampleRate = GetTargetSampleRate(rvcSession);
-				}
+				var s = System.Diagnostics.Stopwatch.StartNew();
+				vecSession = await GetOrLoadInfraSessionTask(vecPath, useGpu: true).ConfigureAwait(false);
+				tVecLoad = s.ElapsedMilliseconds;
 			},
 			ct
 		);
+		var rmvpeTask = Task.Run
+		(
+			async () =>
+			{
+				var s = System.Diagnostics.Stopwatch.StartNew();
+				rmvpeSession = await GetOrLoadInfraSessionTask(rmvpePath, useGpu: false).ConfigureAwait(false);
+				tRmvpeLoad = s.ElapsedMilliseconds;
+			},
+			ct
+		);
+		var rvcTask = Task.Run
+		(
+			async () =>
+			{
+				var s = System.Diagnostics.Stopwatch.StartNew();
+				(rvcSession, targetSampleRate) = await GetOrLoadRvcSessionTask(rvcModelPath, useGpu: true).ConfigureAwait(false);
+				tRvcLoad = s.ElapsedMilliseconds;
+			},
+			ct
+		);
+
+		// Belt-and-suspenders: when running on GPU, ALSO preload a CPU copy of the RVC generator
+		// in parallel so we can re-run any single chunk that comes out as corrupt on a
+		// memory-constrained GPU. The CPU session is unused on healthy GPU runs; cost is one model
+		// load alongside everything else (no end-to-end latency) plus modest extra RAM.
+		var cpuRvcTask = !Settings.Cli.NoGpu
+			? Task.Run
+			(
+				async () =>
+				{
+					var s = System.Diagnostics.Stopwatch.StartNew();
+					(cpuRvcSession, _) = await GetOrLoadRvcSessionTask(rvcModelPath, useGpu: false).ConfigureAwait(false);
+					tCpuRvcLoad = s.ElapsedMilliseconds;
+				},
+				ct
+			)
+			: Task.CompletedTask;
 
 		// Also start FAISS loading in parallel
 		FaissIndex.Index? faissIndex = null;
 		var indexPath = FindCompanionIndex(rvcModelPath);
 		var faissTask = indexPath is not null
-			? Task.Run(() => faissIndex = FaissIndex.Load(indexPath), ct)
+			? Task.Run
+			(
+				async () =>
+				{
+					var s = System.Diagnostics.Stopwatch.StartNew();
+					faissIndex = await GetOrLoadFaissIndexTask(indexPath).ConfigureAwait(false);
+					tFaissLoad = s.ElapsedMilliseconds;
+				},
+				ct
+			)
 			: Task.CompletedTask;
 
-		await Task.WhenAll(vecTask, rmvpeTask, rvcTask, faissTask).ConfigureAwait(false);
+		await Task.WhenAll(vecTask, rmvpeTask, rvcTask, cpuRvcTask, faissTask).ConfigureAwait(false);
 		var tLoad = sw.ElapsedMilliseconds;
+
+		Diagnostics.LogPerf
+		(
+			string.Create
+			(
+				CultureInfo.InvariantCulture,
+				$"[rvc-load] total={tLoad - tPrep}ms rvc={tRvcLoad}ms vec={tVecLoad}ms "
+				+ $"rmvpe={tRmvpeLoad}ms cpu-rvc={tCpuRvcLoad}ms faiss={tFaissLoad}ms"
+			)
+		);
 
 		try
 		{
@@ -654,66 +697,128 @@ static partial class RvcEngine
 			}
 			var segmentSlices = ComputeSegmentSlices(inferenceAudio, optTs, ct);
 			var f0Sw = System.Diagnostics.Stopwatch.StartNew();
-			var f0Task = Task.Run
+			var (pitchf, pitch) = await Task.Run
 			(
 				() =>
 				{
 					var result = ExtractF0(rmvpeSession!, inferenceAudio, pitchShiftSemitones, ct);
-					if (ShowPerf) Console.Error.WriteLine($"[vec/f0] f0 done in {f0Sw.ElapsedMilliseconds}ms");
+					Diagnostics.LogPerf
+					(
+						string.Create
+						(
+							CultureInfo.InvariantCulture,
+							$"[vec/f0] f0 done in {f0Sw.ElapsedMilliseconds}ms"
+						)
+					);
 					return result;
 				},
 				ct
-			);
+			).ConfigureAwait(false);
 
-			var featureTasks = segmentSlices
-				.Select
-				(
-					slice => Task.Run
-					(
-						() =>
-						{
-							var result = ExtractSegmentFeatures(vecSession!, slice.Audio, faissIndex);
-							if (ShowPerf) Console.Error.WriteLine($"[vec/f0] vec done in {f0Sw.ElapsedMilliseconds}ms");
-							return result;
-						},
-						ct
-					)
-				)
-				.ToArray();
-
-			var allFeaturesTask = Task.WhenAll(featureTasks);
-			await Task.WhenAll(f0Task, allFeaturesTask).ConfigureAwait(false);
 			var tFeatures = sw.ElapsedMilliseconds;
 
-			var (pitchf, pitch) = await f0Task.ConfigureAwait(false);
-			var segmentFeatures = await allFeaturesTask.ConfigureAwait(false);
-			var convertedSegments = new List<float[]>(segmentSlices.Length);
+			var convertedSegments = new List<float[]>(segmentSlices.Length * 4);
 			onStart?.Invoke(targetSampleRate);
 			long tFirstSegment = -1;
-			for (var i = 0; i < segmentSlices.Length; i++)
+
+			var chunkSec = Settings.Cli.EffectiveRvcChunkSeconds;
+			var padSec = Settings.Cli.EffectiveRvcPadSeconds;
+			var inputSr = Settings.Rvc.InputSampleRate;
+			var window = Settings.Rvc.Window;
+			var segReflectPadSamples = Settings.Rvc.PadSeconds * inputSr;
+			var subPadSamples = (int)Math.Round(padSec * inputSr);
+			var subPadTrimSamples = (int)Math.Round(padSec * targetSampleRate);
+
+			var totalSubChunkCount = 0;
+			var validationRetryCount = 0;
+			var gpuRvcFailed = false;
+			for (var li = 0; li < segmentSlices.Length; li++)
 			{
 				ct.ThrowIfCancellationRequested();
+				var lSlice = segmentSlices[li];
+				var (pStart, pEnd) = ClampPitchRange(lSlice, pitch, pitchf);
 
-				var slice = segmentSlices[i];
-				var (pitchStart, pitchEnd) = ClampPitchRange(slice, pitch, pitchf);
-				var segment = RunRvcInference
-				(
-					rvcSession!,
-					segmentFeatures[i],
-					pitch[pitchStart..pitchEnd],
-					pitchf[pitchStart..pitchEnd],
-					slice.Audio,
-					targetSampleRate,
-					ct
-				);
+				// Compute the "content" region within the segment's audio, excluding the segment-level
+				// reflect-pad (Settings.Rvc.PadSeconds at each side). The very first / last logical
+				// segment is bounded by the original input's reflect-pad in inferenceAudio; mid-input
+				// segments have neighbor audio on the other side. We always model the content region as
+				// the inner [segReflectPadSamples, length - segReflectPadSamples] so sub-chunk slicing
+				// is uniform.
+				var contentStart = Math.Min(segReflectPadSamples, lSlice.Audio.Length);
+				var contentEnd = Math.Max(contentStart, lSlice.Audio.Length - segReflectPadSamples);
+				var contentLengthSeconds = (contentEnd - contentStart) / (double)inputSr;
 
-				convertedSegments.Add(segment);
-				if (tFirstSegment < 0)
+				var streamChunks = PlanStreamChunks(contentLengthSeconds, chunkSec, padSec);
+				if (streamChunks.Count == 0)
 				{
-					tFirstSegment = sw.ElapsedMilliseconds;
+					continue;
 				}
 
-				onSegment?.Invoke(segment);
+				foreach (var chunk in streamChunks)
+				{
+					ct.ThrowIfCancellationRequested();
+					totalSubChunkCount++;
+
+					// Convert chunk (start, end) seconds into sample offsets within lSlice.Audio
+					// (relative to the segment, so we account for contentStart).
+					var chunkStartSamples = contentStart + (int)Math.Round(chunk.StartSeconds * inputSr);
+					var chunkEndSamples = contentStart + (int)Math.Round(chunk.EndSeconds * inputSr);
+
+					// Frame-align so pitch / feature frames line up cleanly with audio.
+					chunkStartSamples = (chunkStartSamples / window) * window;
+					chunkEndSamples = (chunkEndSamples / window) * window;
+
+					// Expand by padSec context on each side, clamped to segment bounds. Inside the
+					// segment this draws from neighboring chunks; at outer segment edges it draws
+					// from the segment-level reflect-pad. Either way the input is real audio.
+					var audioStart = Math.Max(0, chunkStartSamples - subPadSamples);
+					var audioEnd = Math.Min(lSlice.Audio.Length, chunkEndSamples + subPadSamples);
+					if (audioEnd - audioStart < window)
+					{
+						continue;
+					}
+
+					var chunkAudio = lSlice.Audio[audioStart..audioEnd];
+
+					var frameStart = Math.Min(pitchf.Length, (pStart * window + audioStart) / window);
+					var frameEnd = Math.Min(pitchf.Length, frameStart + ((audioEnd - audioStart) / window));
+					if (frameEnd <= frameStart)
+					{
+						continue;
+					}
+
+					var chunkPitch = pitch[frameStart..frameEnd];
+					var chunkPitchf = pitchf[frameStart..frameEnd];
+
+					var (converted, newGpuFailed) = RunChunkValidated
+					(
+						vecSession!,
+						rvcSession!,
+						cpuRvcSession,
+						faissIndex,
+						gpuRvcFailed,
+						chunkAudio,
+						chunkPitch,
+						chunkPitchf,
+						targetSampleRate,
+						subPadTrimSamples,
+						totalSubChunkCount,
+						ct
+					);
+					if (newGpuFailed && !gpuRvcFailed)
+					{
+						validationRetryCount++;
+					}
+					gpuRvcFailed = newGpuFailed;
+
+					convertedSegments.Add(converted);
+					if (tFirstSegment < 0)
+					{
+						tFirstSegment = sw.ElapsedMilliseconds;
+					}
+
+					onSegment?.Invoke(converted);
+				}
 			}
 			var tInfer = sw.ElapsedMilliseconds;
 
@@ -726,38 +831,127 @@ static partial class RvcEngine
 				(
 					CultureInfo.InvariantCulture,
 					$"[rvc] output: samples={finalSamples.Length} rms={AudioDsp.Rms(finalSamples):F4} "
-					+ $"zcr={AudioDsp.ZeroCrossingRate(finalSamples, targetSampleRate):F0}/s gpu={!DisableGpu}"
+					+ $"zcr={AudioDsp.ZeroCrossingRate(finalSamples, targetSampleRate):F0}/s gpu={!Settings.Cli.NoGpu} "
+					+ $"retries={validationRetryCount}/{totalSubChunkCount}"
 				)
 			);
 
-			if (!DisableGpu && AudioDsp.IsDegenerateRumble(finalSamples, targetSampleRate))
+			if (!Settings.Cli.NoGpu && AudioDsp.IsLikelyCorruptOutput(finalSamples, targetSampleRate))
 			{
 				await Console.Error.WriteLineAsync
 				(
-					"warning: RVC output looks corrupt (low-frequency rumble), which can happen when "
-					+ "DirectML fails on a memory-constrained GPU. Re-run with --no-gpu for reliable CPU conversion."
+					"warning: RVC output looks corrupt even after CPU retry; "
+					+ "consider re-running with --no-gpu for a fully reliable CPU conversion."
 				).ConfigureAwait(false);
 			}
 
-			if (ShowPerf)
-			{
-				await Console.Error.WriteLineAsync
+			Diagnostics.LogPerf
+			(
+				string.Create
 				(
+					CultureInfo.InvariantCulture,
 					$"[perf] prep={tPrep}ms load={tLoad - tPrep}ms "
-					+ $"f0+vec={tFeatures - tLoad}ms infer={tInfer - tFeatures}ms "
-					+ $"segments={segmentSlices.Length} firstAudio={tFirstSegment}ms "
-					+ $"total={sw.ElapsedMilliseconds}ms"
-				).ConfigureAwait(false);
-			}
+					+ $"f0={tFeatures - tLoad}ms infer={tInfer - tFeatures}ms "
+					+ $"segments={segmentSlices.Length} subChunks={totalSubChunkCount} "
+					+ $"retries={validationRetryCount} "
+					+ $"firstAudio={tFirstSegment}ms total={sw.ElapsedMilliseconds}ms"
+				)
+			);
 
 			return result;
 		}
 		finally
 		{
-			rvcSession?.Dispose();
-			vecSession?.Dispose();
-			rmvpeSession?.Dispose();
+			// Sessions are owned by the process-wide caches (`_rvcSessionCache` /
+			// `_infraSessionCache` / `_faissIndexCache`) so subsequent ConvertAsync calls
+			// can reuse them. They live for the rest of the process and are reclaimed when
+			// the CLI exits. Disposing here would invalidate the cache.
 		}
+	}
+
+	[ExcludeFromCodeCoverage]
+	/// <summary>
+	/// Runs ContentVec + RVC for a single streaming sub-chunk and validates the result.
+	/// When the GPU RVC output fails the corrupt-output detector (low zero-crossing rate
+	/// indicative of a continuous drone instead of speech), the chunk is re-run on the
+	/// warm CPU RVC session and the GPU is considered "failed" for the remainder of the
+	/// utterance -- matching the one-shot trip behavior of <see cref="_dmlAvailable"/>.
+	/// </summary>
+	/// <param name="vecSession">The ContentVec session.</param>
+	/// <param name="rvcSession">The (typically GPU) RVC session.</param>
+	/// <param name="cpuRvcSession">Optional warm CPU RVC session for fallback; null when CPU-only.</param>
+	/// <param name="faissIndex">The optional FAISS index.</param>
+	/// <param name="alreadyGpuFailed">True when a previous chunk in the same utterance already failed on the GPU.</param>
+	/// <param name="chunkAudio">The padded source audio for this chunk.</param>
+	/// <param name="chunkPitch">The quantized pitch slice for this chunk.</param>
+	/// <param name="chunkPitchf">The continuous pitch slice for this chunk.</param>
+	/// <param name="targetSampleRate">The RVC output sample rate.</param>
+	/// <param name="trimPadSamples">Padding samples to trim from each end of the output.</param>
+	/// <param name="chunkOrdinal">The chunk index (1-based) for diagnostic logging.</param>
+	/// <param name="ct">The cancellation token.</param>
+	/// <returns>The chunk output samples and the updated GPU-failed flag.</returns>
+	private static (float[] Output, bool GpuFailed) RunChunkValidated
+	(
+		InferenceSession vecSession,
+		InferenceSession rvcSession,
+		InferenceSession? cpuRvcSession,
+		FaissIndex.Index? faissIndex,
+		bool alreadyGpuFailed,
+		float[] chunkAudio,
+		long[] chunkPitch,
+		float[] chunkPitchf,
+		int targetSampleRate,
+		int trimPadSamples,
+		int chunkOrdinal,
+		CancellationToken ct
+	)
+	{
+		var chunkFeatures = ExtractSegmentFeatures(vecSession, chunkAudio, faissIndex);
+
+		var pinnedToCpu = alreadyGpuFailed && cpuRvcSession is not null;
+		var activeSession = pinnedToCpu ? cpuRvcSession! : rvcSession;
+
+		var output = RunRvcInference
+		(
+			activeSession,
+			chunkFeatures,
+			chunkPitch,
+			chunkPitchf,
+			chunkAudio,
+			targetSampleRate,
+			trimPadSamples,
+			ct
+		);
+
+		if (pinnedToCpu || cpuRvcSession is null || !AudioDsp.IsLikelyCorruptOutput(output, targetSampleRate))
+		{
+			return (output, alreadyGpuFailed);
+		}
+
+		Diagnostics.Log
+		(
+			string.Create
+			(
+				CultureInfo.InvariantCulture,
+				$"[rvc] chunk {chunkOrdinal} GPU output looks corrupt "
+				+ $"(zcr={AudioDsp.ZeroCrossingRate(output, targetSampleRate):F0}/s); "
+				+ $"retrying on CPU and pinning remaining chunks to CPU"
+			)
+		);
+
+		output = RunRvcInference
+		(
+			cpuRvcSession,
+			chunkFeatures,
+			chunkPitch,
+			chunkPitchf,
+			chunkAudio,
+			targetSampleRate,
+			trimPadSamples,
+			ct
+		);
+
+		return (output, true);
 	}
 
 	/// <summary>
@@ -777,9 +971,13 @@ static partial class RvcEngine
 	/// <returns>The created session and target sample rate.</returns>
 	internal static (InferenceSession Session, int TargetSampleRate) CreatePthSession
 	(
-		string pthPath
+		string pthPath,
+		bool useGpu = true
 	)
 	{
+		var sw = System.Diagnostics.Stopwatch.StartNew();
+		var ep = useGpu ? "gpu" : "cpu";
+
 		// Check for cached patched ONNX alongside the .pth file
 		var cachedOnnxPath = Path.ChangeExtension(pthPath, ".cached.onnx");
 		var cachedMetaPath = Path.ChangeExtension(pthPath, ".cached.meta");
@@ -794,18 +992,30 @@ static partial class RvcEngine
 				var metaText = File.ReadAllText(cachedMetaPath).Trim();
 				if (int.TryParse(metaText, out var cachedSr))
 				{
-					using var opts = CreateSessionOptions();
+					using var opts = CreateSessionOptions(useGpu);
+					var tBeforeSession = sw.ElapsedMilliseconds;
 					var cachedSession = new InferenceSession(cachedOnnxPath, opts);
+					Diagnostics.LogPerf
+					(
+						string.Create
+						(
+							CultureInfo.InvariantCulture,
+							$"[pth/{ep}] cache-hit: ort-init={sw.ElapsedMilliseconds - tBeforeSession}ms "
+							+ $"(disk+ort, no patch)"
+						)
+					);
 					return (cachedSession, cachedSr);
 				}
 			}
 		}
 
 		var pthModel = PthLoader.Load(pthPath);
-		var srKey = pthModel.SampleRateLabel.TrimEnd('k', 'K') + "k";
+		var tPthLoad = sw.ElapsedMilliseconds;
 
+		var srKey = pthModel.SampleRateLabel.TrimEnd('k', 'K') + "k";
 		var skeletonBytes = LoadEmbeddedSkeleton(srKey);
 		var manifest = LoadEmbeddedManifest(srKey);
+		var tSkeleton = sw.ElapsedMilliseconds;
 
 		var nameMap = new Dictionary<string, string>(StringComparer.Ordinal);
 		foreach (var (pthName, _) in pthModel.Weights)
@@ -822,6 +1032,7 @@ static partial class RvcEngine
 
 		var offsets = OnnxPatcher.FindInitializerOffsets(skeletonBytes);
 		OnnxPatcher.PatchWeights(skeletonBytes, offsets, pthModel.Weights, nameMap);
+		var tPatch = sw.ElapsedMilliseconds;
 
 		// Cache the patched ONNX to disk for next time
 		try
@@ -833,10 +1044,23 @@ static partial class RvcEngine
 		{
 			// Best-effort caching -- don't fail if we can't write
 		}
+		var tCache = sw.ElapsedMilliseconds;
 
-		using var options = CreateSessionOptions();
-
+		using var options = CreateSessionOptions(useGpu);
 		var session = new InferenceSession(skeletonBytes, options);
+		var tSession = sw.ElapsedMilliseconds;
+
+		Diagnostics.LogPerf
+		(
+			string.Create
+			(
+				CultureInfo.InvariantCulture,
+				$"[pth/{ep}] cache-miss: pickle={tPthLoad}ms skeleton={tSkeleton - tPthLoad}ms "
+				+ $"patch={tPatch - tSkeleton}ms cache-write={tCache - tPatch}ms "
+				+ $"ort-init={tSession - tCache}ms total={tSession}ms"
+			)
+		);
+
 		return (session, pthModel.TargetSampleRate);
 	}
 
@@ -1014,17 +1238,141 @@ static partial class RvcEngine
 	private static bool _dmlAvailable = true;
 	private static readonly object _dmlLock = new();
 
-	// Set via --no-gpu flag or TALKTASTIC_NO_GPU=1 env var
-	/// <summary>
-	/// Gets or sets a value indicating whether GPU execution is disabled.
-	/// </summary>
-	internal static bool DisableGpu { get; set; } =
-		Environment.GetEnvironmentVariable("TALKTASTIC_NO_GPU") is "1" or "true";
+	// Process-wide session caches. When SpeechEngine knows RVC is about to be used, it
+	// kicks off Prewarm() which populates these caches in the background while the source
+	// TTS (SAPI / Neural / Piper) is still running. ConvertAsync then awaits the cached
+	// tasks instead of starting fresh loads -- shaving the load wall time off the critical
+	// path. Cached sessions live for the rest of the process; this is fine for a CLI tool
+	// (process exits, OS reclaims) and a free ~1.8s win for typical use.
+	private static readonly ConcurrentDictionary<(string Path, bool UseGpu), Task<(InferenceSession Session, int SampleRate)>> _rvcSessionCache
+		= new();
+	private static readonly ConcurrentDictionary<(string Path, bool UseGpu), Task<InferenceSession>> _infraSessionCache
+		= new();
+	private static readonly ConcurrentDictionary<string, Task<FaissIndex.Index>> _faissIndexCache
+		= new(StringComparer.Ordinal);
 
 	/// <summary>
-	/// Gets or sets a value indicating whether performance logging is enabled.
+	/// Starts loading all RVC-pipeline sessions (vec / rmvpe / rvc / cpu-rvc backup) and the
+	/// FAISS index for <paramref name="rvcModelPath"/> in the background, so they are ready
+	/// (or close to it) by the time <see cref="ConvertAsync"/> needs them. Idempotent --
+	/// repeated calls with the same path return immediately and reuse the in-flight task.
+	/// Call this as soon as the RVC model path is known and BEFORE the source TTS work
+	/// starts, so the ~1.8s load happens in parallel with synthesis instead of after it.
 	/// </summary>
-	internal static bool ShowPerf { get; set; }
+	/// <param name="rvcModelPath">The local RVC model path.</param>
+	[ExcludeFromCodeCoverage]
+	public static void Prewarm(string rvcModelPath)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(rvcModelPath);
+
+		// Extract bundled ONNX Runtime DLLs synchronously so background session loads
+		// resolve against OUR onnxruntime.dll (1.24.x) instead of racing with whatever
+		// sherpa-onnx (used by Piper) loads later from its own bundle (1.17.x). This
+		// matches the order ConvertAsync used to do inline.
+		NativeExtractor.EnsureAvailable(DllGroup.OnnxRuntime);
+
+		// Kick off the RVC generator session(s). Always preload a CPU backup alongside
+		// the GPU session for the corrupt-output retry path (matches what ConvertAsync would do).
+		_ = GetOrLoadRvcSessionTask(rvcModelPath, useGpu: true);
+		if (!Settings.Cli.NoGpu)
+		{
+			_ = GetOrLoadRvcSessionTask(rvcModelPath, useGpu: false);
+		}
+
+		// FAISS companion (if any) loads independently.
+		var indexPath = FindCompanionIndex(rvcModelPath);
+		if (indexPath is not null)
+		{
+			_ = _faissIndexCache.GetOrAdd
+			(
+				indexPath,
+				p => Task.Run(() => FaissIndex.Load(p))
+			);
+		}
+
+		// Infra (ContentVec + RMVPE) needs EnsureInfraModelsAsync to have downloaded them
+		// first. Fire-and-forget; if the files aren't present yet, this just no-ops and
+		// ConvertAsync will await EnsureInfraModelsAsync + load itself.
+		_ = Task.Run(async () =>
+		{
+			try
+			{
+				await EnsureInfraModelsAsync(CancellationToken.None).ConfigureAwait(false);
+				PrewarmInfraSessions();
+			}
+			catch (Exception ex) when
+			(
+				ex is HttpRequestException
+				or IOException
+				or OnnxRuntimeException
+			)
+			{
+				// Best-effort prewarm; ConvertAsync will re-attempt and surface any real error.
+			}
+		});
+	}
+
+	[ExcludeFromCodeCoverage]
+	private static void PrewarmInfraSessions()
+	{
+		var infraDir = Path.Combine(EnsureRvcDirectory(), InfraSubDir);
+		var vecPath = Path.Combine(infraDir, "vec-768-layer-12.onnx");
+		var rmvpePath = Path.Combine(infraDir, "rmvpe.onnx");
+		_ = GetOrLoadInfraSessionTask(vecPath, useGpu: true);
+		_ = GetOrLoadInfraSessionTask(rmvpePath, useGpu: false);
+	}
+
+	[ExcludeFromCodeCoverage]
+	private static Task<(InferenceSession Session, int SampleRate)> GetOrLoadRvcSessionTask
+	(
+		string rvcModelPath,
+		bool useGpu
+	)
+	{
+		return _rvcSessionCache.GetOrAdd
+		(
+			(rvcModelPath, useGpu),
+			key => Task.Run(() => LoadRvcSession(key.Path, key.UseGpu))
+		);
+	}
+
+	[ExcludeFromCodeCoverage]
+	private static (InferenceSession Session, int SampleRate) LoadRvcSession(string rvcModelPath, bool useGpu)
+	{
+		if (IsPthFile(rvcModelPath))
+		{
+			return CreatePthSession(rvcModelPath, useGpu);
+		}
+
+		if (IsCachedOnnxFile(rvcModelPath))
+		{
+			return (CreateSession(rvcModelPath, useGpu), ReadCachedMetaSampleRate(rvcModelPath));
+		}
+
+		var session = CreateSession(rvcModelPath, useGpu);
+		return (session, GetTargetSampleRate(session));
+	}
+
+	[ExcludeFromCodeCoverage]
+	private static Task<InferenceSession> GetOrLoadInfraSessionTask(string modelPath, bool useGpu)
+	{
+		return _infraSessionCache.GetOrAdd
+		(
+			(modelPath, useGpu),
+			key => Task.Run(() => CreateSession(key.Path, key.UseGpu))
+		);
+	}
+
+	[ExcludeFromCodeCoverage]
+	private static Task<FaissIndex.Index> GetOrLoadFaissIndexTask(string indexPath)
+	{
+		return _faissIndexCache.GetOrAdd
+		(
+			indexPath,
+			p => Task.Run(() => FaissIndex.Load(p))
+		);
+	}
+
 
 	[ExcludeFromCodeCoverage]
 	/// <summary>
@@ -1038,7 +1386,7 @@ static partial class RvcEngine
 		options.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
 		options.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR;
 
-		if (useGpu && _dmlAvailable && !DisableGpu)
+		if (useGpu && _dmlAvailable && !Settings.Cli.NoGpu)
 		{
 			try
 			{
@@ -1049,6 +1397,9 @@ static partial class RvcEngine
 				ex is OnnxRuntimeException
 				or EntryPointNotFoundException
 				or DllNotFoundException
+				or BadImageFormatException
+				or TypeLoadException
+				or PlatformNotSupportedException
 			)
 			{
 				lock (_dmlLock)
@@ -1058,7 +1409,11 @@ static partial class RvcEngine
 						_dmlAvailable = false;
 						Console.Error.WriteLine
 						(
-							"DirectML failed, falling back to CPU."
+							string.Create
+							(
+								CultureInfo.InvariantCulture,
+								$"DirectML failed ({ex.GetType().Name}: {ex.Message}); falling back to CPU."
+							)
 						);
 					}
 				}
@@ -1140,17 +1495,17 @@ static partial class RvcEngine
 		float[] analysisPad
 	)
 	{
-		var tPad = InputSampleRate * XPadSeconds;
-		var tQuery = InputSampleRate * XQuerySeconds;
-		var tCenter = InputSampleRate * XCenterSeconds;
-		var tMax = InputSampleRate * XMaxSeconds;
+		var tPad = Settings.Rvc.InputSampleRate * Settings.Rvc.PadSeconds;
+		var tQuery = Settings.Rvc.InputSampleRate * Settings.Rvc.QuerySeconds;
+		var tCenter = Settings.Rvc.InputSampleRate * Settings.Rvc.CenterSeconds;
+		var tMax = Settings.Rvc.InputSampleRate * Settings.Rvc.MaxSeconds;
 
 		var optimalTimestamps = new List<int>();
 
 		if (analysisPad.Length > tMax)
 		{
 			var energy = new float[filteredAudio.Length];
-			for (var i = 0; i < Window; i++)
+			for (var i = 0; i < Settings.Rvc.Window; i++)
 			{
 				for (var sampleIndex = 0; sampleIndex < filteredAudio.Length; sampleIndex++)
 				{
@@ -1215,13 +1570,14 @@ static partial class RvcEngine
 		var pitchf = DecodeF0(cents);
 		var tDecode = sw.ElapsedMilliseconds;
 
-		if (ShowPerf)
-		{
-			Console.Error.WriteLine
+		Diagnostics.LogPerf
+		(
+			string.Create
 			(
+				CultureInfo.InvariantCulture,
 				$"[f0] mel={tMel}ms rmvpe={tRmvpe - tMel}ms decode={tDecode - tRmvpe}ms"
-			);
-		}
+			)
+		);
 
 		// Apply pitch shift (in semitones) before quantization
 		if (pitchShiftSemitones != 0.0f)
@@ -1235,7 +1591,7 @@ static partial class RvcEngine
 
 		var pitch = QuantizePitch(pitchf);
 
-		var pLen = audioPad.Length / Window;
+		var pLen = audioPad.Length / Settings.Rvc.Window;
 		if (pitchf.Length > pLen)
 		{
 			Array.Resize(ref pitchf, pLen);
@@ -1406,59 +1762,6 @@ static partial class RvcEngine
 	}
 
 	/// <summary>
-	/// Converts each segmented audio slice.
-	/// </summary>
-	/// <param name="rvcSession">The RVC session.</param>
-	/// <param name="vecSession">The ContentVec session.</param>
-	/// <param name="audioPad">The padded audio.</param>
-	/// <param name="pitch">The quantized pitch values.</param>
-	/// <param name="pitchf">The continuous pitch values.</param>
-	/// <param name="optTs">The optimal split timestamps.</param>
-	/// <param name="targetSampleRate">The target sample rate.</param>
-	/// <param name="faissIndex">The optional FAISS index.</param>
-	/// <param name="ct">The cancellation token.</param>
-	/// <returns>The converted audio segments.</returns>
-	private static List<float[]> InferSegments
-	(
-		InferenceSession rvcSession,
-		InferenceSession vecSession,
-		float[] audioPad,
-		long[] pitch,
-		float[] pitchf,
-		List<int> optTs,
-		int targetSampleRate,
-		FaissIndex.Index? faissIndex,
-		CancellationToken ct
-	)
-	{
-		var segmentSlices = ComputeSegmentSlices(audioPad, optTs, ct);
-		var results = new List<float[]>(segmentSlices.Length);
-		foreach (var slice in segmentSlices)
-		{
-			ct.ThrowIfCancellationRequested();
-
-			var (pitchStart, pitchEnd) = ClampPitchRange(slice, pitch, pitchf);
-
-			results.Add
-			(
-				RunSegment
-				(
-					rvcSession,
-					vecSession,
-					slice.Audio,
-					pitch[pitchStart..pitchEnd],
-					pitchf[pitchStart..pitchEnd],
-					targetSampleRate,
-					faissIndex,
-					ct
-				)
-			);
-		}
-
-		return results;
-	}
-
-	/// <summary>
 	/// Computes audio segment slices for inference.
 	/// </summary>
 	/// <param name="audioPad">The padded audio.</param>
@@ -1472,9 +1775,9 @@ static partial class RvcEngine
 		CancellationToken ct
 	)
 	{
-		var tPad = InputSampleRate * XPadSeconds;
+		var tPad = Settings.Rvc.InputSampleRate * Settings.Rvc.PadSeconds;
 		var tPad2 = tPad * 2;
-		var totalFrames = audioPad.Length / Window;
+		var totalFrames = audioPad.Length / Settings.Rvc.Window;
 		var results = new List<SegmentSlice>(optTs.Count + 1);
 		var segmentStart = 0;
 
@@ -1482,10 +1785,10 @@ static partial class RvcEngine
 		{
 			ct.ThrowIfCancellationRequested();
 
-			var alignedTimestamp = (timestamp / Window) * Window;
-			var pitchStart = segmentStart / Window;
-			var pitchEnd = Math.Min(totalFrames, (alignedTimestamp + tPad2) / Window);
-			var audioEnd = Math.Min(audioPad.Length, alignedTimestamp + tPad2 + Window);
+			var alignedTimestamp = (timestamp / Settings.Rvc.Window) * Settings.Rvc.Window;
+			var pitchStart = segmentStart / Settings.Rvc.Window;
+			var pitchEnd = Math.Min(totalFrames, (alignedTimestamp + tPad2) / Settings.Rvc.Window);
+			var audioEnd = Math.Min(audioPad.Length, alignedTimestamp + tPad2 + Settings.Rvc.Window);
 
 			results.Add(new SegmentSlice(audioPad[segmentStart..audioEnd], pitchStart, pitchEnd));
 			segmentStart = alignedTimestamp;
@@ -1495,11 +1798,75 @@ static partial class RvcEngine
 		{
 			ct.ThrowIfCancellationRequested();
 
-			var pitchStart = Math.Min(totalFrames, segmentStart / Window);
+			var pitchStart = Math.Min(totalFrames, segmentStart / Settings.Rvc.Window);
 			results.Add(new SegmentSlice(audioPad[segmentStart..], pitchStart, totalFrames));
 		}
 
 		return [.. results];
+	}
+
+	/// <summary>
+	/// Represents a streaming sub-chunk within a single logical RVC segment, in seconds
+	/// relative to the start of the segment.
+	/// </summary>
+	/// <param name="StartSeconds">The inclusive start time of the chunk's CONTENT region.</param>
+	/// <param name="EndSeconds">The exclusive end time of the chunk's CONTENT region.</param>
+	internal readonly record struct StreamChunk(double StartSeconds, double EndSeconds)
+	{
+		/// <summary>Gets the length of the content region in seconds.</summary>
+		internal double LengthSeconds => EndSeconds - StartSeconds;
+	}
+
+	/// <summary>
+	/// Plans how to subdivide an input of <paramref name="totalSeconds"/> seconds into
+	/// streaming RVC chunks of approximately <paramref name="chunkSeconds"/> seconds each,
+	/// with an absorb-tail rule that prevents tiny trailing chunks: if the remaining
+	/// audio is less than two minimum-size inferences worth (i.e.
+	/// <c>2 * (chunkSeconds + padSeconds)</c>), the remainder is folded into the previous
+	/// chunk instead of being emitted as a separate short chunk. The padding is reported
+	/// for documentation; this function does not slice the audio itself.
+	/// </summary>
+	/// <param name="totalSeconds">The total input duration in seconds.</param>
+	/// <param name="chunkSeconds">The target content length per chunk; must be positive.</param>
+	/// <param name="padSeconds">The per-side context padding; must be non-negative.</param>
+	/// <returns>The ordered list of (start, end) chunks covering <c>[0, totalSeconds)</c>.</returns>
+	/// <exception cref="ArgumentOutOfRangeException">
+	/// Thrown when <paramref name="chunkSeconds"/> is not positive or
+	/// <paramref name="padSeconds"/> is negative.
+	/// </exception>
+	internal static List<StreamChunk> PlanStreamChunks
+	(
+		double totalSeconds,
+		double chunkSeconds,
+		double padSeconds
+	)
+	{
+		ArgumentOutOfRangeException.ThrowIfNegativeOrZero(chunkSeconds);
+		ArgumentOutOfRangeException.ThrowIfNegative(padSeconds);
+
+		var chunks = new List<StreamChunk>();
+		if (totalSeconds <= 0.0)
+		{
+			return chunks;
+		}
+
+		var absorbThreshold = (2.0 * chunkSeconds) + (2.0 * padSeconds);
+		var pos = 0.0;
+
+		while (pos < totalSeconds)
+		{
+			var remaining = totalSeconds - pos;
+			if (remaining < absorbThreshold)
+			{
+				chunks.Add(new StreamChunk(pos, totalSeconds));
+				break;
+			}
+
+			chunks.Add(new StreamChunk(pos, pos + chunkSeconds));
+			pos += chunkSeconds;
+		}
+
+		return chunks;
 	}
 
 	/// <summary>
@@ -1519,46 +1886,6 @@ static partial class RvcEngine
 		var pitchEnd = Math.Min(segmentSlice.PitchEnd, Math.Min(pitch.Length, pitchf.Length));
 		var pitchStart = Math.Min(segmentSlice.PitchStart, pitchEnd);
 		return (pitchStart, pitchEnd);
-	}
-
-	[ExcludeFromCodeCoverage]
-	/// <summary>
-	/// Runs conversion for a single audio segment.
-	/// </summary>
-	/// <param name="rvcSession">The RVC session.</param>
-	/// <param name="vecSession">The ContentVec session.</param>
-	/// <param name="audioSegment">The audio segment.</param>
-	/// <param name="pitchSegment">The quantized pitch segment.</param>
-	/// <param name="pitchfSegment">The continuous pitch segment.</param>
-	/// <param name="targetSampleRate">The target sample rate.</param>
-	/// <param name="faissIndex">The optional FAISS index.</param>
-	/// <param name="ct">The cancellation token.</param>
-	/// <returns>The converted audio segment.</returns>
-	private static float[] RunSegment
-	(
-		InferenceSession rvcSession,
-		InferenceSession vecSession,
-		float[] audioSegment,
-		long[] pitchSegment,
-		float[] pitchfSegment,
-		int targetSampleRate,
-		FaissIndex.Index? faissIndex,
-		CancellationToken ct
-	)
-	{
-		ct.ThrowIfCancellationRequested();
-
-		var features = ExtractSegmentFeatures(vecSession, audioSegment, faissIndex);
-		return RunRvcInference
-		(
-			rvcSession,
-			features,
-			pitchSegment,
-			pitchfSegment,
-			audioSegment,
-			targetSampleRate,
-			ct
-		);
 	}
 
 	[ExcludeFromCodeCoverage]
@@ -1586,14 +1913,15 @@ static partial class RvcEngine
 		}
 		var tFaiss = sw.ElapsedMilliseconds;
 
-		if (ShowPerf)
-		{
-			Console.Error.WriteLine
+		Diagnostics.LogPerf
+		(
+			string.Create
 			(
+				CultureInfo.InvariantCulture,
 				$"[vec] contentvec={tVec}ms faiss={tFaiss - tVec}ms "
 				+ $"audio={audioSegment.Length} samples"
-			);
-		}
+			)
+		);
 
 		return features;
 	}
@@ -1605,10 +1933,16 @@ static partial class RvcEngine
 	/// <param name="features">The segment features.</param>
 	/// <param name="pitchSegment">The quantized pitch segment.</param>
 	/// <param name="pitchfSegment">The continuous pitch segment.</param>
-	/// <param name="audioSegment">The source audio segment.</param>
+	/// <param name="audioSegment">The source audio segment (including any context padding).</param>
 	/// <param name="targetSampleRate">The target sample rate.</param>
+	/// <param name="trimPadSamples">
+	/// Number of samples (at <paramref name="targetSampleRate"/>) to discard from each end of
+	/// the produced audio, to remove the contribution of the input context padding. Caller
+	/// must pass <c>Settings.Rvc.PadSeconds * targetSampleRate</c> for full logical segments,
+	/// or <c>Settings.Cli.EffectiveRvcPadSeconds * targetSampleRate</c> for streaming sub-chunks.
+	/// </param>
 	/// <param name="ct">The cancellation token.</param>
-	/// <returns>The converted audio samples.</returns>
+	/// <returns>The converted audio samples with the configured padding trimmed.</returns>
 	private static float[] RunRvcInference
 	(
 		InferenceSession rvcSession,
@@ -1617,6 +1951,7 @@ static partial class RvcEngine
 		float[] pitchfSegment,
 		float[] audioSegment,
 		int targetSampleRate,
+		int trimPadSamples,
 		CancellationToken ct
 	)
 	{
@@ -1624,7 +1959,7 @@ static partial class RvcEngine
 
 		// ContentVec runs at half the RVC frame rate — double the frames first
 		var doubledFrames = features.GetLength(0) * 2;
-		var audioFrames = audioSegment.Length / Window;
+		var audioFrames = audioSegment.Length / Settings.Rvc.Window;
 		var pLen = Math.Min(doubledFrames, audioFrames);
 
 		// Also clip to available pitch data
@@ -1658,7 +1993,7 @@ static partial class RvcEngine
 			pitchfData[i] = (Float16)pitchfSlice[i];
 		}
 
-		var speakerData = new long[] { SpeakerId };
+		var speakerData = new long[] { Settings.Rvc.SpeakerId };
 		var (noiseData, noiseDims) = CreateNoiseArray(pLen);
 
 		{
@@ -1687,16 +2022,15 @@ static partial class RvcEngine
 				rawAudio[i] = outputSpan[i].ToFloat();
 			}
 
-			var rmsMatched = MatchRms(audioSegment, InputSampleRate, rawAudio, targetSampleRate);
+			var rmsMatched = MatchRms(audioSegment, Settings.Rvc.InputSampleRate, rawAudio, targetSampleRate);
 			var normalized = NormalizePeak(rmsMatched, 0.99f);
 
-			var tPadTgt = targetSampleRate * XPadSeconds;
-			if (normalized.Length <= tPadTgt * 2)
+			if (trimPadSamples <= 0 || normalized.Length <= trimPadSamples * 2)
 			{
 				return normalized;
 			}
 
-			return normalized[tPadTgt..^tPadTgt];
+			return normalized[trimPadSamples..^trimPadSamples];
 		}
 	}
 
@@ -1907,7 +2241,7 @@ static partial class RvcEngine
 		for (var i = 0; i < outputAudio.Length; i++)
 		{
 			var safeOutput = MathF.Max(outputCurve[i], 1.0e-6f);
-			var gain = MathF.Pow(sourceCurve[i], 1.0f - RmsMixRate) * MathF.Pow(safeOutput, RmsMixRate - 1.0f);
+			var gain = MathF.Pow(sourceCurve[i], 1.0f - Settings.Rvc.RmsMixRate) * MathF.Pow(safeOutput, Settings.Rvc.RmsMixRate - 1.0f);
 			mixed[i] = outputAudio[i] * gain;
 		}
 
@@ -1945,7 +2279,28 @@ static partial class RvcEngine
 	internal static float[] NormalizePeak(float[] samples, float targetPeak)
 	{
 		var max = 0.0f;
-		for (var i = 0; i < samples.Length; i++)
+		var i = 0;
+
+		// SIMD peak find (max absolute value).
+		if (Vector.IsHardwareAccelerated && samples.Length >= Vector<float>.Count)
+		{
+			var vMax = Vector<float>.Zero;
+			var width = Vector<float>.Count;
+			for (; i <= samples.Length - width; i += width)
+			{
+				vMax = Vector.Max(vMax, Vector.Abs(new Vector<float>(samples, i)));
+			}
+
+			for (var lane = 0; lane < Vector<float>.Count; lane++)
+			{
+				if (vMax[lane] > max)
+				{
+					max = vMax[lane];
+				}
+			}
+		}
+
+		for (; i < samples.Length; i++)
 		{
 			var sample = MathF.Abs(samples[i]);
 			if (sample > max)
@@ -1961,7 +2316,20 @@ static partial class RvcEngine
 
 		var scale = targetPeak / max;
 		var normalized = new float[samples.Length];
-		for (var i = 0; i < samples.Length; i++)
+		i = 0;
+
+		// SIMD scalar-broadcast multiply.
+		if (Vector.IsHardwareAccelerated && samples.Length >= Vector<float>.Count)
+		{
+			var vScale = new Vector<float>(scale);
+			var width = Vector<float>.Count;
+			for (; i <= samples.Length - width; i += width)
+			{
+				(new Vector<float>(samples, i) * vScale).CopyTo(normalized, i);
+			}
+		}
+
+		for (; i < samples.Length; i++)
 		{
 			normalized[i] = samples[i] * scale;
 		}
