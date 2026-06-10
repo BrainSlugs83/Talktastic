@@ -2348,6 +2348,487 @@ public sealed class PthLoaderTests
 		Assert.Equal(1, (int)tensorManifestType.GetProperty("ElementCount")!.GetValue(renamed)!);
 	}
 
+	[Fact]
+	public void Load_SrKeyEmptyString_FallsToConfigSampleRate()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer =>
+			{
+				writer.WriteEmptyList();
+				writer.WriteInt32(40000);
+				writer.WriteAppend();
+			},
+			writeSampleRate: static writer => writer.WriteString("")
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal("40k", model.SampleRateLabel);
+	}
+
+	[Fact]
+	public void Load_SrKeyMissing_ConfigOutOfRange_FallsToUnknown()
+	{
+		// config[-1] = 123 is not a plausible sample rate and no SampleRate placeholder exists
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteEmptyDictionary();
+		writer.WriteString("config");
+		writer.WriteEmptyList();
+		writer.WriteInt32(123);
+		writer.WriteAppend();
+		writer.WriteSetItem();
+		writer.WriteString("weight");
+		writer.WriteEmptyDictionary();
+		writer.WriteSetItem();
+		writer.WriteStop();
+		var archive = BuildArchive(writer.ToArray(), []);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal("unknown", model.SampleRateLabel);
+	}
+
+	[Fact]
+	public void Load_SampleRatePlaceholderWithIntArg48k_ConvertsToKhzLabel()
+	{
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteEmptyDictionary();
+		writer.WriteString("config");
+		writer.WriteEmptyList();
+		writer.WriteInt32(123);
+		writer.WriteAppend();
+		writer.WriteSetItem();
+		writer.WriteString("weight");
+		writer.WriteEmptyDictionary();
+		writer.WriteSetItem();
+		writer.WriteString("sr");
+		writer.WriteString("");
+		writer.WriteSetItem();
+		writer.WriteString("training_sr");
+		writer.WriteGlobalReference("ultimate_rvc.typing_extra", "TrainingSampleRate");
+		writer.WriteInt32(48000);
+		writer.WriteTuple1();
+		writer.WriteReduce();
+		writer.WriteSetItem();
+		writer.WriteStop();
+		var archiveBytes = BuildArchive(writer.ToArray(), []);
+
+		using var stream = new MemoryStream(archiveBytes, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal("48k", model.SampleRateLabel);
+	}
+
+	[Fact]
+	public void Load_SampleRatePlaceholderWithIntArg32k_ConvertsToKhzLabel()
+	{
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteEmptyDictionary();
+		writer.WriteString("config");
+		writer.WriteEmptyList();
+		writer.WriteInt32(123);
+		writer.WriteAppend();
+		writer.WriteSetItem();
+		writer.WriteString("weight");
+		writer.WriteEmptyDictionary();
+		writer.WriteSetItem();
+		writer.WriteString("sr");
+		writer.WriteString("");
+		writer.WriteSetItem();
+		writer.WriteString("training_sr");
+		writer.WriteGlobalReference("rvc.typing_extra", "TrainingSampleRate");
+		writer.WriteInt32(32000);
+		writer.WriteTuple1();
+		writer.WriteReduce();
+		writer.WriteSetItem();
+		writer.WriteStop();
+		var archiveBytes = BuildArchive(writer.ToArray(), []);
+
+		using var stream = new MemoryStream(archiveBytes, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal("32k", model.SampleRateLabel);
+	}
+
+	[Fact]
+	public void Load_NormalizeSampleRateLabel_PureNumber_CollapsesToKhz()
+	{
+		// config[-1] must be out of plausible range so ResolveSampleRateLabel reaches the scan
+		var archive = BuildModelArchive
+		(
+			static writer =>
+			{
+				writer.WriteEmptyList();
+				writer.WriteInt32(123);
+				writer.WriteAppend();
+			},
+			writeSampleRate: static writer =>
+			{
+				writer.WriteGlobalReference("rvc.typing", "TrainingSampleRate");
+				writer.WriteString("40000");
+				writer.WriteTuple1();
+				writer.WriteReduce();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal("40k", model.SampleRateLabel);
+	}
+
+	[Fact]
+	public void Load_NormalizeSampleRateLabel_SmallNumber_NotDivided()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer =>
+			{
+				writer.WriteEmptyList();
+				writer.WriteInt32(123);
+				writer.WriteAppend();
+			},
+			writeSampleRate: static writer =>
+			{
+				writer.WriteGlobalReference("rvc.typing", "TrainingSampleRate");
+				writer.WriteString("40");
+				writer.WriteTuple1();
+				writer.WriteReduce();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal("40k", model.SampleRateLabel);
+	}
+
+	[Fact]
+	public void Load_NormalizeSampleRateLabel_NonNumeric_ReturnsRaw()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer =>
+			{
+				writer.WriteEmptyList();
+				writer.WriteInt32(123);
+				writer.WriteAppend();
+			},
+			writeSampleRate: static writer =>
+			{
+				writer.WriteGlobalReference("rvc.typing", "TrainingSampleRate");
+				writer.WriteString("custom-rate");
+				writer.WriteTuple1();
+				writer.WriteReduce();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal("custom-rate", model.SampleRateLabel);
+	}
+
+	[Fact]
+	public void Load_F0PlaceholderWithNumericArg_ConvertsToInt()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer => WriteDefaultConfig(writer),
+			writeF0: static writer =>
+			{
+				writer.WriteGlobalReference("ultimate_rvc.enums", "F0Mode");
+				writer.WriteInt32(0);
+				writer.WriteTuple1();
+				writer.WriteReduce();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal(0, model.F0);
+	}
+
+	[Fact]
+	public void Load_F0PlaceholderWithNoExtractableArgs_DefaultsToOne()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer => WriteDefaultConfig(writer),
+			writeF0: static writer =>
+			{
+				writer.WriteGlobalReference("ultimate_rvc.enums", "F0Mode");
+				writer.WriteString("some_opaque_value");
+				writer.WriteTuple1();
+				writer.WriteReduce();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal(1, model.F0);
+	}
+
+	[Fact]
+	public void Load_F0AsBoolFalse_ConvertsToZero()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer => WriteDefaultConfig(writer),
+			writeF0: static writer => writer.WriteBool(false)
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal(0, model.F0);
+	}
+
+	[Fact]
+	public void Load_F0AsBoolTrue_ConvertsToOne()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer => WriteDefaultConfig(writer),
+			writeF0: static writer => writer.WriteBool(true)
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal(1, model.F0);
+	}
+
+	[Fact]
+	public void Load_ConfigWithBinInt2Value_ParsedAsInt()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer =>
+			{
+				writer.WriteEmptyList();
+				writer.WriteBinInt2(300);
+				writer.WriteAppend();
+				writer.WriteInt32(48000);
+				writer.WriteAppend();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal(300, model.Config[0]);
+	}
+
+	[Fact]
+	public void Load_ConfigWithDoubleValue_PreservesDouble()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer =>
+			{
+				writer.WriteEmptyList();
+				writer.WriteBinFloat(3.14);
+				writer.WriteAppend();
+				writer.WriteInt32(48000);
+				writer.WriteAppend();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.IsType<double>(model.Config[0]);
+		Assert.Equal(3.14, (double)model.Config[0], 0.001);
+	}
+
+	[Fact]
+	public void Load_ConfigWithNestedTuple_ConvertedToList()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer =>
+			{
+				writer.WriteEmptyList();
+				writer.WriteInt32(1);
+				writer.WriteInt32(2);
+				writer.WriteTuple2();
+				writer.WriteAppend();
+				writer.WriteInt32(48000);
+				writer.WriteAppend();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		var nested = Assert.IsType<List<object>>(model.Config[0]);
+		Assert.Equal(2, nested.Count);
+		Assert.Equal(1, nested[0]);
+		Assert.Equal(2, nested[1]);
+	}
+
+	[Fact]
+	public void Load_ConfigWithUnsupportedType_ThrowsInvalidDataException()
+	{
+		// Use a reduce target that becomes an opaque placeholder -- not a supported config value
+		var archive = BuildModelArchive
+		(
+			static writer =>
+			{
+				writer.WriteEmptyList();
+				writer.WriteGlobalReference("some.module", "UnsupportedClass");
+				writer.WriteEmptyTuple();
+				writer.WriteReduce();
+				writer.WriteAppend();
+				writer.WriteInt32(48000);
+				writer.WriteAppend();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		Assert.Throws<InvalidDataException>(() => PthLoader.Load(stream));
+	}
+
+	[Fact]
+	public void FuseWeightNormPair_ZeroNorm_ScalesToZero()
+	{
+		// All zero v-tensor: norm=0, scale should be 0, output all zeros
+		var gTensor = new PthTensor("test_g", Float32Bytes(5.0f), [1, 1], "float32");
+		var vTensor = new PthTensor("test_v", Float32Bytes(0f), [1, 1], "float32");
+
+		var fused = PthLoader.FuseWeightNormPair("test", gTensor, vTensor);
+
+		Assert.Equal("test", fused.Name);
+		var fusedValue = PthLoader.ReadScalar("float32", fused.Data, 0);
+		Assert.Equal(0f, fusedValue);
+	}
+
+	[Fact]
+	public void FuseWeightNormPair_Float16Tensors_ProducesCorrectFusion()
+	{
+		var gData = Float16Bytes(2.0f);
+		var vData = Float16Bytes(3.0f, 4.0f);
+		var gTensor = new PthTensor("test_g", gData, [1, 1], "float16");
+		var vTensor = new PthTensor("test_v", vData, [1, 2], "float16");
+
+		var fused = PthLoader.FuseWeightNormPair("test", gTensor, vTensor);
+
+		Assert.Equal([1, 2], fused.Shape);
+		Assert.Equal("float16", fused.DType);
+		// norm = sqrt(9+16) = 5, scale = 2/5 = 0.4
+		var v0 = PthLoader.ReadScalar("float16", fused.Data, 0);
+		var v1 = PthLoader.ReadScalar("float16", fused.Data, 1);
+		Assert.Equal(3.0f * 0.4f, v0, 0.1f);
+		Assert.Equal(4.0f * 0.4f, v1, 0.1f);
+	}
+
+	[Fact]
+	public void Load_VersionAsBinInt1_ConvertsToString()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer => WriteDefaultConfig(writer),
+			writeVersion: static writer =>
+			{
+				writer.WriteBinInt1(3);
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal("3", model.Version);
+	}
+
+	[Fact]
+	public void Load_StorageCacheReuse_SharedStorageLoadedOnce()
+	{
+		// Two weights sharing the same storage key
+		var sharedData = Float16Bytes(1f, 2f, 3f, 4f);
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteEmptyDictionary();
+		writer.WriteString("config");
+		WriteDefaultConfig(writer);
+		writer.WriteSetItem();
+		writer.WriteString("weight");
+		writer.WriteEmptyDictionary();
+		writer.WriteString("w1");
+		writer.WriteTensorManifest("HalfStorage", "shared", 0, [2], [1], 4);
+		writer.WriteSetItem();
+		writer.WriteString("w2");
+		writer.WriteTensorManifest("HalfStorage", "shared", 2, [2], [1], 4);
+		writer.WriteSetItem();
+		writer.WriteSetItem();
+		writer.WriteStop();
+		var archiveBytes = BuildArchive(writer.ToArray(), [("shared", sharedData)]);
+
+		using var stream = new MemoryStream(archiveBytes, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal(2, model.Weights.Count);
+		var v1 = PthLoader.ReadScalar("float16", model.Weights["w1"].Data, 0);
+		var v2 = PthLoader.ReadScalar("float16", model.Weights["w2"].Data, 0);
+		Assert.Equal(1f, v1, 0.1f);
+		Assert.Equal(3f, v2, 0.1f);
+	}
+
+	[Fact]
+	public void Load_ScalarTensorNonContiguous_ExtractsCorrectly()
+	{
+		// Scalar tensor (empty shape) with non-zero storage offset
+		var data = Float16Bytes(10f, 20f, 30f);
+		var writer = new PickleWriter();
+		writer.WriteProtocol2();
+		writer.WriteEmptyDictionary();
+		writer.WriteString("config");
+		WriteDefaultConfig(writer);
+		writer.WriteSetItem();
+		writer.WriteString("weight");
+		writer.WriteEmptyDictionary();
+		writer.WriteString("scalar_w");
+		writer.WriteTensorManifest("HalfStorage", "0", 1, [], [], 3);
+		writer.WriteSetItem();
+		writer.WriteSetItem();
+		writer.WriteStop();
+		var archiveBytes = BuildArchive(writer.ToArray(), [("0", data)]);
+
+		using var stream = new MemoryStream(archiveBytes, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		var scalar = model.Weights["scalar_w"];
+		Assert.Empty(scalar.Shape);
+		var value = PthLoader.ReadScalar("float16", scalar.Data, 0);
+		Assert.Equal(20f, value, 0.1f);
+	}
+
 	private static byte[] BuildModelArchive
 	(
 		Action<PickleWriter> writeConfig,
