@@ -260,6 +260,12 @@ static partial class ModelDownloader
 		return companions.Count > 0 ? [.. companions] : null;
 	}
 
+	// Internal test accessors for regex patterns
+	internal static Regex HfOnnxPathRegex() => HfOnnxPathPattern();
+	internal static Regex GhOnnxAssetRegex() => GhOnnxAssetPattern();
+	internal static string[]? FindOnnxConfigCompanionsForTest(string json, string onnxPath, string baseResolve) =>
+		FindOnnxConfigCompanions(json, onnxPath, baseResolve);
+
 	/// <summary>
 	/// Gets a suitable file extension for a URL to use as temp file name.
 	/// </summary>
@@ -1346,7 +1352,7 @@ static partial class ModelDownloader
 	/// Gets the HuggingFace config JSON path regex.
 	/// </summary>
 	/// <returns>The generated regex.</returns>
-	[GeneratedRegex(@"""path""\s*:\s*""(config\.json|metadata\.json)""")]
+	[GeneratedRegex(@"""path""\s*:\s*""((?:[^""]+/)?(?:config\.json|metadata\.json))""")]
 	private static partial Regex HfConfigJsonPathPattern();
 
 	/// <summary>

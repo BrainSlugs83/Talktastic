@@ -191,81 +191,85 @@ public sealed class PiperEngineTests : IDisposable
 	}
 
 	[Theory]
-	[InlineData("rhasspy/piper-voices", "en/en_US/amy/medium", "en_US-amy-medium")]
+	[InlineData("rhasspy/piper-voices", "en/en_US/amy/medium", "en US-amy-medium")]
 	[InlineData("rhasspy/piper-voices", "", "voices")]
 	public void DeriveModelNameFromRepo_DerivesCorrectly(string repo, string subPath, string expected)
 	{
-		var result = PiperEngine.DeriveModelNameFromRepo(repo, subPath);
+		var result = ModelDownloader.DeriveModelNameFromRepo(repo, subPath);
 
 		Assert.Equal(expected, result);
 	}
 
 	[Fact]
-	public void FindOnnxPathInJson_ValidJson_ReturnsOnnxPath()
+	public void FindPathInJson_FindsOnnxPath()
 	{
 		const string json = """[{"path":"en_US-ryan-high.onnx","size":123}]""";
 
-		var result = PiperEngine.FindOnnxPathInJson(json);
+		var result = ModelDownloader.FindPathInJson(json, ModelDownloader.HfOnnxPathRegex(), ".onnx.json");
 
 		Assert.Equal("en_US-ryan-high.onnx", result);
 	}
 
 	[Fact]
-	public void FindOnnxPathInJson_NoOnnxFile_ReturnsNull()
+	public void FindPathInJson_NoOnnxFile_ReturnsNull()
 	{
 		const string json = """[{"path":"README.md","size":123}]""";
 
-		var result = PiperEngine.FindOnnxPathInJson(json);
+		var result = ModelDownloader.FindPathInJson(json, ModelDownloader.HfOnnxPathRegex(), ".onnx.json");
 
 		Assert.Null(result);
 	}
 
 	[Fact]
-	public void FindOnnxPathInJson_ExcludesOnnxJson()
+	public void FindPathInJson_ExcludesOnnxJson()
 	{
 		const string json = """[{"path":"en_US-ryan-high.onnx.json","size":123}]""";
 
-		var result = PiperEngine.FindOnnxPathInJson(json);
+		var result = ModelDownloader.FindPathInJson(json, ModelDownloader.HfOnnxPathRegex(), ".onnx.json");
 
 		Assert.Null(result);
 	}
 
 	[Fact]
-	public void FindConfigPathInJson_StandardCompanion_ReturnsCompanionPath()
+	public void FindOnnxConfigCompanions_FindsStandardCompanion()
 	{
 		const string json = """[{"path":"en_US-ryan-high.onnx","size":123},{"path":"en_US-ryan-high.onnx.json","size":456}]""";
 
-		var result = PiperEngine.FindConfigPathInJson(json, "en_US-ryan-high.onnx");
+		var result = ModelDownloader.FindOnnxConfigCompanionsForTest(json, "en_US-ryan-high.onnx", "https://example.com/resolve/main");
 
-		Assert.Equal("en_US-ryan-high.onnx.json", result);
+		Assert.NotNull(result);
+		Assert.Single(result);
+		Assert.Equal("https://example.com/resolve/main/en_US-ryan-high.onnx.json", result[0]);
 	}
 
 	[Fact]
-	public void FindConfigPathInJson_FallsBackToConfigJson()
+	public void FindOnnxConfigCompanions_FallsBackToConfigJson()
 	{
 		const string json = """[{"path":"models/model.onnx","size":123},{"path":"models/config.json","size":456}]""";
 
-		var result = PiperEngine.FindConfigPathInJson(json, "models/model.onnx");
+		var result = ModelDownloader.FindOnnxConfigCompanionsForTest(json, "models/model.onnx", "https://example.com/resolve/main");
 
-		Assert.Equal("models/config.json", result);
+		Assert.NotNull(result);
+		Assert.Single(result);
+		Assert.Equal("https://example.com/resolve/main/models/config.json", result[0]);
 	}
 
 	[Fact]
-	public void FindGitHubOnnxAssetUrl_ValidJson_ReturnsUrl()
+	public void FindAssetUrlInJson_FindsOnnxUrl()
 	{
 		const string json = """{"assets":[{"browser_download_url":"https://example.com/en_US-ryan-high.onnx","size":123}]}""";
 
-		var result = PiperEngine.FindGitHubOnnxAssetUrl(json);
+		var result = ModelDownloader.FindAssetUrlInJson(json, ModelDownloader.GhOnnxAssetRegex(), ".onnx.json");
 
 		Assert.Equal("https://example.com/en_US-ryan-high.onnx", result);
 	}
 
 	[Fact]
-	public void FindGitHubOnnxAssetUrl_NoOnnxAsset_ReturnsNull()
+	public void FindAssetUrlInJson_ExcludesOnnxJson()
 	{
 		const string json = """{"assets":[{"browser_download_url":"https://example.com/en_US-ryan-high.onnx.json","size":123}]}""";
 
-		var result = PiperEngine.FindGitHubOnnxAssetUrl(json);
+		var result = ModelDownloader.FindAssetUrlInJson(json, ModelDownloader.GhOnnxAssetRegex(), ".onnx.json");
 
 		Assert.Null(result);
 	}
