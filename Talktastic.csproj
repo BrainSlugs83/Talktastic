@@ -30,11 +30,15 @@
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
     <NativeDebug>false</NativeDebug>
+    <IlcOptimizationPreference>Size</IlcOptimizationPreference>
+    <IlcTrimMetadata>true</IlcTrimMetadata>
   </PropertyGroup>
 
   <!-- Pass /Brepro to the MSVC linker so the PE timestamp is zeroed (deterministic native binary) -->
+  <!-- /OPT:ICF folds identical COMDAT sections (duplicate function bodies) -->
   <ItemGroup Condition="'$(PublishAot)' == 'true'">
     <LinkerArg Include="/Brepro" />
+    <LinkerArg Include="/OPT:ICF" />
   </ItemGroup>
 
   <ItemGroup>
