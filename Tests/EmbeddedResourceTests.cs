@@ -13,21 +13,21 @@ public sealed class EmbeddedResourceTests
 {
 	private static readonly Assembly TargetAssembly = typeof(RvcEngine).Assembly;
 
-	// ── Native DLLs (gzipped) ───────────────────────────────────────
+	// ── Native DLLs (brotli-compressed) ─────────────────────────────
 
 	[Theory]
-	[InlineData("Talktastic.Native.libmp3lame.dll.gz")]
-	[InlineData("Talktastic.Native.Microsoft.CognitiveServices.Speech.core.dll.gz")]
-	[InlineData("Talktastic.Native.Microsoft.CognitiveServices.Speech.extension.audio.sys.dll.gz")]
-	[InlineData("Talktastic.Native.Microsoft.CognitiveServices.Speech.extension.embedded.tts.dll.gz")]
-	[InlineData("Talktastic.Native.Microsoft.CognitiveServices.Speech.extension.onnxruntime.dll.gz")]
-	[InlineData("Talktastic.Native.onnxruntime.dll.gz")]
-	[InlineData("Talktastic.Native.onnxruntime_providers_shared.dll.gz")]
-	[InlineData("Talktastic.Native.sherpa-onnx-c-api.dll.gz")]
+	[InlineData("Talktastic.Native.libmp3lame.dll.br")]
+	[InlineData("Talktastic.Native.Microsoft.CognitiveServices.Speech.core.dll.br")]
+	[InlineData("Talktastic.Native.Microsoft.CognitiveServices.Speech.extension.audio.sys.dll.br")]
+	[InlineData("Talktastic.Native.Microsoft.CognitiveServices.Speech.extension.embedded.tts.dll.br")]
+	[InlineData("Talktastic.Native.Microsoft.CognitiveServices.Speech.extension.onnxruntime.dll.br")]
+	[InlineData("Talktastic.Native.onnxruntime.dll.br")]
+	[InlineData("Talktastic.Native.onnxruntime_providers_shared.dll.br")]
+	[InlineData("Talktastic.Native.sherpa-onnx-c-api.dll.br")]
 	public void NativeDll_IsEmbedded(string resourceName)
 	{
 		AssertResourceExists(resourceName);
-		AssertIsValidGzip(resourceName);
+		AssertIsValidBrotli(resourceName);
 	}
 
 	[Fact]
@@ -69,8 +69,8 @@ public sealed class EmbeddedResourceTests
 
 		foreach (var entry in entries)
 		{
-			var gzName = $"Talktastic.Native.{entry.Name}.gz";
-			AssertResourceExists(gzName, $"Manifest references '{entry.Name}' but resource '{gzName}' is missing");
+			var brName = $"Talktastic.Native.{entry.Name}.br";
+			AssertResourceExists(brName, $"Manifest references '{entry.Name}' but resource '{brName}' is missing");
 		}
 	}
 
@@ -145,7 +145,7 @@ public sealed class EmbeddedResourceTests
 	public void AllExpectedResources_ArePresent()
 	{
 		var allResources = TargetAssembly.GetManifestResourceNames();
-		var nativeDlls = allResources.Where(static r => r.StartsWith("Talktastic.Native.", StringComparison.Ordinal) && r.EndsWith(".dll.gz", StringComparison.Ordinal)).ToArray();
+		var nativeDlls = allResources.Where(static r => r.StartsWith("Talktastic.Native.", StringComparison.Ordinal) && r.EndsWith(".dll.br", StringComparison.Ordinal)).ToArray();
 		var skeletons = allResources.Where(static r => r.StartsWith("Talktastic.Rvc.skeleton_v2_", StringComparison.Ordinal) && r.EndsWith(".onnx.gz", StringComparison.Ordinal)).ToArray();
 		var manifests = allResources.Where(static r => r.StartsWith("Talktastic.Rvc.skeleton_v2_", StringComparison.Ordinal) && r.EndsWith("_manifest.json.gz", StringComparison.Ordinal)).ToArray();
 
@@ -168,6 +168,12 @@ public sealed class EmbeddedResourceTests
 		);
 	}
 
+	private static void AssertIsValidBrotli(string resourceName)
+	{
+		var bytes = DecompressBrotli(resourceName);
+		Assert.NotEmpty(bytes);
+	}
+
 	private static void AssertIsValidGzip(string resourceName)
 	{
 		using var stream = TargetAssembly.GetManifestResourceStream(resourceName)!;
@@ -184,6 +190,15 @@ public sealed class EmbeddedResourceTests
 		using var gzip = new GZipStream(stream, CompressionMode.Decompress);
 		using var ms = new MemoryStream();
 		gzip.CopyTo(ms);
+		return ms.ToArray();
+	}
+
+	private static byte[] DecompressBrotli(string resourceName)
+	{
+		using var stream = TargetAssembly.GetManifestResourceStream(resourceName)!;
+		using var brotli = new BrotliStream(stream, CompressionMode.Decompress);
+		using var ms = new MemoryStream();
+		brotli.CopyTo(ms);
 		return ms.ToArray();
 	}
 

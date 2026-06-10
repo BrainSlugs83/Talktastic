@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Text.RegularExpressions;
 
 namespace Talktastic;
@@ -138,92 +139,71 @@ static partial class PiperEngine
 	{
 		var piperDir = EnsurePiperDir();
 		var voicesDir = Path.Combine(piperDir, VoicesSubDir);
+		var registryPath = Path.Combine(piperDir, UrlMapFileName);
+		var registry = new DownloadRegistry(registryPath);
 		Directory.CreateDirectory(voicesDir);
 
-		// For URL voices, check the URL map first
 		if (IsUrlVoice(voiceQuery))
 		{
-			var cached = LookupUrlMap(piperDir, voiceQuery);
+			var cached = TryFindRegisteredVoicePath(voicesDir, registry.LookupByUrl(voiceQuery));
 			if (cached is not null)
+			{
 				return cached;
+			}
 		}
 
 		using var http = new HttpClient();
 		http.DefaultRequestHeaders.Add("User-Agent", "Talktastic");
 
-		// Archive URL -- download, extract, find .onnx + .onnx.json
-		if (IsUrlVoice(voiceQuery) && ArchiveExtractor.IsArchive(voiceQuery))
-		{
-			return await DownloadAndExtractArchiveVoiceAsync
-			(
-				http, voiceQuery, voicesDir, piperDir, cancellationToken
-			).ConfigureAwait(false);
-		}
-
-		// Resolve the voice query to concrete download URLs + config URL
 		if (IsUrlVoice(voiceQuery))
 		{
-			var resolved = await ModelDownloader.ResolveModelUrlAsync(http, voiceQuery, cancellationToken).ConfigureAwait(false);
+			var downloader = CreateVoiceDownloader(http);
+			var resolved = await ResolveVoiceUrlAsync(downloader, voiceQuery, cancellationToken).ConfigureAwait(false);
+			var matchedEntry = default(ResourceEntry);
 
-			// If the resolved URL is an archive, download + extract
-			if (resolved.IsArchive)
+			foreach (var url in resolved.IntermediateUrls.Append(resolved.FinalUrl))
 			{
-				return await DownloadAndExtractArchiveVoiceAsync
-				(
-					http, resolved.FileUrl, voicesDir, piperDir, cancellationToken
-				).ConfigureAwait(false);
-			}
-
-			var modelPath = Path.Combine(voicesDir, $"{resolved.ModelName}.onnx");
-			var configPath = modelPath + ".json";
-
-			var existing = EnumerateCachedVoices(voicesDir)
-				.FirstOrDefault(v => v.Name.Equals(resolved.ModelName, StringComparison.OrdinalIgnoreCase));
-
-			if (existing.OnnxPath is not null)
-			{
-				WriteUrlMapEntry(piperDir, voiceQuery, resolved.ModelName);
-				return existing.OnnxPath;
-			}
-
-			await Console.Error.WriteLineAsync
-			(
-				$"Downloading Piper voice '{resolved.ModelName}'..."
-			).ConfigureAwait(false);
-
-			await DownloadFileAsync(http, resolved.FileUrl, modelPath, cancellationToken).ConfigureAwait(false);
-
-			// Download companion files (typically .onnx.json config)
-			if (resolved.CompanionUrls is not null)
-			{
-				foreach (var companionUrl in resolved.CompanionUrls)
+				matchedEntry = registry.LookupByUrl(url);
+				var cachedPath = TryFindRegisteredVoicePath(voicesDir, matchedEntry);
+				if (cachedPath is not null)
 				{
-					var companionName = Uri.UnescapeDataString
-					(
-						Path.GetFileName(new Uri(companionUrl).LocalPath)
-					);
-					var companionPath = Path.Combine(voicesDir, companionName);
-					if (!File.Exists(companionPath))
-					{
-						try
-						{
-							await DownloadFileAsync(http, companionUrl, companionPath, cancellationToken).ConfigureAwait(false);
-						}
-						catch (HttpRequestException)
-						{
-							// Config file is optional -- some models don't have one
-						}
-					}
+					RegisterVoiceResource(registry, cachedPath, voiceQuery, resolved);
+					return cachedPath;
 				}
 			}
 
-			var sizeMb = new FileInfo(modelPath).Length / 1024 / 1024;
+			var existing = FindCachedVoiceByNames
+			(
+				voicesDir,
+				resolved.Names.Append(GetModelNameFromUrl(resolved.FinalUrl))
+			);
+			if (existing is not null)
+			{
+				RegisterVoiceResource(registry, existing, voiceQuery, resolved);
+				return existing;
+			}
+
 			await Console.Error.WriteLineAsync
 			(
-				$"Downloaded {resolved.ModelName} ({sizeMb} MB)."
+				$"Downloading Piper voice '{GetPreferredVoiceName(resolved)}'..."
 			).ConfigureAwait(false);
 
-			WriteUrlMapEntry(piperDir, voiceQuery, resolved.ModelName);
+			var modelPath = await DownloadVoiceFilesAsync
+			(
+				downloader,
+				resolved,
+				voicesDir,
+				CreateDownloadProgress(),
+				cancellationToken
+			).ConfigureAwait(false);
+
+			var size = new FileInfo(modelPath).Length.ToHumanReadableFileSize(false);
+			await Console.Error.WriteLineAsync
+			(
+				$"Ready: {Path.GetFileNameWithoutExtension(modelPath)} ({size})."
+			).ConfigureAwait(false);
+
+			RegisterVoiceResource(registry, modelPath, voiceQuery, resolved);
 			return modelPath;
 		}
 
@@ -247,10 +227,10 @@ static partial class PiperEngine
 		await DownloadFileAsync(http, shorthand.OnnxUrl, shorthandModelPath, cancellationToken).ConfigureAwait(false);
 		await DownloadFileAsync(http, shorthand.ConfigUrl, shorthandConfigPath, cancellationToken).ConfigureAwait(false);
 
-		var shorthandSizeMb = new FileInfo(shorthandModelPath).Length / 1024 / 1024;
+		var shorthandSize = new FileInfo(shorthandModelPath).Length.ToHumanReadableFileSize(false);
 		await Console.Error.WriteLineAsync
 		(
-			$"Downloaded {shorthand.ModelName} ({shorthandSizeMb} MB)."
+			$"Downloaded {shorthand.ModelName} ({shorthandSize})."
 		).ConfigureAwait(false);
 
 		return shorthandModelPath;
@@ -266,121 +246,20 @@ static partial class PiperEngine
 		CancellationToken cancellationToken
 	)
 	{
-		await Console.Error.WriteLineAsync
+		await Console.Error.WriteLineAsync("Downloading and extracting Piper voice from archive...").ConfigureAwait(false);
+		var downloader = CreateVoiceDownloader(http);
+		var resolved = await ResolveVoiceUrlAsync(downloader, archiveUrl, cancellationToken).ConfigureAwait(false);
+		var modelPath = await DownloadVoiceFilesAsync
 		(
-			$"Downloading and extracting Piper voice from archive..."
+			downloader,
+			resolved,
+			voicesDir,
+			CreateDownloadProgress(),
+			cancellationToken
 		).ConfigureAwait(false);
-
-		var tempArchive = Path.Combine(voicesDir, $"download-{Guid.NewGuid():N}{ModelDownloader.GetArchiveExtensionPublic(archiveUrl)}");
-		var tempExtract = Path.Combine(voicesDir, $"extract-{Guid.NewGuid():N}");
-
-		try
-		{
-			await DownloadFileAsync(http, archiveUrl, tempArchive, cancellationToken).ConfigureAwait(false);
-
-			Directory.CreateDirectory(tempExtract);
-			await ArchiveExtractor.ExtractAsync(tempArchive, tempExtract, cancellationToken).ConfigureAwait(false);
-
-			var onnxFiles = Directory.GetFiles(tempExtract, "*.onnx", SearchOption.AllDirectories);
-			if (onnxFiles.Length == 0)
-			{
-				throw new InvalidOperationException
-				(
-					$"No .onnx model file found in archive from {archiveUrl}"
-				);
-			}
-
-			var sourceOnnx = onnxFiles[0];
-			var modelName = Path.GetFileNameWithoutExtension(sourceOnnx);
-			var finalOnnxPath = Path.Combine(voicesDir, $"{modelName}.onnx");
-
-			File.Move(sourceOnnx, finalOnnxPath, overwrite: true);
-
-			// Look for companion .onnx.json config
-			var sourceDir = Path.GetDirectoryName(sourceOnnx)!;
-			var configFiles = Directory.GetFiles(sourceDir, "*.onnx.json", SearchOption.TopDirectoryOnly);
-			if (configFiles.Length > 0)
-			{
-				var finalConfigPath = Path.Combine(voicesDir, $"{modelName}.onnx.json");
-				File.Move(configFiles[0], finalConfigPath, overwrite: true);
-			}
-
-			var jsonCandidate = Path.ChangeExtension(sourceOnnx, ".onnx.json");
-			if (File.Exists(jsonCandidate))
-			{
-				File.Move(jsonCandidate, Path.Combine(voicesDir, $"{modelName}.onnx.json"), overwrite: true);
-			}
-
-			var sizeMb = new FileInfo(finalOnnxPath).Length / 1024 / 1024;
-			await Console.Error.WriteLineAsync
-			(
-				$"Extracted {modelName} ({sizeMb} MB)."
-			).ConfigureAwait(false);
-
-			WriteUrlMapEntry(piperDir, archiveUrl, modelName);
-			return finalOnnxPath;
-		}
-		finally
-		{
-			try { File.Delete(tempArchive); } catch (IOException) { }
-			try { if (Directory.Exists(tempExtract)) Directory.Delete(tempExtract, recursive: true); }
-			catch (IOException) { }
-		}
-	}
-
-	// ── Voice URL map ──
-
-	/// <summary>
-	/// Looks up a URL in the voice URL map and returns the local .onnx path if cached,
-	/// or null if not found.
-	/// </summary>
-	[ExcludeFromCodeCoverage]
-	private static string? LookupUrlMap(string piperDir, string url)
-	{
-		var urlMapPath = Path.Combine(piperDir, UrlMapFileName);
-		if (!File.Exists(urlMapPath))
-			return null;
-
-		var normalizedUrl = NormalizeUrl(url);
-		var voicesDir = Path.Combine(piperDir, VoicesSubDir);
-		var cached = EnumerateCachedVoices(voicesDir)
-			.ToDictionary(v => v.Name, v => v.OnnxPath, StringComparer.OrdinalIgnoreCase);
-		var urlMap = ModelDownloader.ReadUrlMap(urlMapPath);
-
-		if
-		(
-			urlMap.TryGetValue(normalizedUrl, out var modelName)
-			&& cached.TryGetValue(modelName, out var onnxPath)
-		)
-		{
-			return onnxPath;
-		}
-
-		return null;
-	}
-
-	/// <summary>
-	/// Registers a URL → model name mapping in the voices.json URL map.
-	/// </summary>
-	[ExcludeFromCodeCoverage]
-	private static void WriteUrlMapEntry(string piperDir, string url, string modelName)
-	{
-		var urlMapPath = Path.Combine(piperDir, UrlMapFileName);
-		var normalizedUrl = NormalizeUrl(url);
-		var urlMap = ModelDownloader.ReadUrlMap(urlMapPath);
-		urlMap[normalizedUrl] = modelName;
-		ModelDownloader.WriteUrlMap(urlMapPath, urlMap);
-	}
-
-	/// <summary>
-	/// Normalizes a URL for URL map lookup: trims trailing slashes, lowercases scheme+host.
-	/// </summary>
-	internal static string NormalizeUrl(string url)
-	{
-		var uri = new Uri(url.TrimEnd('/'));
-#pragma warning disable CA1308 // URLs are conventionally lowercase
-		return $"{uri.Scheme}://{uri.Host.ToLowerInvariant()}{uri.PathAndQuery}";
-#pragma warning restore CA1308
+		var registry = new DownloadRegistry(Path.Combine(piperDir, UrlMapFileName));
+		RegisterVoiceResource(registry, modelPath, archiveUrl, resolved);
+		return modelPath;
 	}
 
 	/// <summary>
@@ -423,6 +302,11 @@ static partial class PiperEngine
 
 		var onnxUrl = $"{HuggingFaceBaseUrl}/{lang}/{locale}/{name}/{quality}/{modelName}.onnx";
 		return (onnxUrl, onnxUrl + ".json", modelName);
+	}
+
+	internal static string NormalizeUrl(string url)
+	{
+		return ModelDownloader.NormalizeUrl(url);
 	}
 
 	/// <summary>
@@ -552,5 +436,291 @@ static partial class PiperEngine
 		// Single source of truth for downloads; gives us the same `[download]` timing line
 		// that ModelDownloader emits for RVC zips.
 		return ModelDownloader.DownloadFileAsync(http, url, destPath, cancellationToken);
+	}
+
+	[ExcludeFromCodeCoverage]
+	private static FileDownloader CreateVoiceDownloader(HttpClient http)
+	{
+		return new FileDownloader(http)
+		{
+			Resolvers =
+			{
+				new VoiceModelsComResolver(),
+				new GoogleDriveResolver(),
+				new HuggingFaceResolver(),
+				new GitHubReleaseResolver(),
+			},
+			FileFilter = path =>
+				path.EndsWith(".onnx", StringComparison.OrdinalIgnoreCase)
+				|| path.EndsWith(".onnx.json", StringComparison.OrdinalIgnoreCase),
+		};
+	}
+
+	[ExcludeFromCodeCoverage]
+	private static async Task<ResolvedUrl> ResolveVoiceUrlAsync
+	(
+		FileDownloader downloader,
+		string voiceQuery,
+		CancellationToken cancellationToken
+	)
+	{
+		try
+		{
+			if (voiceQuery.EndsWith(".onnx.json", StringComparison.OrdinalIgnoreCase))
+			{
+				var modelUrl = voiceQuery[..^".json".Length];
+				return CreateDirectResolvedVoice(modelUrl, [voiceQuery], [GetModelNameFromUrl(modelUrl)]);
+			}
+
+			if (voiceQuery.EndsWith(".onnx", StringComparison.OrdinalIgnoreCase))
+			{
+				return CreateDirectResolvedVoice
+				(
+					voiceQuery,
+					[],
+					[GetModelNameFromUrl(voiceQuery)],
+					[voiceQuery + ".json"]
+				);
+			}
+
+			if (ArchiveExtractor.IsArchive(voiceQuery))
+			{
+				return CreateDirectResolvedVoice
+				(
+					voiceQuery,
+					[],
+					[GetModelNameFromUrl(voiceQuery)],
+					null,
+					ResolvedUrlSourceType.Archive
+				);
+			}
+
+			return await downloader.ResolveAsync(voiceQuery, cancellationToken).ConfigureAwait(false);
+		}
+		catch (HttpRequestException ex)
+		{
+			throw new InvalidOperationException
+			(
+				$"Failed to download {voiceQuery}: {ModelDownloader.DescribeNetworkFailure(voiceQuery, ex)}",
+				ex
+			);
+		}
+	}
+
+	private static ResolvedUrl CreateDirectResolvedVoice
+	(
+		string finalUrl,
+		IReadOnlyList<string> intermediateUrls,
+		IReadOnlyList<string> names,
+		IReadOnlyList<string>? companionUrls = null,
+		ResolvedUrlSourceType sourceType = ResolvedUrlSourceType.SingleFile
+	)
+	{
+		return new ResolvedUrl
+		{
+			FinalUrl = finalUrl,
+			FileName = Path.GetFileName(new Uri(finalUrl).LocalPath),
+			SourceType = sourceType,
+			IntermediateUrls = intermediateUrls,
+			CompanionUrls = companionUrls,
+			Names = names,
+		};
+	}
+
+	[ExcludeFromCodeCoverage]
+	private static async Task<string> DownloadVoiceFilesAsync
+	(
+		FileDownloader downloader,
+		ResolvedUrl resolved,
+		string voicesDir,
+		IProgress<FileDownloadProgress>? progress,
+		CancellationToken cancellationToken
+	)
+	{
+		var tempDir = Path.Combine(voicesDir, $".download-{Guid.NewGuid():N}");
+		Directory.CreateDirectory(tempDir);
+
+		try
+		{
+			await downloader.DownloadAsync
+			(
+				resolved with
+				{
+					CompanionUrls = null,
+				},
+				tempDir,
+				progress,
+				cancellationToken
+			).ConfigureAwait(false);
+
+			await DownloadOptionalVoiceCompanionsAsync
+			(
+				downloader,
+				resolved.CompanionUrls,
+				tempDir,
+				cancellationToken
+			).ConfigureAwait(false);
+
+			return CommitDownloadedVoice
+			(
+				tempDir,
+				voicesDir,
+				resolved.Names.Count > 0 ? resolved.Names[0] : null
+			);
+		}
+		finally
+		{
+			try
+			{
+				if (Directory.Exists(tempDir))
+				{
+					Directory.Delete(tempDir, recursive: true);
+				}
+			}
+			catch (IOException)
+			{
+			}
+		}
+	}
+
+	[ExcludeFromCodeCoverage]
+	private static async Task DownloadOptionalVoiceCompanionsAsync
+	(
+		FileDownloader downloader,
+		IReadOnlyList<string>? companionUrls,
+		string destFolder,
+		CancellationToken cancellationToken
+	)
+	{
+		if (companionUrls is null || companionUrls.Count == 0)
+		{
+			return;
+		}
+
+		foreach (var companionUrl in companionUrls.Distinct(StringComparer.OrdinalIgnoreCase))
+		{
+			try
+			{
+				await downloader.DownloadAsync
+				(
+					CreateDirectResolvedVoice(companionUrl, [], []),
+					destFolder,
+					ct: cancellationToken
+				).ConfigureAwait(false);
+			}
+			catch (HttpRequestException)
+			{
+			}
+			catch (InvalidOperationException)
+			{
+			}
+		}
+	}
+
+	private static string CommitDownloadedVoice(string tempDir, string voicesDir, string? preferredName)
+	{
+		var sourceOnnx = Directory.GetFiles(tempDir, "*.onnx", SearchOption.AllDirectories)
+			.OrderBy(static path => path, StringComparer.OrdinalIgnoreCase)
+			.FirstOrDefault()
+			?? throw new InvalidOperationException("No .onnx model file was downloaded.");
+		var fallbackName = Path.GetFileNameWithoutExtension(sourceOnnx);
+		var modelName = ModelDownloader.ResolveModelName(sourceOnnx, fallbackName, preferredName);
+		var finalOnnxPath = Path.Combine(voicesDir, $"{modelName}.onnx");
+		File.Move(sourceOnnx, finalOnnxPath, overwrite: true);
+
+		var sourceConfig = Directory.GetFiles(tempDir, "*.onnx.json", SearchOption.AllDirectories)
+			.OrderBy(static path => path, StringComparer.OrdinalIgnoreCase)
+			.FirstOrDefault();
+		if (sourceConfig is not null)
+		{
+			File.Move(sourceConfig, finalOnnxPath + ".json", overwrite: true);
+		}
+
+		return finalOnnxPath;
+	}
+
+	private static string? TryFindRegisteredVoicePath(string voicesDir, ResourceEntry? entry)
+	{
+		if (entry is null)
+		{
+			return null;
+		}
+
+		var cachedVoices = EnumerateCachedVoices(voicesDir)
+			.ToDictionary(static voice => voice.Name, static voice => voice.OnnxPath, StringComparer.OrdinalIgnoreCase);
+
+		foreach (var name in entry.Names.Prepend(entry.Key).Distinct(StringComparer.OrdinalIgnoreCase))
+		{
+			if (cachedVoices.TryGetValue(name, out var cachedPath))
+			{
+				return cachedPath;
+			}
+		}
+
+		return null;
+	}
+
+	private static string? FindCachedVoiceByNames(string voicesDir, IEnumerable<string> names)
+	{
+		var cachedVoices = EnumerateCachedVoices(voicesDir)
+			.ToDictionary(static voice => voice.Name, static voice => voice.OnnxPath, StringComparer.OrdinalIgnoreCase);
+
+		foreach (var name in names.Distinct(StringComparer.OrdinalIgnoreCase))
+		{
+			if (cachedVoices.TryGetValue(name, out var cachedPath))
+			{
+				return cachedPath;
+			}
+		}
+
+		return null;
+	}
+
+	private static string GetPreferredVoiceName(ResolvedUrl resolved)
+	{
+		return (resolved.Names.Count > 0 ? resolved.Names[0] : null)
+			?? GetModelNameFromUrl(resolved.FinalUrl);
+	}
+
+	private static void RegisterVoiceResource
+	(
+		DownloadRegistry registry,
+		string modelPath,
+		string inputUrl,
+		ResolvedUrl resolved
+	)
+	{
+		var modelName = Path.GetFileNameWithoutExtension(modelPath);
+		var entry = new ResourceEntry
+		{
+			Key = modelName,
+		};
+		entry.Names.Add(modelName);
+		entry.Names.AddRange(resolved.Names);
+		entry.Urls.Add(inputUrl);
+		entry.Urls.AddRange(resolved.IntermediateUrls);
+		entry.Urls.Add(resolved.FinalUrl);
+		registry.Register(entry);
+		registry.Save();
+	}
+
+	private static Progress<FileDownloadProgress> CreateDownloadProgress()
+	{
+		return new Progress<FileDownloadProgress>
+		(
+			p =>
+			{
+				if (p.Phase == DownloadPhase.Downloading || p.Phase == DownloadPhase.Streaming)
+				{
+					var pct = p.OverallPercent?.ToString("F0", CultureInfo.InvariantCulture) ?? "?";
+					var rate = ((long)p.TransferRate).ToHumanReadableFileSize(false);
+					Console.Error.Write($"\rDownloading... {pct}% at {rate}/s");
+				}
+				else if (p.Phase == DownloadPhase.Complete)
+				{
+					Console.Error.WriteLine();
+				}
+			}
+		);
 	}
 }

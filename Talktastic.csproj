@@ -5,7 +5,7 @@
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <AssemblyName>say</AssemblyName>
     <RootNamespace>Talktastic</RootNamespace>
-    <Version>0.8.3</Version>
+    <Version>0.8.4</Version>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <Product>Talktastic</Product>
     <Description>Standalone Windows TTS CLI</Description>
@@ -43,6 +43,7 @@
 
   <ItemGroup>
     <Compile Remove="Tests\**\*.cs" />
+    <Compile Remove="ScratchUrlResolverValidation\**\*.cs" />
     <PackageReference Include="BetterStringExtensions" Version="1.0.4" />
     <PackageReference Include="Concentus" Version="2.2.2" />
     <PackageReference Include="Concentus.Oggfile" Version="1.0.7" />
@@ -72,11 +73,11 @@
   </ItemGroup>
 
   <Target Name="PrepareNativeResources" BeforeTargets="PrepareResourceNames" Condition="'$(DesignTimeBuild)' != 'true'">
-    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\build-resources.ps1&quot; -OutputDirectory &quot;$(SpeechNativeResourceDirectory)&quot; -BasePackageDirectory &quot;$(PkgMicrosoft_CognitiveServices_Speech)&quot; -EmbeddedTtsPackageDirectory &quot;$(PkgMicrosoft_CognitiveServices_Speech_Extension_Embedded_TTS)&quot; -OnnxRuntimePackageDirectory &quot;$(PkgMicrosoft_CognitiveServices_Speech_Extension_ONNX_Runtime)&quot; -LamePackageDirectory &quot;$(PkgNAudio_Lame)&quot; -SherpaOnnxPackageDirectory &quot;$(Pkgorg_k2fsa_sherpa_onnx_runtime_win-x64)&quot; -DmlOnnxRuntimePackageDirectory &quot;$(PkgMicrosoft_ML_OnnxRuntime_DirectML)&quot; -DirectMlPackageDirectory &quot;$(PkgMicrosoft_AI_DirectML)&quot; -RuntimeIdentifier &quot;$(SpeechNativeRuntimeIdentifier)&quot;" />
+    <Exec Command="pwsh -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\build-resources.ps1&quot; -OutputDirectory &quot;$(SpeechNativeResourceDirectory)&quot; -BasePackageDirectory &quot;$(PkgMicrosoft_CognitiveServices_Speech)&quot; -EmbeddedTtsPackageDirectory &quot;$(PkgMicrosoft_CognitiveServices_Speech_Extension_Embedded_TTS)&quot; -OnnxRuntimePackageDirectory &quot;$(PkgMicrosoft_CognitiveServices_Speech_Extension_ONNX_Runtime)&quot; -LamePackageDirectory &quot;$(PkgNAudio_Lame)&quot; -SherpaOnnxPackageDirectory &quot;$(Pkgorg_k2fsa_sherpa_onnx_runtime_win-x64)&quot; -DmlOnnxRuntimePackageDirectory &quot;$(PkgMicrosoft_ML_OnnxRuntime_DirectML)&quot; -DirectMlPackageDirectory &quot;$(PkgMicrosoft_AI_DirectML)&quot; -RuntimeIdentifier &quot;$(SpeechNativeRuntimeIdentifier)&quot;" />
     <ItemGroup>
-      <GeneratedNativeResource Remove="$(SpeechNativeResourceDirectory)\*.dll.gz" />
-      <GeneratedNativeResource Include="$(SpeechNativeResourceDirectory)\*.dll.gz" />
-      <EmbeddedResource Remove="$(SpeechNativeResourceDirectory)\*.dll.gz" />
+      <GeneratedNativeResource Remove="$(SpeechNativeResourceDirectory)\*.dll.br" />
+      <GeneratedNativeResource Include="$(SpeechNativeResourceDirectory)\*.dll.br" />
+      <EmbeddedResource Remove="$(SpeechNativeResourceDirectory)\*.dll.br" />
       <EmbeddedResource Remove="$(SpeechNativeResourceDirectory)\manifest.json" />
       <EmbeddedResource Include="@(GeneratedNativeResource)">
         <LogicalName>Talktastic.Native.%(GeneratedNativeResource.Filename)%(GeneratedNativeResource.Extension)</LogicalName>

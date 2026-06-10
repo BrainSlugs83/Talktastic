@@ -5,7 +5,8 @@ namespace Talktastic;
 
 /// <summary>
 /// Unified archive extraction for all BCL-supported formats:
-/// .zip, .tar, .tar.gz/.tgz, and single-file .gz.
+/// .zip, .tar, .tar.gz/.tgz, .tar.br, .tar.zz/.tar.zlib,
+/// and single-file .gz, .br, .zz/.zlib.
 /// Format detection uses file extensions with magic-byte fallback.
 /// </summary>
 static class ArchiveExtractor
@@ -16,7 +17,7 @@ static class ArchiveExtractor
 	/// Returns true if the path or URL refers to a supported archive format
 	/// based on file extension.
 	/// </summary>
-	public static bool IsArchive([System.Diagnostics.CodeAnalysis.NotNullWhen(true)] string? pathOrUrl)
+	internal static bool IsArchive([System.Diagnostics.CodeAnalysis.NotNullWhen(true)] string? pathOrUrl)
 	{
 		if (string.IsNullOrWhiteSpace(pathOrUrl))
 			return false;
@@ -70,15 +71,104 @@ static class ArchiveExtractor
 		{
 			ArchiveFormat.Zip => await ExtractZipAsync(archivePath, destDir, cancellationToken).ConfigureAwait(false),
 			ArchiveFormat.TarGz => await ExtractTarGzAsync(archivePath, destDir, cancellationToken).ConfigureAwait(false),
+			ArchiveFormat.TarBr => await ExtractTarBrAsync(archivePath, destDir, cancellationToken).ConfigureAwait(false),
+			ArchiveFormat.TarZl => await ExtractTarZlAsync(archivePath, destDir, cancellationToken).ConfigureAwait(false),
 			ArchiveFormat.Tar => await ExtractTarAsync(archivePath, destDir, cancellationToken).ConfigureAwait(false),
-			ArchiveFormat.Gz => ExtractGz(archivePath, destDir),
+			ArchiveFormat.Gz => await ExtractGzAsync(archivePath, destDir, cancellationToken).ConfigureAwait(false),
+			ArchiveFormat.Br => await ExtractBrAsync(archivePath, destDir, cancellationToken).ConfigureAwait(false),
+			ArchiveFormat.Zl => await ExtractZlAsync(archivePath, destDir, cancellationToken).ConfigureAwait(false),
 			_ => throw new NotSupportedException($"Unsupported archive format: {format}"),
 		};
 	}
 
+	/// <summary>
+	/// Extracts an archive from a stream using the supplied format.
+	/// Supports TAR, TAR.GZ, TAR.BR, TAR.ZL, GZ, BR, ZL formats.
+	/// ZIP is not supported for streaming because it requires a seekable stream.
+	/// </summary>
+	public static async Task<string[]> ExtractAsync
+	(
+		Stream stream,
+		ArchiveFormat format,
+		string destDir,
+		CancellationToken cancellationToken = default
+	)
+	{
+		ArgumentNullException.ThrowIfNull(stream);
+		ArgumentException.ThrowIfNullOrWhiteSpace(destDir);
+
+		Directory.CreateDirectory(destDir);
+
+		switch (format)
+		{
+			case ArchiveFormat.Zip:
+				throw new NotSupportedException("ZIP requires a seekable stream. Use the file-based overload.");
+
+			case ArchiveFormat.TarGz:
+			{
+				var gz = new GZipStream(stream, CompressionMode.Decompress, leaveOpen: true);
+				await using var gzDispose = gz.ConfigureAwait(false);
+				return await ExtractTarStreamAsync(gz, destDir, cancellationToken).ConfigureAwait(false);
+			}
+
+			case ArchiveFormat.TarBr:
+			{
+				var br = new BrotliStream(stream, CompressionMode.Decompress, leaveOpen: true);
+				await using var brDispose = br.ConfigureAwait(false);
+				return await ExtractTarStreamAsync(br, destDir, cancellationToken).ConfigureAwait(false);
+			}
+
+			case ArchiveFormat.TarZl:
+			{
+				var zl = new ZLibStream(stream, CompressionMode.Decompress, leaveOpen: true);
+				await using var zlDispose = zl.ConfigureAwait(false);
+				return await ExtractTarStreamAsync(zl, destDir, cancellationToken).ConfigureAwait(false);
+			}
+
+			case ArchiveFormat.Tar:
+				return await ExtractTarStreamAsync(stream, destDir, cancellationToken).ConfigureAwait(false);
+
+			case ArchiveFormat.Gz:
+			{
+				var gz = new GZipStream(stream, CompressionMode.Decompress, leaveOpen: true);
+				await using var gzDispose = gz.ConfigureAwait(false);
+				return await ExtractSingleFileAsync("decompressed", gz, destDir, cancellationToken).ConfigureAwait(false);
+			}
+
+			case ArchiveFormat.Br:
+			{
+				var br = new BrotliStream(stream, CompressionMode.Decompress, leaveOpen: true);
+				await using var brDispose = br.ConfigureAwait(false);
+				return await ExtractSingleFileAsync("decompressed", br, destDir, cancellationToken).ConfigureAwait(false);
+			}
+
+			case ArchiveFormat.Zl:
+			{
+				var zl = new ZLibStream(stream, CompressionMode.Decompress, leaveOpen: true);
+				await using var zlDispose = zl.ConfigureAwait(false);
+				return await ExtractSingleFileAsync("decompressed", zl, destDir, cancellationToken).ConfigureAwait(false);
+			}
+
+			case ArchiveFormat.Unknown:
+			default:
+				throw new NotSupportedException($"Unsupported archive format: {format}");
+		}
+	}
+
 	// ── Format detection ─────────────────────────────────────────────
 
-	internal enum ArchiveFormat { Unknown, Zip, TarGz, Tar, Gz }
+	internal enum ArchiveFormat
+	{
+		Unknown,
+		Zip,
+		TarGz,
+		Tar,
+		Gz,
+		TarBr,
+		Br,
+		TarZl,
+		Zl,
+	}
 
 	/// <summary>
 	/// Determines the archive format from the file extension.
@@ -95,6 +185,15 @@ static class ArchiveExtractor
 			return ArchiveFormat.TarGz;
 		}
 
+		if (name.EndsWith(".tar.br", StringComparison.OrdinalIgnoreCase))
+			return ArchiveFormat.TarBr;
+
+		if (name.EndsWith(".tar.zz", StringComparison.OrdinalIgnoreCase)
+			|| name.EndsWith(".tar.zlib", StringComparison.OrdinalIgnoreCase))
+		{
+			return ArchiveFormat.TarZl;
+		}
+
 		if (name.EndsWith(".tar", StringComparison.OrdinalIgnoreCase))
 			return ArchiveFormat.Tar;
 
@@ -103,6 +202,15 @@ static class ArchiveExtractor
 
 		if (name.EndsWith(".gz", StringComparison.OrdinalIgnoreCase))
 			return ArchiveFormat.Gz;
+
+		if (name.EndsWith(".br", StringComparison.OrdinalIgnoreCase))
+			return ArchiveFormat.Br;
+
+		if (name.EndsWith(".zz", StringComparison.OrdinalIgnoreCase)
+			|| name.EndsWith(".zlib", StringComparison.OrdinalIgnoreCase))
+		{
+			return ArchiveFormat.Zl;
+		}
 
 		return ArchiveFormat.Unknown;
 	}
@@ -115,11 +223,12 @@ static class ArchiveExtractor
 		Span<byte> header = stackalloc byte[512];
 		using var fs = File.OpenRead(path);
 		var bytesRead = fs.Read(header);
-		if (bytesRead < 4)
+		if (bytesRead < 2)
 			return ArchiveFormat.Unknown;
 
 		// ZIP: PK\x03\x04
-		if (header[0] == 0x50 && header[1] == 0x4B
+		if (bytesRead >= 4
+			&& header[0] == 0x50 && header[1] == 0x4B
 			&& header[2] == 0x03 && header[3] == 0x04)
 		{
 			return ArchiveFormat.Zip;
@@ -128,22 +237,22 @@ static class ArchiveExtractor
 		// Gzip: \x1f\x8b
 		if (header[0] == 0x1F && header[1] == 0x8B)
 		{
-			// Could be .gz or .tar.gz — peek inside the gzip stream
+			// Could be .gz or .tar.gz -- peek inside the gzip stream
 			// to check if content starts with a tar header.
-			if (bytesRead >= 512)
-			{
-				return IsTarInsideGzip(path) ? ArchiveFormat.TarGz : ArchiveFormat.Gz;
-			}
+			return IsTarInsideGzip(path) ? ArchiveFormat.TarGz : ArchiveFormat.Gz;
+		}
 
-			// If we can't read enough, assume plain gz
-			return ArchiveFormat.Gz;
+		// Brotli has no stable magic number. Extension-based detection only.
+
+		// ZLib starts with a two-byte header, commonly 78 01 / 78 5E / 78 9C / 78 DA.
+		// This is still heuristic and may false-positive on arbitrary binary data.
+		if (IsLikelyZLibHeader(header, bytesRead))
+		{
+			return IsTarInsideZLib(path) ? ArchiveFormat.TarZl : ArchiveFormat.Zl;
 		}
 
 		// Tar: "ustar" at offset 257
-		if (bytesRead >= 263
-			&& header[257] == 'u' && header[258] == 's'
-			&& header[259] == 't' && header[260] == 'a'
-			&& header[261] == 'r')
+		if (IsTarHeader(header, bytesRead))
 		{
 			return ArchiveFormat.Tar;
 		}
@@ -170,15 +279,55 @@ static class ArchiveExtractor
 				totalRead += read;
 			}
 
-			return totalRead >= 263
-				&& header[257] == 'u' && header[258] == 's'
-				&& header[259] == 't' && header[260] == 'a'
-				&& header[261] == 'r';
+			return IsTarHeader(header, totalRead);
 		}
 		catch (InvalidDataException)
 		{
 			return false;
 		}
+	}
+
+	private static bool IsTarInsideZLib(string path)
+	{
+		try
+		{
+			using var fs = File.OpenRead(path);
+			using var zl = new ZLibStream(fs, CompressionMode.Decompress);
+			var header = new byte[263];
+			var totalRead = 0;
+			while (totalRead < header.Length)
+			{
+				var read = zl.Read(header, totalRead, header.Length - totalRead);
+				if (read == 0)
+					break;
+
+				totalRead += read;
+			}
+
+			return IsTarHeader(header, totalRead);
+		}
+		catch (InvalidDataException)
+		{
+			return false;
+		}
+	}
+
+	private static bool IsTarHeader(ReadOnlySpan<byte> header, int bytesRead)
+	{
+		return bytesRead >= 263
+			&& header[257] == 'u' && header[258] == 's'
+			&& header[259] == 't' && header[260] == 'a'
+			&& header[261] == 'r';
+	}
+
+	private static bool IsLikelyZLibHeader(ReadOnlySpan<byte> header, int bytesRead)
+	{
+		if (bytesRead < 2 || header[0] != 0x78)
+			return false;
+
+		var commonCompressionFlags = header[1] is 0x01 or 0x5E or 0x9C or 0xDA;
+		var headerValue = (header[0] << 8) | header[1];
+		return commonCompressionFlags || headerValue % 31 == 0;
 	}
 
 	// ── Extractors ───────────────────────────────────────────────────
@@ -211,6 +360,34 @@ static class ArchiveExtractor
 		var gz = new GZipStream(fs, CompressionMode.Decompress);
 		await using var gzDispose = gz.ConfigureAwait(false);
 		return await ExtractTarStreamAsync(gz, destDir, cancellationToken).ConfigureAwait(false);
+	}
+
+	private static async Task<string[]> ExtractTarBrAsync
+	(
+		string archivePath,
+		string destDir,
+		CancellationToken cancellationToken
+	)
+	{
+		var fs = File.OpenRead(archivePath);
+		await using var fsDispose = fs.ConfigureAwait(false);
+		var br = new BrotliStream(fs, CompressionMode.Decompress);
+		await using var brDispose = br.ConfigureAwait(false);
+		return await ExtractTarStreamAsync(br, destDir, cancellationToken).ConfigureAwait(false);
+	}
+
+	private static async Task<string[]> ExtractTarZlAsync
+	(
+		string archivePath,
+		string destDir,
+		CancellationToken cancellationToken
+	)
+	{
+		var fs = File.OpenRead(archivePath);
+		await using var fsDispose = fs.ConfigureAwait(false);
+		var zl = new ZLibStream(fs, CompressionMode.Decompress);
+		await using var zlDispose = zl.ConfigureAwait(false);
+		return await ExtractTarStreamAsync(zl, destDir, cancellationToken).ConfigureAwait(false);
 	}
 
 	private static async Task<string[]> ExtractTarAsync
@@ -273,20 +450,91 @@ static class ArchiveExtractor
 		return Path.Combine(safe);
 	}
 
-	private static string[] ExtractGz(string archivePath, string destDir)
+	private static async Task<string[]> ExtractGzAsync
+	(
+		string archivePath,
+		string destDir,
+		CancellationToken cancellationToken
+	)
 	{
-		// Single-file gzip: decompress to a file named after the archive minus .gz
-		var outputName = Path.GetFileNameWithoutExtension(archivePath);
-		if (string.IsNullOrWhiteSpace(outputName))
-			outputName = "decompressed";
+		var fs = File.OpenRead(archivePath);
+		await using var fsDispose = fs.ConfigureAwait(false);
+		var gz = new GZipStream(fs, CompressionMode.Decompress);
+		await using var gzDispose = gz.ConfigureAwait(false);
+		return await ExtractSingleFileAsync
+		(
+			GetSingleFileOutputName(archivePath),
+			gz,
+			destDir,
+			cancellationToken
+		).ConfigureAwait(false);
+	}
 
-		var destPath = Path.Combine(destDir, outputName);
+	private static async Task<string[]> ExtractBrAsync
+	(
+		string archivePath,
+		string destDir,
+		CancellationToken cancellationToken
+	)
+	{
+		var fs = File.OpenRead(archivePath);
+		await using var fsDispose = fs.ConfigureAwait(false);
+		var br = new BrotliStream(fs, CompressionMode.Decompress);
+		await using var brDispose = br.ConfigureAwait(false);
+		return await ExtractSingleFileAsync
+		(
+			GetSingleFileOutputName(archivePath),
+			br,
+			destDir,
+			cancellationToken
+		).ConfigureAwait(false);
+	}
 
-		using var fs = File.OpenRead(archivePath);
-		using var gz = new GZipStream(fs, CompressionMode.Decompress);
-		using var output = File.Create(destPath);
-		gz.CopyTo(output);
+	private static async Task<string[]> ExtractZlAsync
+	(
+		string archivePath,
+		string destDir,
+		CancellationToken cancellationToken
+	)
+	{
+		var fs = File.OpenRead(archivePath);
+		await using var fsDispose = fs.ConfigureAwait(false);
+		var zl = new ZLibStream(fs, CompressionMode.Decompress);
+		await using var zlDispose = zl.ConfigureAwait(false);
+		return await ExtractSingleFileAsync
+		(
+			GetSingleFileOutputName(archivePath),
+			zl,
+			destDir,
+			cancellationToken
+		).ConfigureAwait(false);
+	}
 
+	private static async Task<string[]> ExtractSingleFileAsync
+	(
+		string outputName,
+		Stream stream,
+		string destDir,
+		CancellationToken cancellationToken
+	)
+	{
+		var safeOutputName = string.IsNullOrWhiteSpace(outputName)
+			? "decompressed"
+			: outputName;
+
+		var destPath = Path.Combine(destDir, safeOutputName);
+		var output = File.Create(destPath);
+		await using var outputDispose = output.ConfigureAwait(false);
+		await stream.CopyToAsync(output, cancellationToken).ConfigureAwait(false);
 		return [destPath];
 	}
+
+	private static string GetSingleFileOutputName(string archivePath)
+	{
+		var outputName = Path.GetFileNameWithoutExtension(archivePath);
+		return string.IsNullOrWhiteSpace(outputName)
+			? "decompressed"
+			: outputName;
+	}
 }
+

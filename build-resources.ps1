@@ -30,7 +30,7 @@ param
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-function Compress-Gzip
+function Compress-Brotli
 {
 	param
 	(
@@ -41,13 +41,12 @@ function Compress-Gzip
 		[string]$TargetPath
 	)
 
-	$compressionLevel = [System.IO.Compression.CompressionLevel]::Optimal
-
-	if ([Enum]::GetNames([System.IO.Compression.CompressionLevel]) -contains 'SmallestSize')
+	if (Test-Path -LiteralPath $TargetPath)
 	{
-		$compressionLevel = [System.IO.Compression.CompressionLevel]::SmallestSize
+		return
 	}
 
+	$compressionLevel = [System.IO.Compression.CompressionLevel]::SmallestSize
 	$sourceStream = [System.IO.File]::OpenRead($SourcePath)
 
 	try
@@ -56,15 +55,15 @@ function Compress-Gzip
 
 		try
 		{
-			$gzipStream = [System.IO.Compression.GZipStream]::new($targetStream, $compressionLevel, $false)
+			$brotliStream = New-Object System.IO.Compression.BrotliStream($targetStream, $compressionLevel)
 
 			try
 			{
-				$sourceStream.CopyTo($gzipStream)
+				$sourceStream.CopyTo($brotliStream)
 			}
 			finally
 			{
-				$gzipStream.Dispose()
+				$brotliStream.Dispose()
 			}
 		}
 		finally
@@ -98,6 +97,41 @@ function Get-Md5Hex
 	{
 		$md5.Dispose()
 		$stream.Dispose()
+	}
+}
+
+function Remove-FileWithRetry
+{
+	param
+	(
+		[Parameter(Mandatory = $true)]
+		[string]$Path,
+
+		[int]$MaxAttempts = 20,
+
+		[int]$DelayMilliseconds = 250
+	)
+
+	for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++)
+	{
+		try
+		{
+			if (Test-Path -LiteralPath $Path)
+			{
+				Remove-Item -LiteralPath $Path -Force
+			}
+
+			return
+		}
+		catch [System.IO.IOException]
+		{
+			if ($attempt -eq $MaxAttempts)
+			{
+				throw
+			}
+
+			Start-Sleep -Milliseconds $DelayMilliseconds
+		}
 	}
 }
 
@@ -142,33 +176,58 @@ $nativeDlls = @(
 	}
 )
 
-[System.IO.Directory]::CreateDirectory($OutputDirectory) | Out-Null
+$mutex = [System.Threading.Mutex]::new($false, 'Local\Talktastic.BuildResources')
+$mutexAcquired = $false
 
-Get-ChildItem -LiteralPath $OutputDirectory -File -ErrorAction SilentlyContinue |
-	Where-Object {
-		$_.Name -like '*.dll.gz' -or $_.Name -eq 'manifest.json'
-	} |
-	Remove-Item -Force
-
-$manifest = foreach ($nativeDll in $nativeDlls)
+try
 {
-	$sourcePath = $nativeDll.SourcePath
-
-	if (-not (Test-Path -LiteralPath $sourcePath))
+	try
 	{
-		throw "Missing native DLL: $sourcePath"
+		$mutexAcquired = $mutex.WaitOne([TimeSpan]::FromMinutes(2))
+	}
+	catch [System.Threading.AbandonedMutexException]
+	{
+		$mutexAcquired = $true
 	}
 
-	$targetPath = Join-Path $OutputDirectory "$($nativeDll.Name).gz"
-	Compress-Gzip -SourcePath $sourcePath -TargetPath $targetPath
-
-	[pscustomobject]@{
-		Name = $nativeDll.Name
-		Size = ([System.IO.FileInfo]::new($sourcePath)).Length
-		Md5 = (Get-Md5Hex -Path $sourcePath).ToUpperInvariant()
+	if (-not $mutexAcquired)
+	{
+		throw 'Timed out waiting for native resource generation lock.'
 	}
+
+	[System.IO.Directory]::CreateDirectory($OutputDirectory) | Out-Null
+
+
+	$manifest = foreach ($nativeDll in $nativeDlls)
+	{
+		$sourcePath = $nativeDll.SourcePath
+
+		if (-not (Test-Path -LiteralPath $sourcePath))
+		{
+			throw "Missing native DLL: $sourcePath"
+		}
+
+		$targetPath = Join-Path $OutputDirectory "$($nativeDll.Name).br"
+		Compress-Brotli -SourcePath $sourcePath -TargetPath $targetPath
+
+		[pscustomobject]@{
+			Name = $nativeDll.Name
+			Size = ([System.IO.FileInfo]::new($sourcePath)).Length
+			Md5 = (Get-Md5Hex -Path $sourcePath).ToUpperInvariant()
+		}
+	}
+
+	$manifestJson = $manifest | Sort-Object Name | ConvertTo-Json -Depth 3
+	$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+	[System.IO.File]::WriteAllText((Join-Path $OutputDirectory 'manifest.json'), $manifestJson, $utf8NoBom)
+}
+finally
+{
+	if ($mutexAcquired)
+	{
+		$mutex.ReleaseMutex()
+	}
+
+	$mutex.Dispose()
 }
 
-$manifestJson = $manifest | Sort-Object Name | ConvertTo-Json -Depth 3
-$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-[System.IO.File]::WriteAllText((Join-Path $OutputDirectory 'manifest.json'), $manifestJson, $utf8NoBom)

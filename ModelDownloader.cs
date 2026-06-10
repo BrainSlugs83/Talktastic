@@ -34,72 +34,9 @@ static partial class ModelDownloader
 		CancellationToken cancellationToken
 	)
 	{
-		var sw = System.Diagnostics.Stopwatch.StartNew();
-		HttpResponseMessage response;
-		try
-		{
-			response = await http.GetAsync
-			(
-				new Uri(url),
-				HttpCompletionOption.ResponseHeadersRead,
-				cancellationToken
-			).ConfigureAwait(false);
-		}
-		catch (HttpRequestException ex)
-		{
-			// DNS failures, refused connections, TLS errors, dead CDNs
-			// (e.g. models.weights.gg returning NXDOMAIN). Surface a clean
-			// message naming the host so the user knows which source is dead,
-			// instead of echoing the cryptic Windows DNS error verbatim.
-			throw new InvalidOperationException
-			(
-				$"Failed to download {url}: {DescribeNetworkFailure(url, ex)}",
-				ex
-			);
-		}
-
-		using (response)
-		{
-			if (!response.IsSuccessStatusCode)
-			{
-				throw new InvalidOperationException
-				(
-					$"Failed to download {url}: HTTP {(int)response.StatusCode}"
-				);
-			}
-
-			var tempPath = destPath + ".tmp";
-			long bytesWritten = 0;
-			try
-			{
-				using (var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false))
-				using (var file = new FileStream(tempPath, FileMode.Create, FileAccess.Write))
-				{
-					await stream.CopyToAsync(file, cancellationToken).ConfigureAwait(false);
-					bytesWritten = file.Length;
-				}
-
-				File.Move(tempPath, destPath, overwrite: true);
-			}
-			catch (IOException)
-			{
-				try { File.Delete(tempPath); } catch (IOException) { }
-				throw;
-			}
-
-			var elapsedMs = sw.ElapsedMilliseconds;
-			var fileName = Path.GetFileName(destPath);
-			var mb = bytesWritten / 1_048_576.0;
-			var mbps = elapsedMs > 0 ? (bytesWritten * 1000.0 / elapsedMs) / 1_048_576.0 : 0.0;
-			Diagnostics.LogPerf
-			(
-				string.Create
-				(
-					System.Globalization.CultureInfo.InvariantCulture,
-					$"[download] {fileName}: {mb:F1} MB in {elapsedMs}ms ({mbps:F1} MB/s)"
-				)
-			);
-		}
+		var downloader = CreateFileDownloader(http);
+		var resolved = await ResolveWithFriendlyErrorsAsync(downloader, url, cancellationToken).ConfigureAwait(false);
+		await DownloadResolvedFileAsync(downloader, resolved, destPath, cancellationToken).ConfigureAwait(false);
 	}
 
 	/// <summary>
@@ -117,14 +54,17 @@ static partial class ModelDownloader
 	)
 	{
 		Directory.CreateDirectory(destDir);
-		var tempArchive = Path.Combine(destDir, $"download-{Guid.NewGuid():N}{GetArchiveExtension(url)}");
+		var downloader = CreateFileDownloader(http);
+		var resolved = await ResolveWithFriendlyErrorsAsync(downloader, url, cancellationToken).ConfigureAwait(false);
+		var archiveUrl = resolved.FinalUrl;
+		var tempArchive = Path.Combine(destDir, $"download-{Guid.NewGuid():N}{GetArchiveExtension(archiveUrl)}");
 
-		var urlFileName = Path.GetFileNameWithoutExtension(new Uri(url).AbsolutePath);
+		var urlFileName = Path.GetFileNameWithoutExtension(new Uri(archiveUrl).AbsolutePath);
 		var hintName = Uri.UnescapeDataString(urlFileName ?? string.Empty);
 
 		try
 		{
-			await DownloadFileAsync(http, url, tempArchive, cancellationToken).ConfigureAwait(false);
+			await DownloadResolvedFileAsync(downloader, resolved, tempArchive, cancellationToken).ConfigureAwait(false);
 			return await ExtractArchiveAsync(tempArchive, destDir, hintName, preferredName, cancellationToken).ConfigureAwait(false);
 		}
 		finally
@@ -490,6 +430,18 @@ static partial class ModelDownloader
 	/// </summary>
 	public static string? LookupUrlMap(string urlMapPath, string url)
 	{
+		try
+		{
+			var entry = new DownloadRegistry(urlMapPath).LookupByUrl(url);
+			if (entry is not null)
+			{
+				return entry.Names.FirstOrDefault() ?? entry.Key;
+			}
+		}
+		catch (JsonException)
+		{
+		}
+
 		var normalizedUrl = NormalizeUrl(url);
 		var urlMap = ReadUrlMap(urlMapPath);
 		return urlMap.TryGetValue(normalizedUrl, out var modelName)
@@ -1239,12 +1191,11 @@ static partial class ModelDownloader
 		CancellationToken cancellationToken
 	)
 	{
-		// Direct .onnx file URL -- also derive .onnx.json config as companion
 		if (url.EndsWith(".onnx", StringComparison.OrdinalIgnoreCase))
 		{
 			var uri = new Uri(url);
-			var modelName = DeriveNameFromDirectUrl(uri);
-			return (url, modelName, false, [url + ".json"]);
+			var directModelName = DeriveNameFromDirectUrl(uri);
+			return (url, directModelName, false, [url + ".json"]);
 		}
 
 		// Direct .onnx.json config URL -- derive .onnx model URL
@@ -1253,56 +1204,123 @@ static partial class ModelDownloader
 			var onnxUrl = url[..^".json".Length];
 			var uri = new Uri(url);
 			var fileName = Path.GetFileName(uri.LocalPath);
-			var modelName = fileName[..^".onnx.json".Length];
-			return (onnxUrl, modelName, false, [url]);
+			var directModelName = fileName[..^".onnx.json".Length];
+			return (onnxUrl, directModelName, false, [url]);
 		}
 
 		// Direct .pth file URL
 		if (url.EndsWith(".pth", StringComparison.OrdinalIgnoreCase))
 		{
 			var uri = new Uri(url);
-			var modelName = DeriveNameFromDirectUrl(uri);
-			return (url, modelName, false, null);
+			var directModelName = DeriveNameFromDirectUrl(uri);
+			return (url, directModelName, false, null);
 		}
 
 		// Direct archive URL (any supported format)
 		if (ArchiveExtractor.IsArchive(url))
 		{
 			var uri = new Uri(url);
-			var modelName = DeriveNameFromDirectUrl(uri);
-			return (url, modelName, true, null);
+			var directModelName = DeriveNameFromDirectUrl(uri);
+			return (url, directModelName, true, null);
 		}
 
-		var host = new Uri(url).Host;
-
-		if (host.Contains("huggingface.co", StringComparison.OrdinalIgnoreCase))
-			return await ResolveHuggingFaceModelAsync(http, url, cancellationToken).ConfigureAwait(false);
-
-		if (host.Contains("github.com", StringComparison.OrdinalIgnoreCase)
-			&& url.Contains("/releases/", StringComparison.OrdinalIgnoreCase))
+		var downloader = CreateFileDownloader(http);
+		if (!downloader.Resolvers.Any(resolver => resolver.CanResolve(url)))
 		{
-			return await ResolveGitHubReleaseModelAsync(http, url, cancellationToken).ConfigureAwait(false);
+			throw new ArgumentException($"Unsupported URL pattern: {url}");
 		}
 
-		if
+		var resolved = await downloader.ResolveAsync(url, cancellationToken).ConfigureAwait(false);
+		var modelName = resolved.Names.Count > 0
+			? resolved.Names[0]
+			: DeriveNameFromDirectUrl(new Uri(resolved.FinalUrl));
+
+		return
 		(
-			string.Equals(host, "voice-models.com", StringComparison.OrdinalIgnoreCase)
-			|| string.Equals(host, "www.voice-models.com", StringComparison.OrdinalIgnoreCase)
-		)
-		{
-			return await ResolveVoiceModelsComModelAsync(http, url, cancellationToken).ConfigureAwait(false);
-		}
+			resolved.FinalUrl,
+			CleanModelName(modelName)!,
+			resolved.SourceType == ResolvedUrlSourceType.Archive,
+			resolved.CompanionUrls?.ToArray()
+		);
+	}
 
-		if
-		(
-			host.EndsWith("drive.google.com", StringComparison.OrdinalIgnoreCase)
-			|| host.EndsWith("drive.usercontent.google.com", StringComparison.OrdinalIgnoreCase)
-		)
-		{
-			return await ResolveGoogleDriveModelAsync(http, url, cancellationToken).ConfigureAwait(false);
-		}
+	private static FileDownloader CreateFileDownloader(HttpClient http)
+	{
+		var downloader = new FileDownloader(http);
+		downloader.Resolvers.Add(new VoiceModelsComResolver());
+		downloader.Resolvers.Add(new GoogleDriveResolver());
+		downloader.Resolvers.Add(new HuggingFaceResolver());
+		downloader.Resolvers.Add(new GitHubReleaseResolver());
+		return downloader;
+	}
 
-		throw new ArgumentException($"Unsupported URL pattern: {url}");
+	private static async Task<ResolvedUrl> ResolveWithFriendlyErrorsAsync
+	(
+		FileDownloader downloader,
+		string url,
+		CancellationToken cancellationToken
+	)
+	{
+		try
+		{
+			return await downloader.ResolveAsync(url, cancellationToken).ConfigureAwait(false);
+		}
+		catch (HttpRequestException ex)
+		{
+			throw new InvalidOperationException
+			(
+				$"Failed to download {url}: {DescribeNetworkFailure(url, ex)}",
+				ex
+			);
+		}
+	}
+
+	private static async Task DownloadResolvedFileAsync
+	(
+		FileDownloader downloader,
+		ResolvedUrl resolved,
+		string destPath,
+		CancellationToken cancellationToken
+	)
+	{
+		var fullDestPath = Path.GetFullPath(destPath);
+		var destDir = Path.GetDirectoryName(fullDestPath)
+			?? throw new InvalidOperationException("Destination path must include a file name.");
+		Directory.CreateDirectory(destDir);
+
+		var tempDir = Path.Combine(destDir, $".download-{Guid.NewGuid():N}");
+		Directory.CreateDirectory(tempDir);
+
+		try
+		{
+			var download = await downloader.DownloadAsync
+			(
+				resolved with
+				{
+					SourceType = ResolvedUrlSourceType.SingleFile,
+					CompanionUrls = null,
+				},
+				tempDir,
+				ct: cancellationToken
+			).ConfigureAwait(false);
+
+			var downloadedPath = download.AllFiles.SingleOrDefault()
+				?? throw new InvalidOperationException($"Expected a single downloaded file for '{resolved.FinalUrl}'.");
+			File.Move(downloadedPath, fullDestPath, overwrite: true);
+		}
+		finally
+		{
+			try
+			{
+				if (Directory.Exists(tempDir))
+				{
+					Directory.Delete(tempDir, recursive: true);
+				}
+			}
+			catch (IOException)
+			{
+			}
+		}
 	}
 
 	/// <summary>

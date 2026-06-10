@@ -207,91 +207,69 @@ static partial class RvcEngine
 		var rvcDir = EnsureRvcDirectory();
 		var voicesDir = Path.Combine(rvcDir, VoicesSubDir);
 		var urlMapPath = Path.Combine(rvcDir, UrlMapFileName);
+		var registry = new DownloadRegistry(urlMapPath);
 		Directory.CreateDirectory(voicesDir);
 
 		if (ModelDownloader.IsUrl(rvcQuery))
 		{
-			var cachedModelName = ModelDownloader.LookupUrlMap(urlMapPath, rvcQuery);
-			if (cachedModelName is not null)
+			var cachedEntry = registry.LookupByUrl(rvcQuery);
+			var cachedPath = TryFindRegisteredRvcModelPath(voicesDir, cachedEntry);
+			if (cachedPath is not null)
 			{
-				// Exact match only -- the URL map knows the precise directory name
-				var cachedPath = FindCachedModelExact(voicesDir, cachedModelName);
+				return
+				(
+					cachedPath,
+					cachedEntry?.Names.FirstOrDefault() ?? GetDisplayName(cachedPath)
+				);
+			}
+
+			var downloader = CreateRvcDownloader();
+			var resolved = await ResolveRvcDownloadAsync(downloader, rvcQuery, ct).ConfigureAwait(false);
+
+			foreach (var url in resolved.IntermediateUrls.Append(resolved.FinalUrl))
+			{
+				cachedEntry = registry.LookupByUrl(url);
+				cachedPath = TryFindRegisteredRvcModelPath(voicesDir, cachedEntry);
 				if (cachedPath is not null)
 				{
-					return (cachedPath, cachedModelName);
+					RegisterRvcResource(registry, cachedPath, rvcQuery, resolved);
+					return
+					(
+						cachedPath,
+						cachedEntry?.Names.FirstOrDefault() ?? GetDisplayName(cachedPath)
+					);
 				}
 			}
 
-			var resolved = await ModelDownloader.ResolveModelUrlAsync(Http, rvcQuery, ct).ConfigureAwait(false);
-
-			string downloadPath;
-			string modelName;
-
-			if (resolved.IsArchive)
+			var existingPath = FindCachedModelExact(voicesDir, GetPreferredRvcModelName(resolved));
+			if (existingPath is not null)
 			{
-				await Console.Error.WriteLineAsync
-				(
-					$"Downloading and extracting RVC model '{resolved.ModelName}'..."
-				).ConfigureAwait(false);
-
-				var (modelPath, extractedName) = await ModelDownloader.DownloadAndExtractAsync
-				(
-					Http, resolved.FileUrl, voicesDir, preferredName: resolved.ModelName, ct
-				).ConfigureAwait(false);
-
-				downloadPath = modelPath;
-				modelName = extractedName;
+				RegisterRvcResource(registry, existingPath, rvcQuery, resolved);
+				return (existingPath, GetDisplayName(existingPath));
 			}
-			else
-				{
-					modelName = resolved.ModelName;
-					var ext = Path.GetExtension(resolved.FileUrl);
-					var isOnnx = !string.Equals(ext, ".pth", StringComparison.OrdinalIgnoreCase);
-					var modelDir = Path.Combine(voicesDir, modelName);
-					var modelExt = isOnnx ? ".onnx" : ".pth";
-					downloadPath = Path.Combine(modelDir, $"{modelName}{modelExt}");
-					Directory.CreateDirectory(modelDir);
 
-					if (!File.Exists(downloadPath))
-					{
-						await Console.Error.WriteLineAsync
-						(
-							$"Downloading RVC model '{modelName}'..."
-						).ConfigureAwait(false);
-
-						await ModelDownloader.DownloadFileAsync(Http, resolved.FileUrl, downloadPath, ct).ConfigureAwait(false);
-					}
-
-					// Download companion files (.index, .json) that are missing
-					if (resolved.CompanionUrls is not null)
-					{
-						foreach (var companionUrl in resolved.CompanionUrls)
-						{
-							var companionName = Uri.UnescapeDataString
-							(
-								Path.GetFileName(new Uri(companionUrl).LocalPath)
-							);
-							var companionPath = Path.Combine(modelDir, companionName);
-							if (!File.Exists(companionPath))
-							{
-								await Console.Error.WriteLineAsync
-								(
-									$"Downloading {companionName}..."
-								).ConfigureAwait(false);
-								await ModelDownloader.DownloadFileAsync(Http, companionUrl, companionPath, ct).ConfigureAwait(false);
-							}
-						}
-					}
-				}
-
-			var sizeMb = new FileInfo(downloadPath).Length / 1024 / 1024;
 			await Console.Error.WriteLineAsync
 			(
-				$"Ready: {modelName} ({sizeMb} MB)."
+				$"Downloading RVC model '{GetPreferredRvcModelName(resolved)}'..."
 			).ConfigureAwait(false);
 
-			ModelDownloader.WriteUrlMapEntry(urlMapPath, rvcQuery, modelName);
-				return (downloadPath, modelName);
+			var (downloadPath, modelName) = await DownloadRvcModelAsync
+			(
+				downloader,
+				resolved,
+				voicesDir,
+				CreateRvcDownloadProgress(),
+				ct
+			).ConfigureAwait(false);
+
+			var size = new FileInfo(downloadPath).Length.ToHumanReadableFileSize(false);
+			await Console.Error.WriteLineAsync
+			(
+				$"Ready: {modelName} ({size})."
+			).ConfigureAwait(false);
+
+			RegisterRvcResource(registry, downloadPath, rvcQuery, resolved, modelName);
+			return (downloadPath, modelName);
 		}
 
 		var namedModel = FindCachedModel(voicesDir, rvcQuery);
@@ -330,16 +308,13 @@ static partial class RvcEngine
 		var rvcDir = EnsureRvcDirectory();
 		var voicesDir = Path.Combine(rvcDir, VoicesSubDir);
 		var urlMapPath = Path.Combine(rvcDir, UrlMapFileName);
+		var registry = new DownloadRegistry(urlMapPath);
 		Directory.CreateDirectory(voicesDir);
 
-		var cachedModelName = ModelDownloader.LookupUrlMap(urlMapPath, archivePath);
-		if (cachedModelName is not null)
+		var cachedPath = TryFindRegisteredRvcModelPath(voicesDir, registry.LookupByUrl(archivePath));
+		if (cachedPath is not null)
 		{
-			var cachedPath = FindCachedModel(voicesDir, cachedModelName);
-			if (cachedPath is not null)
-			{
-				return cachedPath;
-			}
+			return cachedPath;
 		}
 
 		await Console.Error.WriteLineAsync
@@ -352,7 +327,14 @@ static partial class RvcEngine
 				archivePath, voicesDir, cancellationToken: ct
 		).ConfigureAwait(false);
 
-		ModelDownloader.WriteUrlMapEntry(urlMapPath, archivePath, extractedName);
+		RegisterRvcResource
+		(
+			registry,
+			modelPath,
+			archivePath,
+			resolved: null,
+			modelNameOverride: extractedName
+		);
 		return modelPath;
 	}
 
@@ -1231,8 +1213,260 @@ static partial class RvcEngine
 	{
 		return
 		[
-			.. ModelDownloader.ReadUrlMap(urlMapPath).Values
+			.. new DownloadRegistry(urlMapPath).Resources
+				.SelectMany(static resource => resource.Names.Prepend(resource.Key))
+				.Distinct(StringComparer.OrdinalIgnoreCase)
 		];
+	}
+
+	private static FileDownloader CreateRvcDownloader()
+	{
+		return new FileDownloader(Http)
+		{
+			Resolvers =
+			{
+				new VoiceModelsComResolver(),
+				new GoogleDriveResolver(),
+				new HuggingFaceResolver(),
+				new GitHubReleaseResolver(),
+			},
+		};
+	}
+
+	[ExcludeFromCodeCoverage]
+	private static async Task<ResolvedUrl> ResolveRvcDownloadAsync
+	(
+		FileDownloader downloader,
+		string rvcQuery,
+		CancellationToken ct
+	)
+	{
+		try
+		{
+			if (rvcQuery.EndsWith(".onnx.json", StringComparison.OrdinalIgnoreCase))
+			{
+				var modelUrl = rvcQuery[..^".json".Length];
+				return CreateDirectResolvedUrl(modelUrl, [rvcQuery], [GetModelNameFromDirectUrl(modelUrl)], [rvcQuery]);
+			}
+
+			if
+			(
+				rvcQuery.EndsWith(".onnx", StringComparison.OrdinalIgnoreCase)
+				|| rvcQuery.EndsWith(".pth", StringComparison.OrdinalIgnoreCase)
+			)
+			{
+				IReadOnlyList<string>? companionUrls = rvcQuery.EndsWith(".onnx", StringComparison.OrdinalIgnoreCase)
+					? [rvcQuery + ".json"]
+					: null;
+				return CreateDirectResolvedUrl
+				(
+					rvcQuery,
+					[],
+					[GetModelNameFromDirectUrl(rvcQuery)],
+					companionUrls
+				);
+			}
+
+			if (ArchiveExtractor.IsArchive(rvcQuery))
+			{
+				return CreateDirectResolvedUrl
+				(
+					rvcQuery,
+					[],
+					[GetModelNameFromDirectUrl(rvcQuery)],
+					null,
+					ResolvedUrlSourceType.Archive
+				);
+			}
+
+			return await downloader.ResolveAsync(rvcQuery, ct).ConfigureAwait(false);
+		}
+		catch (HttpRequestException ex)
+		{
+			throw new InvalidOperationException
+			(
+				$"Failed to download {rvcQuery}: {ModelDownloader.DescribeNetworkFailure(rvcQuery, ex)}",
+				ex
+			);
+		}
+	}
+
+	private static ResolvedUrl CreateDirectResolvedUrl
+	(
+		string finalUrl,
+		IReadOnlyList<string> intermediateUrls,
+		IReadOnlyList<string> names,
+		IReadOnlyList<string>? companionUrls = null,
+		ResolvedUrlSourceType sourceType = ResolvedUrlSourceType.SingleFile
+	)
+	{
+		return new ResolvedUrl
+		{
+			FinalUrl = finalUrl,
+			FileName = Path.GetFileName(new Uri(finalUrl).LocalPath),
+			SourceType = sourceType,
+			IntermediateUrls = intermediateUrls,
+			CompanionUrls = companionUrls,
+			Names = names,
+		};
+	}
+
+	[ExcludeFromCodeCoverage]
+	private static async Task<(string ModelPath, string ModelName)> DownloadRvcModelAsync
+	(
+		FileDownloader downloader,
+		ResolvedUrl resolved,
+		string voicesDir,
+		IProgress<FileDownloadProgress>? progress,
+		CancellationToken ct
+	)
+	{
+		var tempDir = Path.Combine(voicesDir, $".download-{Guid.NewGuid():N}");
+		Directory.CreateDirectory(tempDir);
+
+		try
+		{
+			await downloader.DownloadAsync(resolved, tempDir, progress, ct).ConfigureAwait(false);
+			return CommitDownloadedRvcModel(tempDir, voicesDir, GetPreferredRvcModelName(resolved));
+		}
+		finally
+		{
+			try
+			{
+				if (Directory.Exists(tempDir))
+				{
+					Directory.Delete(tempDir, recursive: true);
+				}
+			}
+			catch (IOException)
+			{
+			}
+		}
+	}
+
+	private static (string ModelPath, string ModelName) CommitDownloadedRvcModel
+	(
+		string tempDir,
+		string voicesDir,
+		string preferredName
+	)
+	{
+		var modelFile = Directory.GetFiles(tempDir, "*.onnx", SearchOption.AllDirectories)
+			.Where
+			(
+				static path => !path.EndsWith(".cached.onnx", StringComparison.OrdinalIgnoreCase)
+			)
+			.FirstOrDefault()
+			?? Directory.GetFiles(tempDir, "*.pth", SearchOption.AllDirectories).FirstOrDefault()
+			?? throw new InvalidOperationException("No .onnx or .pth model file was downloaded.");
+		var fallbackName = Path.GetFileNameWithoutExtension(modelFile);
+		var modelName = ModelDownloader.ResolveModelName(modelFile, fallbackName, preferredName);
+		var modelDir = Path.Combine(voicesDir, modelName);
+		if (Directory.Exists(modelDir))
+		{
+			Directory.Delete(modelDir, recursive: true);
+		}
+
+		var sourceDir = Path.GetDirectoryName(modelFile)
+			?? throw new InvalidOperationException("Downloaded model file did not have a parent directory.");
+		Directory.Move(sourceDir, modelDir);
+
+		if (Directory.Exists(tempDir))
+		{
+			foreach (var pattern in new[] { "*.pth", "*.onnx", "*.index", "*.json" })
+			{
+				foreach (var file in Directory.GetFiles(tempDir, pattern, SearchOption.AllDirectories))
+				{
+					var destFile = Path.Combine(modelDir, Path.GetFileName(file));
+					if (!File.Exists(destFile))
+					{
+						File.Copy(file, destFile);
+					}
+				}
+			}
+		}
+
+		var finalPath = FindModelFileInDir(modelDir)
+			?? throw new InvalidOperationException($"No RVC model file could be finalized in '{modelDir}'.");
+		return (finalPath, modelName);
+	}
+
+	private static string? TryFindRegisteredRvcModelPath(string voicesDir, ResourceEntry? entry)
+	{
+		if (entry is null)
+		{
+			return null;
+		}
+
+		foreach (var name in entry.Names.Prepend(entry.Key).Distinct(StringComparer.OrdinalIgnoreCase))
+		{
+			var path = FindCachedModelExact(voicesDir, name);
+			if (path is not null)
+			{
+				return path;
+			}
+		}
+
+		return null;
+	}
+
+	private static string GetPreferredRvcModelName(ResolvedUrl resolved)
+	{
+		return (resolved.Names.Count > 0 ? resolved.Names[0] : null)
+			?? GetModelNameFromDirectUrl(resolved.FinalUrl);
+	}
+
+	private static string GetModelNameFromDirectUrl(string url)
+	{
+		return ModelDownloader.DeriveNameFromDirectUrl(new Uri(url));
+	}
+
+	private static void RegisterRvcResource
+	(
+		DownloadRegistry registry,
+		string modelPath,
+		string inputUrl,
+		ResolvedUrl? resolved,
+		string? modelNameOverride = null
+	)
+	{
+		var modelName = modelNameOverride ?? GetDisplayName(modelPath);
+		var entry = new ResourceEntry
+		{
+			Key = modelName,
+		};
+		entry.Names.Add(modelName);
+		entry.Urls.Add(inputUrl);
+
+		if (resolved is not null)
+		{
+			entry.Names.AddRange(resolved.Names);
+			entry.Urls.AddRange(resolved.IntermediateUrls);
+			entry.Urls.Add(resolved.FinalUrl);
+		}
+
+		registry.Register(entry);
+		registry.Save();
+	}
+
+	private static Progress<FileDownloadProgress> CreateRvcDownloadProgress()
+	{
+		return new Progress<FileDownloadProgress>
+		(
+			p =>
+			{
+				if (p.Phase == DownloadPhase.Downloading || p.Phase == DownloadPhase.Streaming)
+				{
+					var pct = p.OverallPercent?.ToString("F0", CultureInfo.InvariantCulture) ?? "?";
+					var rate = ((long)p.TransferRate).ToHumanReadableFileSize(false);
+					Console.Error.Write($"\rDownloading... {pct}% at {rate}/s");
+				}
+				else if (p.Phase == DownloadPhase.Complete)
+				{
+					Console.Error.WriteLine();
+				}
+			}
+		);
 	}
 
 	private static bool _dmlAvailable = true;

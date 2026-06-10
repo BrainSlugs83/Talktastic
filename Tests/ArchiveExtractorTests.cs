@@ -41,11 +41,19 @@ public sealed class ArchiveExtractorTests : IDisposable
 	[InlineData("model.tgz", true)]
 	[InlineData("model.tar", true)]
 	[InlineData("model.gz", true)]
+	[InlineData("model.br", true)]
+	[InlineData("model.zz", true)]
+	[InlineData("model.zlib", true)]
+	[InlineData("model.tar.br", true)]
+	[InlineData("model.tar.zz", true)]
+	[InlineData("model.tar.zlib", true)]
 	[InlineData("MODEL.ZIP", true)]
 	[InlineData("model.TAR.GZ", true)]
 	[InlineData("model.TGZ", true)]
 	[InlineData("https://example.com/models/voice.zip", true)]
 	[InlineData("https://example.com/models/voice.tar.gz", true)]
+	[InlineData("https://example.com/models/voice.tar.br", true)]
+	[InlineData("https://example.com/models/voice.zlib?token=abc", true)]
 	[InlineData("https://example.com/models/voice.tar.gz?token=abc", true)]
 	[InlineData("https://example.com/models/voice.zip#section", true)]
 	[InlineData("model.onnx", false)]
@@ -57,6 +65,18 @@ public sealed class ArchiveExtractorTests : IDisposable
 	public void IsArchive_DetectsFormatsCorrectly(string? path, bool expected)
 	{
 		Assert.Equal(expected, ArchiveExtractor.IsArchive(path));
+	}
+
+	[Theory]
+	[InlineData("model.br", "Br")]
+	[InlineData("model.tar.br", "TarBr")]
+	[InlineData("model.zz", "Zl")]
+	[InlineData("model.zlib", "Zl")]
+	[InlineData("model.tar.zz", "TarZl")]
+	[InlineData("model.tar.zlib", "TarZl")]
+	public void GetArchiveFormat_DetectsNewFormats(string path, string expected)
+	{
+		Assert.Equal(expected, ArchiveExtractor.GetArchiveFormat(path).ToString());
 	}
 
 	// ── ZIP extraction ───────────────────────────────────────────────
@@ -196,6 +216,107 @@ public sealed class ArchiveExtractorTests : IDisposable
 
 		Assert.Single(files);
 		Assert.Equal("data.bin", Path.GetFileName(files[0]));
+	}
+
+	[Fact]
+	public async Task ExtractAsync_Br_DecompressesSingleFile()
+	{
+		var brPath = Path.Combine(_artifactRoot, "model.onnx.br");
+		var extractDir = Path.Combine(_artifactRoot, "br-out");
+
+		var content = "brotli-model-content"u8.ToArray();
+		CreateTestBr(brPath, content);
+
+		var files = await ArchiveExtractor.ExtractAsync(brPath, extractDir);
+
+		Assert.Single(files);
+		Assert.EndsWith("model.onnx", files[0], StringComparison.Ordinal);
+		Assert.Equal(content, await File.ReadAllBytesAsync(files[0]));
+	}
+
+	[Fact]
+	public async Task ExtractAsync_Zl_DecompressesSingleFile()
+	{
+		var zlPath = Path.Combine(_artifactRoot, "model.onnx.zlib");
+		var extractDir = Path.Combine(_artifactRoot, "zl-out");
+
+		var content = "zlib-model-content"u8.ToArray();
+		CreateTestZLib(zlPath, content);
+
+		var files = await ArchiveExtractor.ExtractAsync(zlPath, extractDir);
+
+		Assert.Single(files);
+		Assert.EndsWith("model.onnx", files[0], StringComparison.Ordinal);
+		Assert.Equal(content, await File.ReadAllBytesAsync(files[0]));
+	}
+
+	[Fact]
+	public async Task ExtractAsync_TarBr_ExtractsAllFiles()
+	{
+		var tarBrPath = Path.Combine(_artifactRoot, "test.tar.br");
+		var extractDir = Path.Combine(_artifactRoot, "tarbr-out");
+
+		await CreateTestTarBrAsync
+		(
+			tarBrPath,
+			("model.onnx", "onnx-br"u8.ToArray()),
+			("model.json", "{}"u8.ToArray())
+		);
+
+		var files = await ArchiveExtractor.ExtractAsync(tarBrPath, extractDir);
+
+		Assert.Equal(2, files.Length);
+		Assert.Contains(files, f => f.EndsWith("model.onnx", StringComparison.Ordinal));
+		Assert.Equal
+		(
+			"onnx-br",
+			await File.ReadAllTextAsync(files.First(f => f.EndsWith("model.onnx", StringComparison.Ordinal)))
+		);
+	}
+
+	[Fact]
+	public async Task ExtractAsync_StreamTarGz_ExtractsAllFiles()
+	{
+		var extractDir = Path.Combine(_artifactRoot, "stream-tgz-out");
+		var archiveBytes = await CreateTarGzBytesAsync
+		(
+			("model.onnx", "onnx-stream"u8.ToArray()),
+			("config.json", "{}"u8.ToArray())
+		);
+		using var stream = new MemoryStream(archiveBytes, writable: false);
+
+		var files = await ArchiveExtractor.ExtractAsync
+		(
+			stream,
+			ArchiveExtractor.ArchiveFormat.TarGz,
+			extractDir
+		);
+
+		Assert.Equal(2, files.Length);
+		Assert.Contains(files, f => f.EndsWith("model.onnx", StringComparison.Ordinal));
+		Assert.Equal
+		(
+			"onnx-stream",
+			await File.ReadAllTextAsync(files.First(f => f.EndsWith("model.onnx", StringComparison.Ordinal)))
+		);
+	}
+
+	[Fact]
+	public async Task ExtractAsync_StreamZip_ThrowsNotSupported()
+	{
+		using var stream = new MemoryStream();
+
+		var exception = await Assert.ThrowsAsync<NotSupportedException>
+		(
+			() => ArchiveExtractor.ExtractAsync
+			(
+				stream,
+				ArchiveExtractor.ArchiveFormat.Zip,
+				Path.Combine(_artifactRoot, "zip-stream-out")
+			)
+		);
+
+		Assert.Equal("ZIP requires a seekable stream. Use the file-based overload.", exception.Message);
 	}
 
 	// ── Error cases ──────────────────────────────────────────────────
@@ -360,5 +481,65 @@ public sealed class ArchiveExtractorTests : IDisposable
 		using var fs = File.Create(path);
 		using var gz = new GZipStream(fs, CompressionLevel.Fastest);
 		gz.Write(content);
+	}
+
+	private static void CreateTestBr(string path, byte[] content)
+	{
+		using var fs = File.Create(path);
+		using var br = new BrotliStream(fs, CompressionLevel.Fastest);
+		br.Write(content);
+	}
+
+	private static void CreateTestZLib(string path, byte[] content)
+	{
+		using var fs = File.Create(path);
+		using var zl = new ZLibStream(fs, CompressionLevel.Fastest);
+		zl.Write(content);
+	}
+
+	private static async Task CreateTestTarBrAsync(string path, params (string Name, byte[] Content)[] entries)
+	{
+		var tarBytes = await CreateTarBytesAsync(entries).ConfigureAwait(false);
+		var fs = File.Create(path);
+		await using var fsDispose = fs.ConfigureAwait(false);
+		var br = new BrotliStream(fs, CompressionLevel.Fastest);
+		await using var brDispose = br.ConfigureAwait(false);
+		await br.WriteAsync(tarBytes).ConfigureAwait(false);
+	}
+
+	private static async Task<byte[]> CreateTarGzBytesAsync(params (string Name, byte[] Content)[] entries)
+	{
+		using var ms = new MemoryStream();
+		{
+			var gz = new GZipStream(ms, CompressionLevel.Fastest, leaveOpen: true);
+			await using var gzDispose = gz.ConfigureAwait(false);
+			var writer = new TarWriter(gz);
+			await using var writerDispose = writer.ConfigureAwait(false);
+			foreach (var (name, content) in entries)
+			{
+				var entry = new PaxTarEntry(TarEntryType.RegularFile, name);
+				entry.DataStream = new MemoryStream(content);
+				await writer.WriteEntryAsync(entry).ConfigureAwait(false);
+			}
+		}
+
+		return ms.ToArray();
+	}
+
+	private static async Task<byte[]> CreateTarBytesAsync(params (string Name, byte[] Content)[] entries)
+	{
+		using var ms = new MemoryStream();
+		{
+			var writer = new TarWriter(ms, leaveOpen: true);
+			await using var writerDispose = writer.ConfigureAwait(false);
+			foreach (var (name, content) in entries)
+			{
+				var entry = new PaxTarEntry(TarEntryType.RegularFile, name);
+				entry.DataStream = new MemoryStream(content);
+				await writer.WriteEntryAsync(entry).ConfigureAwait(false);
+			}
+		}
+
+		return ms.ToArray();
 	}
 }

@@ -348,7 +348,7 @@ internal static class NativeExtractor
 	/// <param name="targetPath">The target path.</param>
 	private static void ExtractResource(Assembly assembly, NativePayloadManifestEntry entry, string targetPath)
 	{
-		var resourceName = ResourcePrefix + entry.Name + ".gz";
+		var resourceName = ResourcePrefix + entry.Name + ".br";
 
 		using var compressedStream = assembly.GetManifestResourceStream(resourceName)
 			?? throw new InvalidOperationException($"Embedded resource '{resourceName}' not found.");
@@ -362,10 +362,10 @@ internal static class NativeExtractor
 				File.Delete(tempPath);
 			}
 
-			using (var gzipStream = new GZipStream(compressedStream, CompressionMode.Decompress))
+			using (var brotliStream = new BrotliStream(compressedStream, CompressionMode.Decompress))
 			using (var outputStream = File.Create(tempPath))
 			{
-				gzipStream.CopyTo(outputStream);
+				brotliStream.CopyTo(outputStream);
 				outputStream.Flush(true);
 			}
 
