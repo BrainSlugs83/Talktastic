@@ -6,49 +6,63 @@ namespace Talktastic;
 internal sealed record ResolvedUrl
 {
 	/// <summary>
-	/// The actual download URL after full resolution.
+	/// Gets the final download URL.
 	/// </summary>
 	internal required string FinalUrl { get; init; }
 
 	/// <summary>
-	/// Content-Disposition or URL-derived filename.
+	/// Gets the resolved file name, if known.
 	/// </summary>
 	internal string? FileName { get; init; }
 
 	/// <summary>
-	/// File size if server reports it (from Content-Length header).
+	/// Gets the content length reported by the server, if any.
 	/// </summary>
 	internal long? ContentLength { get; init; }
 
 	/// <summary>
-	/// MIME type from response headers.
+	/// Gets the MIME type from response headers, if any.
 	/// </summary>
 	internal string? ContentType { get; init; }
 
 	/// <summary>
-	/// Whether this is a single file, archive, or folder listing.
+	/// Gets the resolved source kind.
 	/// </summary>
 	internal ResolvedUrlSourceType SourceType { get; init; }
 
 	/// <summary>
-	/// All URLs visited during resolution (for registry). Does NOT include FinalUrl.
+	/// Gets the URLs visited before the final URL.
 	/// </summary>
 	internal IReadOnlyList<string> IntermediateUrls { get; init; } = Array.Empty<string>();
 
 	/// <summary>
-	/// Companion URLs discovered during resolution (e.g. .onnx.json config files).
+	/// Gets any companion URLs discovered during resolution.
 	/// </summary>
 	internal IReadOnlyList<string>? CompanionUrls { get; init; }
 
 	/// <summary>
-	/// All unique display names collected from resolvers, sorted by length (shortest first).
+	/// Gets the candidate display names discovered during resolution.
 	/// </summary>
 	internal IReadOnlyList<string> Names { get; init; } = Array.Empty<string>();
 }
 
+/// <summary>
+/// Identifies the kind of resource a resolved URL points to.
+/// </summary>
 internal enum ResolvedUrlSourceType
 {
+	/// <summary>
+	/// The URL points to a single file.
+	/// </summary>
 	SingleFile,
+
+	/// <summary>
+	/// The URL points to an archive file.
+	/// </summary>
 	Archive,
+
+	/// <summary>
+	/// The URL points to a folder-like listing.
+	/// </summary>
 	Folder,
 }

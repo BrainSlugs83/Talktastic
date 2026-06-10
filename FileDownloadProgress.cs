@@ -6,52 +6,52 @@ namespace Talktastic;
 internal sealed record FileDownloadProgress
 {
 	/// <summary>
-	/// Current phase of the operation.
+	/// Gets the current phase.
 	/// </summary>
 	internal DownloadPhase Phase { get; init; }
 
 	/// <summary>
-	/// Bytes downloaded so far.
+	/// Gets the bytes transferred so far.
 	/// </summary>
 	internal long BytesTransferred { get; init; }
 
 	/// <summary>
-	/// Content-Length if known.
+	/// Gets the total bytes expected, if known.
 	/// </summary>
 	internal long? TotalBytes { get; init; }
 
 	/// <summary>
-	/// 0-100 best estimate of total progress.
+	/// Gets the best 0-100 estimate of overall progress.
 	/// </summary>
 	internal double? OverallPercent { get; init; }
 
 	/// <summary>
-	/// Total wall time so far.
+	/// Gets the elapsed time.
 	/// </summary>
 	internal TimeSpan Elapsed { get; init; }
 
 	/// <summary>
-	/// Bytes/sec (smoothed EMA, approx 2s window).
+	/// Gets the smoothed transfer rate in bytes per second.
 	/// </summary>
 	internal double TransferRate { get; init; }
 
 	/// <summary>
-	/// Estimated time remaining.
+	/// Gets the estimated time remaining, if known.
 	/// </summary>
 	internal TimeSpan? Eta { get; init; }
 
 	/// <summary>
-	/// File currently being written/extracted.
+	/// Gets the file currently being written or extracted.
 	/// </summary>
 	internal string? CurrentFile { get; init; }
 
 	/// <summary>
-	/// Files extracted/downloaded so far.
+	/// Gets the number of files completed so far.
 	/// </summary>
 	internal int FilesCompleted { get; init; }
 
 	/// <summary>
-	/// Total entries if known (e.g. ZIP archive entry count).
+	/// Gets the total entry count, if known.
 	/// </summary>
 	internal int? EntryCount { get; init; }
 }
@@ -61,10 +61,33 @@ internal sealed record FileDownloadProgress
 /// </summary>
 internal enum DownloadPhase
 {
+	/// <summary>
+	/// The URL is being resolved.
+	/// </summary>
 	Resolving,
+
+	/// <summary>
+	/// Bytes are being downloaded to disk.
+	/// </summary>
 	Downloading,
+
+	/// <summary>
+	/// An archive is being extracted.
+	/// </summary>
 	Extracting,
+
+	/// <summary>
+	/// A streamable archive is being extracted while downloading.
+	/// </summary>
 	Streaming,
+
+	/// <summary>
+	/// The operation completed successfully.
+	/// </summary>
 	Complete,
+
+	/// <summary>
+	/// The operation failed.
+	/// </summary>
 	Failed,
 }

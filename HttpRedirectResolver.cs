@@ -3,17 +3,28 @@ using System.Net;
 namespace Talktastic;
 
 /// <summary>
-/// Built-in resolver that follows HTTP redirects and captures Content-Disposition filenames.
-/// Always runs last in the resolver chain.
+/// Resolves HTTP redirects and captures response filenames.
 /// </summary>
 sealed class HttpRedirectResolver : IUrlResolver
 {
+	/// <summary>
+	/// Determines whether the URL uses HTTP or HTTPS.
+	/// </summary>
+	/// <param name="url">The URL to test.</param>
+	/// <returns><see langword="true"/> when the URL can be probed over HTTP.</returns>
 	public bool CanResolve(string url)
 	{
 		return Uri.TryCreate(url, UriKind.Absolute, out var uri)
 			&& (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
 	}
 
+	/// <summary>
+	/// Resolves the final HTTP URL and any filename from response headers.
+	/// </summary>
+	/// <param name="http">The HTTP client to use.</param>
+	/// <param name="url">The URL to resolve.</param>
+	/// <param name="cancellationToken">The cancellation token.</param>
+	/// <returns>The resolved URL result.</returns>
 	public async Task<UrlResolverResult> ResolveAsync
 	(
 		HttpClient http,

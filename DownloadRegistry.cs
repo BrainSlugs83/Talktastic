@@ -4,9 +4,7 @@ using System.Text.Json;
 namespace Talktastic;
 
 /// <summary>
-/// Resource-centric download registry that maps URLs to downloaded resources.
-/// Supports many-to-one URL mapping (multiple URLs can lead to the same resource).
-/// Backward compatible with the old <c>Dictionary&lt;string, string&gt;</c> format.
+/// Maps downloaded resources to their known names and source URLs.
 /// </summary>
 sealed class DownloadRegistry
 {
@@ -17,6 +15,10 @@ sealed class DownloadRegistry
 	private readonly Dictionary<string, ResourceEntry> _urlIndex = new(StringComparer.OrdinalIgnoreCase);
 	private readonly string _filePath;
 
+	/// <summary>
+	/// Initializes a registry backed by the specified file.
+	/// </summary>
+	/// <param name="filePath">The registry file path.</param>
 	public DownloadRegistry(string filePath)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
@@ -25,8 +27,16 @@ sealed class DownloadRegistry
 		Load();
 	}
 
+	/// <summary>
+	/// Gets the registered resources.
+	/// </summary>
 	public IReadOnlyList<ResourceEntry> Resources => _resources;
 
+	/// <summary>
+	/// Looks up a resource by URL.
+	/// </summary>
+	/// <param name="url">The URL to match.</param>
+	/// <returns>The matching resource, or <see langword="null"/>.</returns>
 	public ResourceEntry? LookupByUrl(string url)
 	{
 		if (string.IsNullOrWhiteSpace(url))
@@ -47,6 +57,11 @@ sealed class DownloadRegistry
 		}
 	}
 
+	/// <summary>
+	/// Looks up a resource by fuzzy name match.
+	/// </summary>
+	/// <param name="query">The name to search for.</param>
+	/// <returns>The best matching resource, or <see langword="null"/>.</returns>
 	public ResourceEntry? LookupByName(string query)
 	{
 		var candidates = _resources
@@ -59,6 +74,10 @@ sealed class DownloadRegistry
 		return FuzzyMatcher.FindBestMatch(candidates, query, static candidate => candidate.Name)?.Entry;
 	}
 
+	/// <summary>
+	/// Adds or merges a resource entry into the registry.
+	/// </summary>
+	/// <param name="entry">The entry to register.</param>
 	public void Register(ResourceEntry entry)
 	{
 		ArgumentNullException.ThrowIfNull(entry);
@@ -98,6 +117,10 @@ sealed class DownloadRegistry
 		RebuildUrlIndex();
 	}
 
+	/// <summary>
+	/// Removes a resource entry by key.
+	/// </summary>
+	/// <param name="key">The resource key to remove.</param>
 	public void Unregister(string key)
 	{
 		if (string.IsNullOrWhiteSpace(key))
@@ -116,6 +139,9 @@ sealed class DownloadRegistry
 		}
 	}
 
+	/// <summary>
+	/// Saves the registry to disk.
+	/// </summary>
 	public void Save()
 	{
 		var directory = Path.GetDirectoryName(_filePath);
@@ -417,13 +443,28 @@ sealed class DownloadRegistry
 	private sealed record NameCandidate(ResourceEntry Entry, string Name);
 }
 
+/// <summary>
+/// Describes a downloaded resource and the URLs that identify it.
+/// </summary>
 sealed class ResourceEntry
 {
+	/// <summary>
+	/// Gets or sets the stable resource key.
+	/// </summary>
 	public string Key { get; set; } = string.Empty;
 
+	/// <summary>
+	/// Gets the known display names for the resource.
+	/// </summary>
 	public List<string> Names { get; } = [];
 
+	/// <summary>
+	/// Gets the known URLs for the resource.
+	/// </summary>
 	public List<string> Urls { get; } = [];
 
+	/// <summary>
+	/// Gets or sets the app version that last wrote the entry.
+	/// </summary>
 	public string? Version { get; set; }
 }

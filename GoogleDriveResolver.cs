@@ -5,9 +5,17 @@ using System.Text.RegularExpressions;
 
 namespace Talktastic;
 
+/// <summary>
+/// Resolves Google Drive share links to direct download URLs.
+/// </summary>
 [ExcludeFromCodeCoverage]
 sealed partial class GoogleDriveResolver : IUrlResolver
 {
+	/// <summary>
+	/// Determines whether the URL points to Google Drive.
+	/// </summary>
+	/// <param name="url">The URL to test.</param>
+	/// <returns><see langword="true"/> when the resolver can handle the URL.</returns>
 	public bool CanResolve(string url)
 	{
 		if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
@@ -20,6 +28,13 @@ sealed partial class GoogleDriveResolver : IUrlResolver
 			|| host.EndsWith("drive.usercontent.google.com", StringComparison.OrdinalIgnoreCase);
 	}
 
+	/// <summary>
+	/// Resolves a Google Drive link to a downloadable URL.
+	/// </summary>
+	/// <param name="http">The HTTP client to use.</param>
+	/// <param name="url">The URL to resolve.</param>
+	/// <param name="cancellationToken">The cancellation token.</param>
+	/// <returns>The resolved URL result.</returns>
 	public async Task<UrlResolverResult> ResolveAsync
 	(
 		HttpClient http,

@@ -1,7 +1,9 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Formats.Tar;
 using System.IO.Compression;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Reflection;
 using System.Text;
 
 namespace Talktastic.Tests;
@@ -418,6 +420,563 @@ public sealed class FileDownloaderTests : IDisposable
 		Assert.Equal(DownloadPhase.Complete, updates[^1].Phase);
 	}
 
+	[Fact]
+	public async Task DownloadAsync_SearchRecursivelyFalse_ExcludesSubdirectoryFiles()
+	{
+		const string url = "https://example.test/archive.zip";
+		var archiveBytes = CreateZipArchiveBytes
+		(
+			("root.onnx", "root model"),
+			("subdir/nested.onnx", "nested model")
+		);
+		using var http = CreateHttpClient
+		(
+			request => CreateStaticResponseAsync(request, archiveBytes, "application/zip")
+		);
+		var downloader = new FileDownloader(http) { SearchRecursively = false };
+		var resolved = new ResolvedUrl
+		{
+			FinalUrl = url,
+			FileName = "archive.zip",
+			ContentLength = archiveBytes.Length,
+			SourceType = ResolvedUrlSourceType.Archive,
+		};
+		var destFolder = CreateArtifactDirectory(nameof(DownloadAsync_SearchRecursivelyFalse_ExcludesSubdirectoryFiles));
+
+		var result = await downloader.DownloadAsync(resolved, destFolder);
+
+		Assert.Single(result.Files);
+		Assert.EndsWith("root.onnx", result.Files[0], StringComparison.Ordinal);
+		Assert.Equal(2, result.AllFiles.Count);
+	}
+
+	[Fact]
+	public async Task DownloadAsync_HttpError_ReportsFailedPhaseAndThrows()
+	{
+		const string url = "https://example.test/broken.onnx";
+		using var http = CreateHttpClient
+		(
+			request => Task.FromResult
+			(
+				new HttpResponseMessage(HttpStatusCode.InternalServerError)
+				{
+					RequestMessage = request,
+					Content = new ByteArrayContent([]),
+				}
+			)
+		);
+		var downloader = new FileDownloader(http);
+		var resolved = new ResolvedUrl
+		{
+			FinalUrl = url,
+			FileName = "broken.onnx",
+			SourceType = ResolvedUrlSourceType.SingleFile,
+		};
+		var destFolder = CreateArtifactDirectory(nameof(DownloadAsync_HttpError_ReportsFailedPhaseAndThrows));
+		var updates = new List<FileDownloadProgress>();
+		var progress = new Progress<FileDownloadProgress>(update => updates.Add(update));
+
+		await Assert.ThrowsAsync<InvalidOperationException>
+		(
+			() => downloader.DownloadAsync(resolved, destFolder, progress)
+		);
+
+		Assert.Contains(updates, update => update.Phase == DownloadPhase.Failed);
+	}
+
+	[Fact]
+	public async Task DownloadAsync_NoContentLength_DownloadsSuccessfully()
+	{
+		const string url = "https://example.test/unknown-size.bin";
+		var content = Encoding.UTF8.GetBytes("unknown size payload");
+		using var http = CreateHttpClient
+		(
+			request => CreateStaticResponseAsync(request, content)
+		);
+		var downloader = new FileDownloader(http);
+		var resolved = new ResolvedUrl
+		{
+			FinalUrl = url,
+			FileName = "unknown-size.bin",
+			ContentLength = null,
+			SourceType = ResolvedUrlSourceType.SingleFile,
+		};
+		var destFolder = CreateArtifactDirectory(nameof(DownloadAsync_NoContentLength_DownloadsSuccessfully));
+		var updates = new List<FileDownloadProgress>();
+		var progress = new Progress<FileDownloadProgress>(update => updates.Add(update));
+
+		var result = await downloader.DownloadAsync(resolved, destFolder, progress);
+
+		Assert.Single(result.Files);
+		Assert.Equal(content.Length, result.TotalBytes);
+	}
+
+	[Fact]
+	public async Task ResolveAsync_NonHttpResolverReturnsSameUrl_SkipsProbeAndReturns()
+	{
+		const string inputUrl = "https://example.test/voice";
+		using var http = CreateHttpClient
+		(
+			request => CreateStaticResponseAsync(request, "payload"u8.ToArray())
+		);
+		var downloader = new FileDownloader(http);
+		downloader.Resolvers.Add
+		(
+			new TestResolver
+			(
+				(inputUrl, new UrlResolverResult(inputUrl, "Voice Model"))
+			)
+		);
+
+		var resolved = await downloader.ResolveAsync(inputUrl);
+
+		Assert.Equal(inputUrl, resolved.FinalUrl);
+		Assert.Equal(["Voice Model"], resolved.Names);
+	}
+
+	[Fact]
+	public async Task ResolveAsync_PreferredNameSortedFirst()
+	{
+		const string inputUrl = "https://example.test/A";
+		const string secondUrl = "https://example.test/B";
+		const string finalUrl = "https://example.test/C.onnx";
+		using var http = CreateHttpClient
+		(
+			request => CreateStaticResponseAsync(request, "payload"u8.ToArray())
+		);
+		var downloader = new FileDownloader(http);
+		downloader.Resolvers.Add
+		(
+			new TestResolver
+			(
+				(inputUrl, new UrlResolverResult(secondUrl, "zzz-long-name")),
+				(secondUrl, new UrlResolverResult(finalUrl, "ab") { IsPreferredName = true })
+			)
+		);
+
+		var resolved = await downloader.ResolveAsync(inputUrl);
+
+		Assert.Equal("ab", resolved.Names[0]);
+	}
+
+	[Fact]
+	public async Task DownloadAsync_DuplicateCompanionUrls_DownloadsEachOnce()
+	{
+		const string mainUrl = "https://example.test/model.onnx";
+		const string companionUrl = "https://example.test/config.json";
+		using var http = CreateHttpClient
+		(
+			request =>
+			{
+				return request.RequestUri?.ToString() switch
+				{
+					mainUrl => CreateStaticResponseAsync(request, "main"u8.ToArray()),
+					companionUrl => CreateStaticResponseAsync(request, "{}"u8.ToArray()),
+					_ => CreateNotFoundResponseAsync(request),
+				};
+			}
+		);
+		var downloader = new FileDownloader(http);
+		var resolved = new ResolvedUrl
+		{
+			FinalUrl = mainUrl,
+			FileName = "model.onnx",
+			ContentLength = 4,
+			SourceType = ResolvedUrlSourceType.SingleFile,
+			CompanionUrls = [companionUrl, companionUrl, companionUrl],
+		};
+		var destFolder = CreateArtifactDirectory(nameof(DownloadAsync_DuplicateCompanionUrls_DownloadsEachOnce));
+
+		var result = await downloader.DownloadAsync(resolved, destFolder);
+
+		Assert.Equal(2, result.AllFiles.Count);
+	}
+
+	[Fact]
+	public async Task DownloadAsync_NullProgress_DoesNotThrow()
+	{
+		const string url = "https://example.test/model.bin";
+		var content = "data"u8.ToArray();
+		using var http = CreateHttpClient
+		(
+			request => CreateStaticResponseAsync(request, content)
+		);
+		var downloader = new FileDownloader(http);
+		var resolved = new ResolvedUrl
+		{
+			FinalUrl = url,
+			FileName = "model.bin",
+			ContentLength = content.Length,
+			SourceType = ResolvedUrlSourceType.SingleFile,
+		};
+		var destFolder = CreateArtifactDirectory(nameof(DownloadAsync_NullProgress_DoesNotThrow));
+
+		var result = await downloader.DownloadAsync(resolved, destFolder, progress: null);
+
+		Assert.Single(result.Files);
+		Assert.Equal(content.Length, result.TotalBytes);
+	}
+
+	[Fact]
+	public async Task ResolveAsync_ThrowsOnNullOrWhitespaceUrl()
+	{
+		using var http = CreateHttpClient
+		(
+			request => CreateStaticResponseAsync(request, []));
+		var downloader = new FileDownloader(http);
+
+		await Assert.ThrowsAsync<ArgumentException>
+		(
+			() => downloader.ResolveAsync("")
+		);
+
+		await Assert.ThrowsAsync<ArgumentException>
+		(
+			() => downloader.ResolveAsync("   ")
+		);
+	}
+
+	[Fact]
+	public async Task DownloadAsync_ThrowsOnNullOrWhitespaceDestFolder()
+	{
+		using var http = CreateHttpClient
+		(
+			request => CreateStaticResponseAsync(request, [])
+		);
+		var downloader = new FileDownloader(http);
+		var resolved = new ResolvedUrl
+		{
+			FinalUrl = "https://example.test/file.bin",
+			FileName = "file.bin",
+			SourceType = ResolvedUrlSourceType.SingleFile,
+		};
+
+		await Assert.ThrowsAsync<ArgumentException>
+		(
+			() => downloader.DownloadAsync(resolved, "")
+		);
+	}
+
+	[Fact]
+	public async Task DownloadAsync_ZipWithTraversalEntry_ThrowsInvalidDataException()
+	{
+		const string url = "https://example.test/evil.zip";
+		using var memory = new MemoryStream();
+		using (var archive = new ZipArchive(memory, ZipArchiveMode.Create, leaveOpen: true))
+		{
+			var entry = archive.CreateEntry("../../../etc/passwd");
+				var stream = await entry.OpenAsync(CancellationToken.None);
+				await using (stream.ConfigureAwait(false))
+				{
+					stream.Write("evil"u8);
+				}
+		}
+
+		var archiveBytes = memory.ToArray();
+		using var http = CreateHttpClient
+		(
+			request => CreateStaticResponseAsync(request, archiveBytes, "application/zip")
+		);
+		var downloader = new FileDownloader(http);
+		var resolved = new ResolvedUrl
+		{
+			FinalUrl = url,
+			FileName = "evil.zip",
+			ContentLength = archiveBytes.Length,
+			SourceType = ResolvedUrlSourceType.Archive,
+		};
+		var destFolder = CreateArtifactDirectory(nameof(DownloadAsync_ZipWithTraversalEntry_ThrowsInvalidDataException));
+
+		await Assert.ThrowsAsync<InvalidDataException>
+		(
+			() => downloader.DownloadAsync(resolved, destFolder)
+		);
+	}
+
+	[Fact]
+	public async Task DownloadAsync_TarGzArchive_StreamsAndExtractsFiles()
+	{
+		const string url = "https://example.test/archive.tar.gz";
+		var archiveBytes = CreateTarGzBytes
+		(
+			("voices/ryan.onnx", "fake onnx"),
+			("voices/config.json", "{\"voice\":\"ryan\"}")
+		);
+		using var http = CreateHttpClient
+		(
+			request => CreateSlowStreamResponseAsync
+			(
+				request,
+				archiveBytes,
+				mediaType: "application/gzip",
+				chunkSize: 64,
+				delayMilliseconds: 120
+			)
+		);
+		var downloader = new FileDownloader(http)
+		{
+			BufferSize = 64,
+		};
+		var resolved = new ResolvedUrl
+		{
+			FinalUrl = url,
+			FileName = "archive.tar.gz",
+			SourceType = ResolvedUrlSourceType.Archive,
+		};
+		var destFolder = CreateArtifactDirectory(nameof(DownloadAsync_TarGzArchive_StreamsAndExtractsFiles));
+		var updates = new List<FileDownloadProgress>();
+		var progress = new Progress<FileDownloadProgress>(update => updates.Add(update));
+
+		var result = await downloader.DownloadAsync(resolved, destFolder, progress);
+
+		var modelPath = Path.Combine(destFolder, "voices", "ryan.onnx");
+		var configPath = Path.Combine(destFolder, "voices", "config.json");
+		Assert.Equal(2, result.AllFiles.Count);
+		Assert.Contains(modelPath, result.AllFiles);
+		Assert.Contains(configPath, result.AllFiles);
+		Assert.Equal("fake onnx", await File.ReadAllTextAsync(modelPath));
+		Assert.Equal("{\"voice\":\"ryan\"}", await File.ReadAllTextAsync(configPath));
+
+		var streamingUpdates = updates
+			.Where(static update => update.Phase == DownloadPhase.Streaming)
+			.ToArray();
+		Assert.NotEmpty(streamingUpdates);
+		Assert.Contains
+		(
+			streamingUpdates,
+			static update =>
+				update.BytesTransferred > 0
+				&& update.TotalBytes is null
+				&& update.OverallPercent is null
+				&& update.Eta is null
+		);
+		Assert.Equal(2, streamingUpdates[^1].FilesCompleted);
+	}
+
+	[Fact]
+	public async Task DownloadAsync_UnknownLengthSlowContent_ReportsThrottledProgressWithoutPercentOrEta()
+	{
+		const string url = "https://example.test/slow.bin";
+		var content = Enumerable.Repeat((byte)'x', 24 * 1024).ToArray();
+		using var http = CreateHttpClient
+		(
+			request => CreateSlowStreamResponseAsync
+			(
+				request,
+				content,
+				chunkSize: 1024,
+				delayMilliseconds: 120
+			)
+		);
+		var downloader = new FileDownloader(http)
+		{
+			BufferSize = 1024,
+		};
+		var resolved = new ResolvedUrl
+		{
+			FinalUrl = url,
+			FileName = "slow.bin",
+			ContentLength = null,
+			SourceType = ResolvedUrlSourceType.SingleFile,
+		};
+		var destFolder = CreateArtifactDirectory
+		(
+			nameof(DownloadAsync_UnknownLengthSlowContent_ReportsThrottledProgressWithoutPercentOrEta)
+		);
+		var updates = new List<FileDownloadProgress>();
+		var progress = new Progress<FileDownloadProgress>(update => updates.Add(update));
+
+		var result = await downloader.DownloadAsync(resolved, destFolder, progress);
+
+		Assert.Single(result.Files);
+		Assert.Equal(content.Length, result.TotalBytes);
+
+		var downloadUpdates = updates
+			.Where(static update => update.Phase == DownloadPhase.Downloading)
+			.ToArray();
+		Assert.True(downloadUpdates.Length >= 3);
+		Assert.Contains
+		(
+			downloadUpdates,
+			static update =>
+				update.BytesTransferred > 0
+				&& update.TotalBytes is null
+				&& update.OverallPercent is null
+				&& update.Eta is null
+		);
+		Assert.Null(downloadUpdates[^1].OverallPercent);
+		Assert.Equal(TimeSpan.Zero, downloadUpdates[^1].Eta);
+	}
+
+	[Fact]
+	public async Task DownloadAsync_Head405Probe_FallsBackToGetMetadata()
+	{
+		const string url = "https://example.test/fallback";
+		var content = Encoding.UTF8.GetBytes("fallback payload");
+		var headRequests = 0;
+		var getRequests = 0;
+		using var http = CreateHttpClient
+		(
+			request =>
+			{
+				if (request.Method == HttpMethod.Head)
+				{
+					headRequests++;
+					return CreateMethodNotAllowedResponseAsync(request);
+				}
+
+				getRequests++;
+				return CreateStaticResponseAsync(request, content, fileName: "fallback model.onnx");
+			}
+		);
+		var downloader = new FileDownloader(http);
+		var destFolder = CreateArtifactDirectory(nameof(DownloadAsync_Head405Probe_FallsBackToGetMetadata));
+
+		var result = await downloader.DownloadAsync(url, destFolder);
+
+		var downloadedFile = Path.Combine(destFolder, "fallback model.onnx");
+		Assert.Equal(2, headRequests);
+		Assert.Equal(3, getRequests);
+		Assert.Contains(downloadedFile, result.AllFiles);
+		Assert.Equal("fallback payload", await File.ReadAllTextAsync(downloadedFile));
+	}
+
+	[Fact]
+	public async Task DownloadAsync_HttpRequestException_WrapsInInvalidOperationException()
+	{
+		const string url = "https://example.test/network-failure.onnx";
+		using var http = CreateHttpClient
+		(
+			static _ => Task.FromException<HttpResponseMessage>(new HttpRequestException("kaboom"))
+		);
+		var downloader = new FileDownloader(http);
+		var resolved = new ResolvedUrl
+		{
+			FinalUrl = url,
+			FileName = "network-failure.onnx",
+			SourceType = ResolvedUrlSourceType.SingleFile,
+		};
+		var destFolder = CreateArtifactDirectory(nameof(DownloadAsync_HttpRequestException_WrapsInInvalidOperationException));
+
+		var ex = await Assert.ThrowsAsync<InvalidOperationException>
+		(
+			() => downloader.DownloadAsync(resolved, destFolder)
+		);
+
+		Assert.Contains(url, ex.Message, StringComparison.Ordinal);
+		Assert.IsType<HttpRequestException>(ex.InnerException);
+		Assert.Equal("kaboom", ex.InnerException?.Message);
+	}
+
+	[Theory]
+	[InlineData("https://example.test/file.zip?download=1", "https://example.test/file.zip")]
+	[InlineData("https://example.test/file.zip#section", "https://example.test/file.zip")]
+	[InlineData("https://example.test/file.zip?download=1#section", "https://example.test/file.zip")]
+	[InlineData("https://example.test/file.zip", "https://example.test/file.zip")]
+	public void StripUrlSuffix_SuffixVariants_ReturnBaseUrl(string input, string expected)
+	{
+		var actual = InvokePrivateStatic<string>(nameof(FileDownloader), "StripUrlSuffix", input);
+
+		Assert.Equal(expected, actual);
+	}
+
+	[Fact]
+	public void GetCompanionFileName_ValidAndInvalidUrls_ReturnExpectedNames()
+	{
+		var valid = InvokePrivateStatic<string>
+		(
+			nameof(FileDownloader),
+			"GetCompanionFileName",
+			"https://example.test/files/config%20file.json?download=1#fragment"
+		);
+		var invalid = InvokePrivateStatic<string>(nameof(FileDownloader), "GetCompanionFileName", "not a valid absolute url");
+
+		Assert.Equal("config file.json", valid);
+		Assert.StartsWith("companion-", invalid, StringComparison.Ordinal);
+		Assert.Equal(42, invalid.Length);
+	}
+
+	[Fact]
+	public void GetResolvedFileName_PreferredNameAndFallbacks_ReturnExpectedNames()
+	{
+		var preferred = InvokePrivateStatic<string>
+		(
+			nameof(FileDownloader),
+			"GetResolvedFileName",
+			"https://example.test/models/original.bin",
+			@"folder\voice.onnx"
+		);
+		var fromUrl = InvokePrivateStatic<string>
+		(
+			nameof(FileDownloader),
+			"GetResolvedFileName",
+			"https://example.test/models/voice%20model.onnx",
+			string.Empty
+		);
+		var fallback = InvokePrivateStatic<string>
+		(
+			nameof(FileDownloader),
+			"GetResolvedFileName",
+			"not an absolute url",
+			null
+		);
+
+		Assert.Equal("voice.onnx", preferred);
+		Assert.Equal("voice model.onnx", fromUrl);
+		Assert.Equal("download", fallback);
+	}
+
+	[Fact]
+	public void NormalizeResolverUrl_AbsoluteAndRelativeInputs_ReturnNormalizedValues()
+	{
+		var absolute = InvokePrivateStatic<string>
+		(
+			nameof(FileDownloader),
+			"NormalizeResolverUrl",
+			"https://Example.TEST/path/"
+		);
+		var relative = InvokePrivateStatic<string>
+		(
+			nameof(FileDownloader),
+			"NormalizeResolverUrl",
+			"  relative/path/  "
+		);
+
+		Assert.Equal("https://example.test/path", absolute);
+		Assert.Equal("relative/path", relative);
+	}
+
+	[Fact]
+	public async Task DownloadAsync_UnknownArchiveFormat_UsesTempFileExtractionPath()
+	{
+		const string url = "https://example.test/archive.data";
+		var archiveBytes = CreateZipArchiveBytes
+		(
+			("model.onnx", "fake onnx"),
+			("notes.txt", "hello")
+		);
+		using var http = CreateHttpClient
+		(
+			request => CreateStaticResponseAsync(request, archiveBytes, "application/octet-stream")
+		);
+		var downloader = new FileDownloader(http);
+		var resolved = new ResolvedUrl
+		{
+			FinalUrl = url,
+			FileName = "archive.data",
+			ContentLength = archiveBytes.Length,
+			SourceType = ResolvedUrlSourceType.Archive,
+		};
+		var destFolder = CreateArtifactDirectory(nameof(DownloadAsync_UnknownArchiveFormat_UsesTempFileExtractionPath));
+
+		var result = await downloader.DownloadAsync(resolved, destFolder);
+
+		Assert.Equal(2, result.AllFiles.Count);
+		Assert.Contains(result.AllFiles, path => Path.GetFileName(path) == "model.onnx");
+		Assert.Contains(result.AllFiles, path => Path.GetFileName(path) == "notes.txt");
+		Assert.Empty(Directory.GetFiles(destFolder, "download-*.data", SearchOption.TopDirectoryOnly));
+	}
+
 	private string CreateArtifactDirectory(string name)
 	{
 		var path = Path.Combine(_artifactRoot, name);
@@ -453,6 +1012,27 @@ public sealed class FileDownloaderTests : IDisposable
 				using var stream = entry.Open();
 				var bytes = Encoding.UTF8.GetBytes(content);
 				stream.Write(bytes);
+			}
+		}
+
+		return memory.ToArray();
+	}
+
+	private static byte[] CreateTarGzBytes(params (string Path, string Content)[] entries)
+	{
+		using var memory = new MemoryStream();
+
+		using (var gz = new GZipStream(memory, CompressionLevel.SmallestSize, leaveOpen: true))
+		{
+			using var tarWriter = new TarWriter(gz, leaveOpen: true);
+			foreach (var (path, content) in entries)
+			{
+				using var dataStream = new MemoryStream(Encoding.UTF8.GetBytes(content));
+				var entry = new PaxTarEntry(TarEntryType.RegularFile, path)
+				{
+					DataStream = dataStream,
+				};
+				tarWriter.WriteEntry(entry);
 			}
 		}
 
@@ -501,6 +1081,50 @@ public sealed class FileDownloaderTests : IDisposable
 		);
 	}
 
+	private static Task<HttpResponseMessage> CreateMethodNotAllowedResponseAsync(HttpRequestMessage request)
+	{
+		return Task.FromResult
+		(
+			new HttpResponseMessage(HttpStatusCode.MethodNotAllowed)
+			{
+				RequestMessage = request,
+				Content = new ByteArrayContent([]),
+			}
+		);
+	}
+
+	private static Task<HttpResponseMessage> CreateSlowStreamResponseAsync
+	(
+		HttpRequestMessage request,
+		byte[] content,
+		string? mediaType = null,
+		string? fileName = null,
+		int chunkSize = 4096,
+		int delayMilliseconds = 0
+	)
+	{
+		var response = new HttpResponseMessage(HttpStatusCode.OK)
+		{
+			RequestMessage = request,
+			Content = new StreamContent(new SlowReadStream(content, chunkSize, delayMilliseconds)),
+		};
+
+		if (!string.IsNullOrWhiteSpace(mediaType))
+		{
+			response.Content.Headers.ContentType = new MediaTypeHeaderValue(mediaType);
+		}
+
+		if (!string.IsNullOrWhiteSpace(fileName))
+		{
+			response.Content.Headers.ContentDisposition = new ContentDispositionHeaderValue("attachment")
+			{
+				FileName = fileName,
+			};
+		}
+
+		return Task.FromResult(response);
+	}
+
 	[SuppressMessage
 	(
 		"Reliability",
@@ -510,6 +1134,15 @@ public sealed class FileDownloaderTests : IDisposable
 	private static HttpClient CreateHttpClient(Func<HttpRequestMessage, Task<HttpResponseMessage>> handler)
 	{
 		return new HttpClient(new MockHttpHandler(handler), disposeHandler: true);
+	}
+
+	private static T InvokePrivateStatic<T>(string typeName, string methodName, params object?[] args)
+	{
+		Assert.Equal(nameof(FileDownloader), typeName);
+		var method = typeof(FileDownloader).GetMethod(methodName, BindingFlags.NonPublic | BindingFlags.Static);
+		Assert.NotNull(method);
+		var result = method!.Invoke(null, args);
+		return Assert.IsType<T>(result);
 	}
 
 	private sealed class MockHttpHandler : HttpMessageHandler
@@ -528,6 +1161,128 @@ public sealed class FileDownloaderTests : IDisposable
 		)
 		{
 			return _handler(request);
+		}
+	}
+
+	private sealed class SlowReadStream : Stream
+	{
+		private readonly byte[] _content;
+		private readonly int _chunkSize;
+		private readonly int _delayMilliseconds;
+		private int _position;
+
+		public SlowReadStream(byte[] content, int chunkSize, int delayMilliseconds)
+		{
+			_content = content;
+			_chunkSize = Math.Max(1, chunkSize);
+			_delayMilliseconds = Math.Max(0, delayMilliseconds);
+		}
+
+		public override bool CanRead => true;
+
+		public override bool CanSeek => false;
+
+		public override bool CanWrite => false;
+
+		public override long Length => _content.Length;
+
+		public override long Position
+		{
+			get => _position;
+			set => throw new NotSupportedException();
+		}
+
+		public override void Flush()
+		{
+		}
+
+		public override int Read(byte[] buffer, int offset, int count)
+		{
+			if (_delayMilliseconds > 0 && _position < _content.Length)
+			{
+				Thread.Sleep(_delayMilliseconds);
+			}
+
+			return ReadCore(buffer.AsSpan(offset, count));
+		}
+
+		public override int Read(Span<byte> buffer)
+		{
+			if (_delayMilliseconds > 0 && _position < _content.Length)
+			{
+				Thread.Sleep(_delayMilliseconds);
+			}
+
+			return ReadCore(buffer);
+		}
+
+		public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+		{
+			return ReadAsyncCore(buffer, cancellationToken);
+		}
+
+		public override Task<int> ReadAsync
+		(
+			byte[] buffer,
+			int offset,
+			int count,
+			CancellationToken cancellationToken
+		)
+		{
+			return ReadAsyncCore(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+		}
+
+		public override long Seek(long offset, SeekOrigin origin)
+		{
+			throw new NotSupportedException();
+		}
+
+		public override void SetLength(long value)
+		{
+			throw new NotSupportedException();
+		}
+
+		public override void Write(byte[] buffer, int offset, int count)
+		{
+			throw new NotSupportedException();
+		}
+
+		public override void Write(ReadOnlySpan<byte> buffer)
+		{
+			throw new NotSupportedException();
+		}
+
+		public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+		{
+			throw new NotSupportedException();
+		}
+
+		private int ReadCore(Span<byte> buffer)
+		{
+			if (_position >= _content.Length)
+			{
+				return 0;
+			}
+
+			var remaining = _content.Length - _position;
+			var bytesToCopy = Math.Min(Math.Min(buffer.Length, _chunkSize), remaining);
+			_content.AsSpan(_position, bytesToCopy).CopyTo(buffer);
+			_position += bytesToCopy;
+			return bytesToCopy;
+		}
+
+		private async ValueTask<int> ReadAsyncCore
+		(
+			Memory<byte> buffer,
+			CancellationToken cancellationToken
+		)
+		{
+			if (_delayMilliseconds > 0 && _position < _content.Length)
+			{
+				await Task.Delay(_delayMilliseconds, cancellationToken).ConfigureAwait(false);
+			}
+
+			return ReadCore(buffer.Span);
 		}
 	}
 

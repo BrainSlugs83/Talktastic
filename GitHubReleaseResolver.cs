@@ -3,9 +3,17 @@ using System.Text.RegularExpressions;
 
 namespace Talktastic;
 
+/// <summary>
+/// Resolves GitHub release pages to downloadable assets.
+/// </summary>
 [ExcludeFromCodeCoverage]
 sealed partial class GitHubReleaseResolver : IUrlResolver
 {
+	/// <summary>
+	/// Determines whether the URL points to a GitHub release.
+	/// </summary>
+	/// <param name="url">The URL to test.</param>
+	/// <returns><see langword="true"/> when the resolver can handle the URL.</returns>
 	public bool CanResolve(string url)
 	{
 		return Uri.TryCreate(url, UriKind.Absolute, out var uri)
@@ -13,6 +21,13 @@ sealed partial class GitHubReleaseResolver : IUrlResolver
 			&& uri.LocalPath.Contains("/releases/", StringComparison.OrdinalIgnoreCase);
 	}
 
+	/// <summary>
+	/// Resolves a GitHub release URL to the preferred downloadable asset.
+	/// </summary>
+	/// <param name="http">The HTTP client to use.</param>
+	/// <param name="url">The URL to resolve.</param>
+	/// <param name="cancellationToken">The cancellation token.</param>
+	/// <returns>The resolved URL result.</returns>
 	public async Task<UrlResolverResult> ResolveAsync
 	(
 		HttpClient http,

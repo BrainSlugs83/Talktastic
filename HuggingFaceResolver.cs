@@ -3,9 +3,17 @@ using System.Text.RegularExpressions;
 
 namespace Talktastic;
 
+/// <summary>
+/// Resolves Hugging Face model and file URLs to downloadable assets.
+/// </summary>
 [ExcludeFromCodeCoverage]
 sealed partial class HuggingFaceResolver : IUrlResolver
 {
+	/// <summary>
+	/// Determines whether the URL points to Hugging Face.
+	/// </summary>
+	/// <param name="url">The URL to test.</param>
+	/// <returns><see langword="true"/> when the resolver can handle the URL.</returns>
 	public bool CanResolve(string url)
 	{
 		return Uri.TryCreate(url, UriKind.Absolute, out var uri)
@@ -13,6 +21,13 @@ sealed partial class HuggingFaceResolver : IUrlResolver
 	}
 
 	#pragma warning disable CA1502 // Resolver intentionally keeps supported HuggingFace URL branches in one place.
+	/// <summary>
+	/// Resolves a Hugging Face URL to the preferred downloadable asset.
+	/// </summary>
+	/// <param name="http">The HTTP client to use.</param>
+	/// <param name="url">The URL to resolve.</param>
+	/// <param name="cancellationToken">The cancellation token.</param>
+	/// <returns>The resolved URL result.</returns>
 	public async Task<UrlResolverResult> ResolveAsync
 	(
 		HttpClient http,
@@ -270,4 +285,3 @@ sealed partial class HuggingFaceResolver : IUrlResolver
 	[GeneratedRegex(@"""path""\s*:\s*""((?:[^""]+/)?(?:config\.json|metadata\.json))""")]
 	private static partial Regex HfConfigJsonPathPattern();
 }
-

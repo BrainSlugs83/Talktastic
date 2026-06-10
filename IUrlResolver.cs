@@ -1,29 +1,34 @@
 namespace Talktastic;
 
 /// <summary>
-/// Resolves a URL to a potentially different URL with optional metadata.
-/// Implementations handle specific URL patterns (e.g. Google Drive, HuggingFace).
+/// Resolves source-specific URLs into direct download URLs.
 /// </summary>
 interface IUrlResolver
 {
 	/// <summary>
-	/// Returns true if this resolver can handle the given URL.
+	/// Determines whether this resolver can handle the URL.
 	/// </summary>
+	/// <param name="url">The URL to test.</param>
+	/// <returns><see langword="true"/> when the resolver can handle the URL.</returns>
 	bool CanResolve(string url);
 
 	/// <summary>
-	/// Resolves the URL. May return a transformed URL, a display name, and companion URLs.
+	/// Resolves the URL and returns any discovered metadata.
 	/// </summary>
+	/// <param name="http">The HTTP client to use.</param>
+	/// <param name="url">The URL to resolve.</param>
+	/// <param name="cancellationToken">The cancellation token.</param>
+	/// <returns>The resolved URL result.</returns>
 	Task<UrlResolverResult> ResolveAsync(HttpClient http, string url, CancellationToken cancellationToken);
 }
 
 /// <summary>
-/// Result of a single URL resolution step.
+/// Represents the result of one resolver step.
 /// </summary>
-/// <param name="Url">The resolved URL (may be the same as input if no transformation).</param>
-/// <param name="DisplayName">Optional display name discovered during resolution.</param>
-/// <param name="CompanionUrls">Optional companion URLs (e.g. .onnx.json config files).</param>
-/// <param name="IsPreferredName">Whether <paramref name="DisplayName"/> should outrank later discovered names.</param>
+/// <param name="Url">The resolved URL.</param>
+/// <param name="DisplayName">The discovered display name, if any.</param>
+/// <param name="CompanionUrls">Companion URLs to download with the primary file, if any.</param>
+/// <param name="IsPreferredName">Whether the display name should outrank later names.</param>
 record UrlResolverResult
 (
 	string Url,

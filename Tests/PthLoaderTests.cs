@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Globalization;
 using System.IO.Compression;
 using System.Numerics;
+using System.Reflection;
 using System.Text;
 
 namespace Talktastic.Tests;
@@ -2204,6 +2205,147 @@ public sealed class PthLoaderTests
 		(
 			() => PthLoader.Load(stream)
 		);
+	}
+
+	[Fact]
+	public void Load_SampleRatePlaceholderWithBuildState_UsesNormalizedLabel()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer =>
+			{
+				writer.WriteEmptyList();
+				writer.WriteInt32(123);
+				writer.WriteAppend();
+			},
+			writeSampleRate: static writer =>
+			{
+				writer.WriteGlobalReference("ultimate_rvc.typing_extra", "TrainingSampleRate");
+				writer.WriteString("SR_40K");
+				writer.WriteTuple1();
+				writer.WriteReduce();
+				writer.WriteString("ignored-state");
+				writer.WriteBuild();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal("40k", model.SampleRateLabel);
+	}
+
+	[Fact]
+	public void Load_F0PlaceholderWithBooleanArgument_ConvertsToFlag()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer => WriteDefaultConfig(writer),
+			writeF0: static writer =>
+			{
+				writer.WriteGlobalReference("ultimate_rvc.enums", "PitchAware");
+				writer.WriteBool(false);
+				writer.WriteTuple1();
+				writer.WriteReduce();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal(0, model.F0);
+	}
+
+	[Fact]
+	public void Load_TorchDeviceWithNumericArgument_ConvertsToString()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer =>
+			{
+				writer.WriteEmptyList();
+				writer.WriteGlobalReference("torch", "device");
+				writer.WriteInt32(7);
+				writer.WriteTuple1();
+				writer.WriteReduce();
+				writer.WriteAppend();
+				writer.WriteInt32(48000);
+				writer.WriteAppend();
+			}
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+
+		Assert.Equal("7", model.Config[0]);
+	}
+
+	[Fact]
+	public void Load_PersistentStorageKeyAsInteger_ResolvesNumericArchiveEntry()
+	{
+		var archive = BuildModelArchive
+		(
+			static writer => WriteDefaultConfig(writer),
+			writeWeight: static writer =>
+			{
+				writer.WriteEmptyDictionary();
+				writer.WriteString("numeric.weight");
+				writer.WriteGlobalReference("torch._utils", "_rebuild_tensor_v2");
+				writer.WriteMark();
+				writer.WriteMark();
+				writer.WriteString("storage");
+				writer.WriteGlobalReference("torch", "HalfStorage");
+				writer.WriteInt32(7);
+				writer.WriteString("cpu");
+				writer.WriteInt32(1);
+				writer.WriteTuple();
+				writer.WriteBinPersId();
+				writer.WriteInt32(0);
+				writer.WriteTuple([1]);
+				writer.WriteTuple([1]);
+				writer.WriteTuple();
+				writer.WriteReduce();
+				writer.WriteSetItem();
+			},
+			storages: [("7", Float16Bytes(3f))]
+		);
+
+		using var stream = new MemoryStream(archive, writable: false);
+
+		var model = PthLoader.Load(stream);
+		var weight = Assert.Single(model.Weights).Value;
+
+		Assert.Equal(Float16Bytes(3f), weight.Data);
+	}
+
+	[Fact]
+	public void TensorManifest_EmptyShape_HasSingleElement()
+	{
+		var tensorManifestType = typeof(PthLoader).GetNestedType("TensorManifest", BindingFlags.NonPublic);
+		Assert.NotNull(tensorManifestType);
+
+		var manifest = Activator.CreateInstance
+		(
+			tensorManifestType!,
+			"scalar",
+			"0",
+			"float16",
+			2,
+			Array.Empty<int>(),
+			Array.Empty<int>(),
+			0
+		);
+		Assert.NotNull(manifest);
+
+		var elementCount = (int)tensorManifestType.GetProperty("ElementCount")!.GetValue(manifest)!;
+		var renamed = tensorManifestType.GetMethod("WithName")!.Invoke(manifest, ["renamed"]);
+
+		Assert.Equal(1, elementCount);
+		Assert.Equal("renamed", tensorManifestType.GetProperty("Name")!.GetValue(renamed));
+		Assert.Equal(1, (int)tensorManifestType.GetProperty("ElementCount")!.GetValue(renamed)!);
 	}
 
 	private static byte[] BuildModelArchive

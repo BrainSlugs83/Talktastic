@@ -106,6 +106,57 @@ public sealed class DownloadRegistryTests : IDisposable
 	}
 
 	[Fact]
+	public void Load_NewFormat_NullProperties_ReturnEmptyCollectionsAndNullVersion()
+	{
+		var path = CreateTempFilePath();
+		File.WriteAllText
+		(
+			path,
+			"""
+			{
+				"empty": {
+					"names": null,
+					"urls": null,
+					"version": null
+				}
+			}
+			"""
+		);
+
+		var registry = new DownloadRegistry(path);
+		var entry = Assert.Single(registry.Resources);
+
+		Assert.Equal("empty", entry.Key);
+		Assert.Empty(entry.Names);
+		Assert.Empty(entry.Urls);
+		Assert.Null(entry.Version);
+	}
+
+	[Fact]
+	public void Load_NewFormat_WhitespaceStringProperties_ReturnEmptyCollections()
+	{
+		var path = CreateTempFilePath();
+		File.WriteAllText
+		(
+			path,
+			"""
+			{
+				"empty": {
+					"names": "   ",
+					"urls": "   "
+				}
+			}
+			"""
+		);
+
+		var registry = new DownloadRegistry(path);
+		var entry = Assert.Single(registry.Resources);
+
+		Assert.Empty(entry.Names);
+		Assert.Empty(entry.Urls);
+	}
+
+	[Fact]
 	public void Load_MixedFormats_ParsesAllEntries()
 	{
 		var path = CreateTempFilePath();
@@ -185,6 +236,17 @@ public sealed class DownloadRegistryTests : IDisposable
 		Assert.Equal("egirl", stored.Key);
 		Assert.Equal(CurrentAppVersion, stored.Version);
 		Assert.Same(stored, registry.LookupByUrl("https://example.com/model.onnx/"));
+	}
+
+	[Fact]
+	public void Register_NullEntry_ThrowsArgumentNullException()
+	{
+		var registry = new DownloadRegistry(CreateMissingTempFilePath());
+
+		Assert.Throws<ArgumentNullException>
+		(
+			() => registry.Register(null!)
+		);
 	}
 
 	[Fact]
@@ -361,6 +423,49 @@ public sealed class DownloadRegistryTests : IDisposable
 	}
 
 	[Fact]
+	public void Register_AllUnusableNames_FallsBackToCandidates()
+	{
+		var registry = new DownloadRegistry(CreateMissingTempFilePath());
+		var guid = Guid.NewGuid().ToString("D");
+		var tempName = $"download-{Guid.NewGuid():D}";
+
+		registry.Register
+		(
+			CreateEntry
+			(
+				"placeholder",
+				["drive_abc123", guid, tempName],
+				["https://example.com/model.onnx"]
+			)
+		);
+
+		var entry = Assert.Single(registry.Resources);
+
+		Assert.Equal(["drive_abc123", guid, tempName], entry.Names);
+	}
+
+	[Fact]
+	public void Register_EmptyNames_HandlesGracefully()
+	{
+		var registry = new DownloadRegistry(CreateMissingTempFilePath());
+
+		registry.Register
+		(
+			CreateEntry
+			(
+				"nameless",
+				[],
+				["https://example.com/model.onnx"]
+			)
+		);
+
+		var entry = Assert.Single(registry.Resources);
+
+		Assert.Empty(entry.Names);
+		Assert.Equal(["https://example.com/model.onnx"], entry.Urls);
+	}
+
+	[Fact]
 	public void Save_SingleItemNamesAndUrls_AreWrittenAsStrings()
 	{
 		var path = CreateTempFilePath();
@@ -383,6 +488,24 @@ public sealed class DownloadRegistryTests : IDisposable
 
 		Assert.Equal(JsonValueKind.String, entry.GetProperty("names").ValueKind);
 		Assert.Equal(JsonValueKind.String, entry.GetProperty("urls").ValueKind);
+	}
+
+	[Fact]
+	public void Save_EmptyLists_AreWrittenAsEmptyArrays()
+	{
+		var path = CreateTempFilePath();
+		var registry = new DownloadRegistry(path);
+
+		registry.Register(CreateEntry("empty", [], []));
+		registry.Save();
+
+		using var document = JsonDocument.Parse(File.ReadAllText(path));
+		var entry = document.RootElement.GetProperty("empty");
+
+		Assert.Equal(JsonValueKind.Array, entry.GetProperty("names").ValueKind);
+		Assert.Equal(0, entry.GetProperty("names").GetArrayLength());
+		Assert.Equal(JsonValueKind.Array, entry.GetProperty("urls").ValueKind);
+		Assert.Equal(0, entry.GetProperty("urls").GetArrayLength());
 	}
 
 	[Theory]
@@ -429,6 +552,258 @@ public sealed class DownloadRegistryTests : IDisposable
 
 		Assert.Equal(CurrentAppVersion, stored.Version);
 		Assert.Equal(CurrentAppVersion, jsonEntry.GetProperty("version").GetString());
+	}
+
+	[Fact]
+	public void LookupByUrl_NullOrWhitespace_ReturnsNull()
+	{
+		var registry = new DownloadRegistry(CreateMissingTempFilePath());
+
+		Assert.Null(registry.LookupByUrl(null!));
+		Assert.Null(registry.LookupByUrl(""));
+		Assert.Null(registry.LookupByUrl("   "));
+	}
+
+	[Fact]
+	public void LookupByUrl_MalformedUrl_ReturnsNull()
+	{
+		var registry = new DownloadRegistry(CreateMissingTempFilePath());
+
+		Assert.Null(registry.LookupByUrl("://not-a-valid-uri"));
+	}
+
+	[Fact]
+	public void LookupByUrl_NonExistentUrl_ReturnsNull()
+	{
+		var registry = new DownloadRegistry(CreateMissingTempFilePath());
+		registry.Register
+		(
+			CreateEntry
+			(
+				"bart",
+				["Bart Simpson"],
+				["https://example.com/bart"]
+			)
+		);
+
+		Assert.Null(registry.LookupByUrl("https://example.com/nonexistent"));
+	}
+
+	[Fact]
+	public void LookupByName_NoMatch_ReturnsNull()
+	{
+		var registry = new DownloadRegistry(CreateMissingTempFilePath());
+		registry.Register
+		(
+			CreateEntry
+			(
+				"bart",
+				["Bart Simpson"],
+				["https://example.com/bart"]
+			)
+		);
+
+		Assert.Null(registry.LookupByName("zzzzcompletegibberishzzz"));
+	}
+
+	[Fact]
+	public void Unregister_WhitespaceKey_DoesNothing()
+	{
+		var registry = new DownloadRegistry(CreateMissingTempFilePath());
+		registry.Register(CreateEntry("bart", ["Bart"], ["https://example.com/bart"]));
+
+		registry.Unregister("");
+		registry.Unregister("   ");
+
+		Assert.Single(registry.Resources);
+	}
+
+	[Fact]
+	public void Unregister_NonExistentKey_DoesNothing()
+	{
+		var registry = new DownloadRegistry(CreateMissingTempFilePath());
+		registry.Register(CreateEntry("bart", ["Bart"], ["https://example.com/bart"]));
+
+		registry.Unregister("marge");
+
+		Assert.Single(registry.Resources);
+	}
+
+	[Fact]
+	public void Constructor_ThrowsOnNullOrWhitespace()
+	{
+		Assert.Throws<ArgumentException>(() => new DownloadRegistry(""));
+		Assert.Throws<ArgumentException>(() => new DownloadRegistry("   "));
+	}
+
+	[Fact]
+	public void Load_UnsupportedValueKind_ThrowsJsonException()
+	{
+		var path = CreateTempFilePath();
+		File.WriteAllText(path, """{ "bad-key": 42 }""");
+
+		Assert.Throws<JsonException>(() => new DownloadRegistry(path));
+	}
+
+	[Fact]
+	public void Load_StringArrayWithNonStringItem_ThrowsJsonException()
+	{
+		var path = CreateTempFilePath();
+		File.WriteAllText
+		(
+			path,
+			"""
+			{
+				"bad": {
+					"names": ["valid", 42],
+					"urls": "https://example.com/model.onnx"
+				}
+			}
+			"""
+		);
+
+		Assert.Throws<JsonException>(() => new DownloadRegistry(path));
+	}
+
+	[Fact]
+	public void Load_UnsupportedNamesKind_ThrowsJsonException()
+	{
+		var path = CreateTempFilePath();
+		File.WriteAllText
+		(
+			path,
+			"""
+			{
+				"bad": {
+					"names": 42,
+					"urls": "https://example.com/model.onnx"
+				}
+			}
+			"""
+		);
+
+		Assert.Throws<JsonException>(() => new DownloadRegistry(path));
+	}
+
+	[Fact]
+	public void Load_UnsupportedVersionKind_ThrowsJsonException()
+	{
+		var path = CreateTempFilePath();
+		File.WriteAllText
+		(
+			path,
+			"""
+			{
+				"bad": {
+					"names": "Model",
+					"urls": "https://example.com/model.onnx",
+					"version": 42
+				}
+			}
+			"""
+		);
+
+		Assert.Throws<JsonException>(() => new DownloadRegistry(path));
+	}
+
+	[Fact]
+	public void Load_NonObjectRoot_ThrowsJsonException()
+	{
+		var path = CreateTempFilePath();
+		File.WriteAllText(path, """[ "not", "an", "object" ]""");
+
+		Assert.Throws<JsonException>(() => new DownloadRegistry(path));
+	}
+
+	[Fact]
+	public void Save_LegacyEntryWithMultipleUrls_WritesNewFormat()
+	{
+		var path = CreateTempFilePath();
+		File.WriteAllText(path, """{ "https://example.com/model.onnx": "egirl" }""");
+
+		var registry = new DownloadRegistry(path);
+		registry.Register
+		(
+			CreateEntry
+			(
+				"ignored",
+				["egirl"],
+				["https://example.com/model.onnx", "https://mirror.example.com/model.onnx"]
+			)
+		);
+		registry.Save();
+
+		using var document = JsonDocument.Parse(File.ReadAllText(path));
+		var property = Assert.Single(document.RootElement.EnumerateObject());
+		Assert.Equal(JsonValueKind.Object, property.Value.ValueKind);
+	}
+
+	[Fact]
+	public void Save_UnparseableVersion_WritesNewFormat()
+	{
+		var path = CreateTempFilePath();
+		File.WriteAllText
+		(
+			path,
+			"""{ "model": { "names": "Model", "urls": "https://example.com/m", "version": "definitely-not-a-version" } }"""
+		);
+
+		var registry = new DownloadRegistry(path);
+		registry.Save();
+
+		using var document = JsonDocument.Parse(File.ReadAllText(path));
+		var property = Assert.Single(document.RootElement.EnumerateObject());
+		Assert.Equal("model", property.Name);
+		Assert.Equal(JsonValueKind.Object, property.Value.ValueKind);
+	}
+
+	[Fact]
+	public void Save_MissingDirectory_CreatesDirectory()
+	{
+		var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+		var path = Path.Combine(directory, "registry.json");
+
+		try
+		{
+			var registry = new DownloadRegistry(path);
+			registry.Register(CreateEntry("egirl", ["egirl"], ["https://example.com/model.onnx"]));
+
+			registry.Save();
+
+			Assert.True(Directory.Exists(directory));
+			Assert.True(File.Exists(path));
+		}
+		finally
+		{
+			if (File.Exists(path))
+			{
+				File.Delete(path);
+			}
+
+			if (Directory.Exists(directory))
+			{
+				Directory.Delete(directory, recursive: true);
+			}
+		}
+	}
+
+	[Fact]
+	public void Save_NewVersionEntry_WritesNewFormat()
+	{
+		var path = CreateTempFilePath();
+		File.WriteAllText
+		(
+			path,
+			"""{ "model": { "names": "Model", "urls": "https://example.com/m", "version": "0.8.4" } }"""
+		);
+
+		var registry = new DownloadRegistry(path);
+		registry.Save();
+
+		using var document = JsonDocument.Parse(File.ReadAllText(path));
+		var property = Assert.Single(document.RootElement.EnumerateObject());
+		Assert.Equal("model", property.Name);
+		Assert.Equal(JsonValueKind.Object, property.Value.ValueKind);
 	}
 
 	private string CreateTempFilePath()

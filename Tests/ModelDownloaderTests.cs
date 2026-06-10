@@ -82,6 +82,14 @@ public sealed class ModelDownloaderTests : IDisposable
 		Assert.Equal("https://example.com/Models/KeepCase?Voice=Ryan", normalized);
 	}
 
+	[Fact]
+	public void NormalizeUrl_TrimsWhitespaceAndDropsFragment()
+	{
+		var normalized = ModelDownloader.NormalizeUrl("  https://Example.COM/models/file.zip?dl=1#section  ");
+
+		Assert.Equal("https://example.com/models/file.zip?dl=1", normalized);
+	}
+
 	[Theory]
 	[InlineData(null)]
 	[InlineData("")]
@@ -147,6 +155,12 @@ public sealed class ModelDownloaderTests : IDisposable
 		var name = $"download-{Guid.NewGuid():N}-egirl";
 
 		Assert.Equal("egirl", ModelDownloader.SanitizeFileName(name));
+	}
+
+	[Fact]
+	public void SanitizeFileName_KeepsNonGuidDownloadPrefix()
+	{
+		Assert.Equal("download-not-a-guid-egirl", ModelDownloader.SanitizeFileName("download-not-a-guid-egirl"));
 	}
 
 	[Theory]
@@ -981,6 +995,38 @@ public sealed class ModelDownloaderTests : IDisposable
 		var name = ModelDownloader.ExtractFilenameFromContentDisposition(header);
 
 		Assert.Null(name);
+	}
+
+	[Fact]
+	public void ExtractFilenameFromContentDisposition_InvalidFilenameStar_ReturnsRawFilenameStarValue()
+	{
+		var name = ModelDownloader.ExtractFilenameFromContentDisposition
+		(
+			"attachment; filename*=UTF-8''%ZZ; filename=\"fallback.zip\""
+		);
+
+		Assert.Equal("%ZZ", name);
+	}
+
+	[Fact]
+	public void ExtractFilenameFromContentDisposition_PrefersFilenameStarOverPlainFilename()
+	{
+		var name = ModelDownloader.ExtractFilenameFromContentDisposition
+		(
+			"attachment; filename=\"fallback.zip\"; filename*=UTF-8''Chosen%20Name.zip"
+		);
+
+		Assert.Equal("Chosen Name.zip", name);
+	}
+
+	[Theory]
+	[InlineData("https://example.com/model", ".zip")]
+	[InlineData("https://example.com/model.onnx?download=1#frag", ".onnx")]
+	[InlineData("https://example.com/model.tar.gz?download=1", ".tar.gz")]
+	[InlineData("https://example.com/model.tgz#frag", ".tgz")]
+	public void GetArchiveExtensionPublic_ReturnsExpectedExtension(string url, string expected)
+	{
+		Assert.Equal(expected, ModelDownloader.GetArchiveExtensionPublic(url));
 	}
 
 	[Theory]

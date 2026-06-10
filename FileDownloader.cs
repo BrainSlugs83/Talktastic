@@ -5,8 +5,7 @@ using System.Net;
 namespace Talktastic;
 
 /// <summary>
-/// Reusable file downloader with URL resolution, archive extraction, and progress reporting.
-/// Source-transparent: the consumer doesn't know if the URL pointed to a file, archive, or folder.
+/// Downloads files or archives after resolving source-specific URLs.
 /// </summary>
 sealed class FileDownloader
 {
@@ -15,37 +14,41 @@ sealed class FileDownloader
 
 	private readonly HttpClient _http;
 
+	/// <summary>
+	/// Initializes a new downloader that uses the specified HTTP client.
+	/// </summary>
+	/// <param name="http">The HTTP client used for probes and downloads.</param>
 	public FileDownloader(HttpClient http)
 	{
 		_http = http;
 	}
 
 	/// <summary>
-	/// Custom URL resolvers. HttpRedirectResolver is always appended last automatically.
+	/// URL resolvers to run before the built-in redirect resolver.
 	/// </summary>
 	public List<IUrlResolver> Resolvers { get; } = [];
 
 	/// <summary>
-	/// Predicate filter for which files to include in result.Files.
-	/// Receives relative file path within extracted content.
-	/// null = keep all files (default).
+	/// Filters which relative paths appear in <see cref="FileDownloadResult.Files"/>.
 	/// </summary>
 	public Predicate<string>? FileFilter { get; set; }
 
 	/// <summary>
-	/// Whether to search subdirectories. Default: true.
+	/// Gets or sets whether filtered results can include files in subdirectories.
 	/// </summary>
 	public bool SearchRecursively { get; set; } = true;
 
 	/// <summary>
-	/// Buffer size for download operations. Default: 81920 (80 KB).
+	/// Gets or sets the buffer size used for download streams.
 	/// </summary>
 	public int BufferSize { get; set; } = 81920;
 
 	/// <summary>
-	/// Phase 1: Resolve a URL through the recursive resolver chain.
-	/// Does not download the body.
+	/// Resolves a URL and probes its download metadata.
 	/// </summary>
+	/// <param name="inputUrl">The URL to resolve.</param>
+	/// <param name="ct">The cancellation token.</param>
+	/// <returns>The resolved URL and discovered metadata.</returns>
 	public async Task<ResolvedUrl> ResolveAsync(string inputUrl, CancellationToken ct = default)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(inputUrl);
@@ -178,9 +181,13 @@ done:
 	}
 
 	/// <summary>
-	/// Phase 2: Download a resolved URL to a destination folder.
-	/// Handles archive extraction transparently.
+	/// Downloads a resolved URL into the destination folder.
 	/// </summary>
+	/// <param name="resolved">The resolved URL to download.</param>
+	/// <param name="destFolder">The destination folder.</param>
+	/// <param name="progress">Receives progress updates during the operation.</param>
+	/// <param name="ct">The cancellation token.</param>
+	/// <returns>The downloaded files and aggregate transfer details.</returns>
 	public async Task<FileDownloadResult> DownloadAsync
 	(
 		ResolvedUrl resolved,
@@ -281,8 +288,13 @@ done:
 	}
 
 	/// <summary>
-	/// One-shot convenience: resolve + download in one call.
+	/// Resolves and downloads a URL in one call.
 	/// </summary>
+	/// <param name="inputUrl">The URL to resolve and download.</param>
+	/// <param name="destFolder">The destination folder.</param>
+	/// <param name="progress">Receives progress updates during the operation.</param>
+	/// <param name="ct">The cancellation token.</param>
+	/// <returns>The downloaded files and aggregate transfer details.</returns>
 	public async Task<FileDownloadResult> DownloadAsync
 	(
 		string inputUrl,
@@ -1075,6 +1087,9 @@ done:
 		return FileFilter is null || FileFilter(relativePath);
 	}
 
+	/// <summary>
+	/// Metadata discovered during a probe request.
+	/// </summary>
 	private sealed record ProbeResult
 	{
 		public string? FinalUrl { get; init; }
@@ -1086,6 +1101,9 @@ done:
 		public string? ContentType { get; init; }
 	}
 
+	/// <summary>
+	/// Adapts a delegate to <see cref="IProgress{T}"/>.
+	/// </summary>
 	private sealed class DelegatingProgress<T>(Action<T> report) : IProgress<T>
 	{
 		private readonly Action<T> _report = report;
@@ -1096,6 +1114,9 @@ done:
 		}
 	}
 
+	/// <summary>
+	/// Wraps a readable stream and reports transfer progress.
+	/// </summary>
 	private sealed class ProgressTrackingReadStream : Stream
 	{
 		private const double Alpha = 0.3;

@@ -4,9 +4,17 @@ using System.Text.RegularExpressions;
 
 namespace Talktastic;
 
+/// <summary>
+/// Resolves voice-models.com pages to their direct download links.
+/// </summary>
 [ExcludeFromCodeCoverage]
 sealed partial class VoiceModelsComResolver : IUrlResolver
 {
+	/// <summary>
+	/// Determines whether the URL points to voice-models.com.
+	/// </summary>
+	/// <param name="url">The URL to test.</param>
+	/// <returns><see langword="true"/> when the resolver can handle the URL.</returns>
 	public bool CanResolve(string url)
 	{
 		if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
@@ -19,6 +27,13 @@ sealed partial class VoiceModelsComResolver : IUrlResolver
 			|| string.Equals(host, "www.voice-models.com", StringComparison.OrdinalIgnoreCase);
 	}
 
+	/// <summary>
+	/// Resolves a voice-models.com page to its direct download URL.
+	/// </summary>
+	/// <param name="http">The HTTP client to use.</param>
+	/// <param name="url">The URL to resolve.</param>
+	/// <param name="cancellationToken">The cancellation token.</param>
+	/// <returns>The resolved URL result.</returns>
 	public async Task<UrlResolverResult> ResolveAsync
 	(
 		HttpClient http,

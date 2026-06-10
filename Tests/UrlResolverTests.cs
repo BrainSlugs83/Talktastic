@@ -103,6 +103,57 @@ public sealed class UrlResolverTests
 	}
 
 	[Fact]
+	public async Task HttpRedirectResolver_ResolveAsync_ContentDispositionFilenameStar_ReturnsDecodedDisplayName()
+	{
+		using var http = CreateHttpClient
+		(
+			request => CreateResponse
+			(
+				HttpStatusCode.OK,
+				request,
+				contentDisposition: new ContentDispositionHeaderValue("attachment")
+				{
+					FileNameStar = "Ryan Voice.onnx",
+				}
+			)
+		);
+		var resolver = new HttpRedirectResolver();
+
+		var result = await resolver.ResolveAsync
+		(
+			http,
+			"https://example.com/model.onnx",
+			CancellationToken.None
+		);
+
+		Assert.Equal("Ryan Voice.onnx", result.DisplayName);
+	}
+
+	[Fact]
+	public async Task HttpRedirectResolver_ResolveAsync_ContentDispositionWithoutFilename_ReturnsNullDisplayName()
+	{
+		using var http = CreateHttpClient
+		(
+			request => CreateResponse
+			(
+				HttpStatusCode.OK,
+				request,
+				contentDisposition: new ContentDispositionHeaderValue("inline")
+			)
+		);
+		var resolver = new HttpRedirectResolver();
+
+		var result = await resolver.ResolveAsync
+		(
+			http,
+			"https://example.com/model.onnx",
+			CancellationToken.None
+		);
+
+		Assert.Null(result.DisplayName);
+	}
+
+	[Fact]
 	public async Task HttpRedirectResolver_ResolveAsync_Head405_FallsBackToGet()
 	{
 		var methods = new List<HttpMethod>();
@@ -264,6 +315,170 @@ public sealed class UrlResolverTests
 		var result = await RunResolverChain(resolvers, "A", http);
 
 		Assert.Equal(SingleName, result.Names);
+	}
+
+	[Theory]
+	[InlineData(HttpStatusCode.Moved)]
+	[InlineData(HttpStatusCode.TemporaryRedirect)]
+	[InlineData(HttpStatusCode.PermanentRedirect)]
+	public async Task HttpRedirectResolver_ResolveAsync_AllRedirectCodes_ReturnsRedirectedUrl
+	(
+		HttpStatusCode statusCode
+	)
+	{
+		using var http = CreateHttpClient
+		(
+			request => CreateResponse
+			(
+				statusCode,
+				request,
+				location: new Uri("https://example.com/redirected/model.onnx")
+			)
+		);
+		var resolver = new HttpRedirectResolver();
+
+		var result = await resolver.ResolveAsync
+		(
+			http,
+			"https://example.com/original/model.onnx",
+			CancellationToken.None
+		);
+
+		Assert.Equal("https://example.com/redirected/model.onnx", result.Url);
+	}
+
+	[Fact]
+	public async Task HttpRedirectResolver_ResolveAsync_RelativeLocation_ResolvesRelatively()
+	{
+		using var http = CreateHttpClient
+		(
+			request => CreateResponse
+			(
+				HttpStatusCode.Redirect,
+				request,
+				location: new Uri("/other/path.onnx", UriKind.Relative)
+			)
+		);
+		var resolver = new HttpRedirectResolver();
+
+		var result = await resolver.ResolveAsync
+		(
+			http,
+			"https://example.com/model.onnx",
+			CancellationToken.None
+		);
+
+		Assert.Equal("https://example.com/other/path.onnx", result.Url);
+	}
+
+	[Fact]
+	public async Task HttpRedirectResolver_ResolveAsync_RedirectWithoutLocation_ReturnsRequestUrl()
+	{
+		using var http = CreateHttpClient
+		(
+			request =>
+			{
+				var forwardedRequest = new HttpRequestMessage
+				(
+					request.Method,
+					"https://example.com/final/model.onnx"
+				);
+
+				return new HttpResponseMessage(HttpStatusCode.Redirect)
+				{
+					RequestMessage = forwardedRequest,
+					Content = new ByteArrayContent([]),
+				};
+			}
+		);
+		var resolver = new HttpRedirectResolver();
+
+		var result = await resolver.ResolveAsync
+		(
+			http,
+			"https://example.com/original/model.onnx",
+			CancellationToken.None
+		);
+
+		Assert.Equal("https://example.com/final/model.onnx", result.Url);
+	}
+
+	[Fact]
+	public async Task HttpRedirectResolver_ResolveAsync_RedirectWithoutLocationAndRequestMessage_ReturnsOriginalUrl()
+	{
+		using var http = CreateHttpClient
+		(
+			static _ => new HttpResponseMessage(HttpStatusCode.Redirect)
+			{
+				RequestMessage = null,
+				Content = new ByteArrayContent([]),
+			}
+		);
+		var resolver = new HttpRedirectResolver();
+
+		var result = await resolver.ResolveAsync
+		(
+			http,
+			"https://example.com/original/model.onnx",
+			CancellationToken.None
+		);
+
+		Assert.Equal("https://example.com/original/model.onnx", result.Url);
+	}
+
+	[Fact]
+	public async Task HttpRedirectResolver_ResolveAsync_RelativeLocationWithoutRequestUri_ReturnsOriginalUrl()
+	{
+		using var http = CreateHttpClient
+		(
+			static _ =>
+			{
+				var response = new HttpResponseMessage(HttpStatusCode.Redirect)
+				{
+					RequestMessage = null,
+					Content = new ByteArrayContent([]),
+				};
+				response.Headers.Location = new Uri("/other/path.onnx", UriKind.Relative);
+				return response;
+			}
+		);
+		var resolver = new HttpRedirectResolver();
+
+		var result = await resolver.ResolveAsync
+		(
+			http,
+			"https://example.com/original/model.onnx",
+			CancellationToken.None
+		);
+
+		Assert.Equal("https://example.com/original/model.onnx", result.Url);
+	}
+
+	[Fact]
+	public async Task HttpRedirectResolver_ResolveAsync_NullRequestMessage_FallsBackToOriginalUrl()
+	{
+		using var http = CreateHttpClient
+		(
+			request =>
+			{
+				var response = new HttpResponseMessage(HttpStatusCode.OK)
+				{
+					RequestMessage = null,
+					Content = new ByteArrayContent([]),
+				};
+				return response;
+			}
+		);
+		var resolver = new HttpRedirectResolver();
+
+		var result = await resolver.ResolveAsync
+		(
+			http,
+			"https://example.com/model.onnx",
+			CancellationToken.None
+		);
+
+		Assert.Equal("https://example.com/model.onnx", result.Url);
 	}
 
 	[Fact]

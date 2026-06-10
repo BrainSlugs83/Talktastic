@@ -6,27 +6,27 @@ namespace Talktastic;
 internal sealed record FileDownloadResult
 {
 	/// <summary>
-	/// Files that matched the FileFilter predicate.
+	/// Gets the files that matched the filter.
 	/// </summary>
 	internal required IReadOnlyList<string> Files { get; init; }
 
 	/// <summary>
-	/// All files written to the destination, regardless of filter.
+	/// Gets all files written to the destination.
 	/// </summary>
 	internal required IReadOnlyList<string> AllFiles { get; init; }
 
 	/// <summary>
-	/// Total bytes transferred during download.
+	/// Gets the total bytes transferred.
 	/// </summary>
 	internal long TotalBytes { get; init; }
 
 	/// <summary>
-	/// Total wall time (download + any extraction).
+	/// Gets the total elapsed time.
 	/// </summary>
 	internal TimeSpan Elapsed { get; init; }
 
 	/// <summary>
-	/// The local path where files were written (destination folder or subfolder).
+	/// Gets the local path that received the files.
 	/// </summary>
 	internal required string LocalPath { get; init; }
 }

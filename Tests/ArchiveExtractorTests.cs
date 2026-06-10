@@ -1,5 +1,6 @@
 using System.Formats.Tar;
 using System.IO.Compression;
+using System.Reflection;
 
 namespace Talktastic.Tests;
 
@@ -275,6 +276,59 @@ public sealed class ArchiveExtractorTests : IDisposable
 	}
 
 	[Fact]
+	public async Task ExtractAsync_TarZl_ExtractsAllFiles()
+	{
+		var tarZlPath = Path.Combine(_artifactRoot, "test.tar.zlib");
+		var extractDir = Path.Combine(_artifactRoot, "tarzl-out");
+
+		await CreateTestTarZLibAsync
+		(
+			tarZlPath,
+			("model.onnx", "onnx-zl"u8.ToArray()),
+			("model.json", "{}"u8.ToArray())
+		);
+
+		var files = await ArchiveExtractor.ExtractAsync(tarZlPath, extractDir);
+
+		Assert.Equal(2, files.Length);
+		Assert.Contains(files, f => f.EndsWith("model.onnx", StringComparison.Ordinal));
+		Assert.Equal
+		(
+			"onnx-zl",
+			await File.ReadAllTextAsync(files.First(f => f.EndsWith("model.onnx", StringComparison.Ordinal)))
+		);
+	}
+
+	// ── Streaming extraction ─────────────────────────────────────────
+
+	[Fact]
+	public async Task ExtractAsync_StreamTar_ExtractsAllFiles()
+	{
+		var extractDir = Path.Combine(_artifactRoot, "stream-tar-out");
+		var archiveBytes = await CreateTarBytesAsync
+		(
+			("model.onnx", "onnx-tar-stream"u8.ToArray()),
+			("config.json", "{}"u8.ToArray())
+		);
+		using var stream = new MemoryStream(archiveBytes, writable: false);
+
+		var files = await ArchiveExtractor.ExtractAsync
+		(
+			stream,
+			ArchiveExtractor.ArchiveFormat.Tar,
+			extractDir
+		);
+
+		Assert.Equal(2, files.Length);
+		Assert.Contains(files, f => f.EndsWith("model.onnx", StringComparison.Ordinal));
+		Assert.Equal
+		(
+			"onnx-tar-stream",
+			await File.ReadAllTextAsync(files.First(f => f.EndsWith("model.onnx", StringComparison.Ordinal)))
+		);
+	}
+
+	[Fact]
 	public async Task ExtractAsync_StreamTarGz_ExtractsAllFiles()
 	{
 		var extractDir = Path.Combine(_artifactRoot, "stream-tgz-out");
@@ -302,6 +356,117 @@ public sealed class ArchiveExtractorTests : IDisposable
 	}
 
 	[Fact]
+	public async Task ExtractAsync_StreamTarBr_ExtractsAllFiles()
+	{
+		var extractDir = Path.Combine(_artifactRoot, "stream-tarbr-out");
+		var archiveBytes = await CreateTarBrBytesAsync
+		(
+			("model.onnx", "onnx-br-stream"u8.ToArray()),
+			("config.json", "{}"u8.ToArray())
+		);
+		using var stream = new MemoryStream(archiveBytes, writable: false);
+
+		var files = await ArchiveExtractor.ExtractAsync
+		(
+			stream,
+			ArchiveExtractor.ArchiveFormat.TarBr,
+			extractDir
+		);
+
+		Assert.Equal(2, files.Length);
+		Assert.Contains(files, f => f.EndsWith("model.onnx", StringComparison.Ordinal));
+		Assert.Equal
+		(
+			"onnx-br-stream",
+			await File.ReadAllTextAsync(files.First(f => f.EndsWith("model.onnx", StringComparison.Ordinal)))
+		);
+	}
+
+	[Fact]
+	public async Task ExtractAsync_StreamTarZl_ExtractsAllFiles()
+	{
+		var extractDir = Path.Combine(_artifactRoot, "stream-tarzl-out");
+		var archiveBytes = await CreateTarZLibBytesAsync
+		(
+			("model.onnx", "onnx-zl-stream"u8.ToArray()),
+			("config.json", "{}"u8.ToArray())
+		);
+		using var stream = new MemoryStream(archiveBytes, writable: false);
+
+		var files = await ArchiveExtractor.ExtractAsync
+		(
+			stream,
+			ArchiveExtractor.ArchiveFormat.TarZl,
+			extractDir
+		);
+
+		Assert.Equal(2, files.Length);
+		Assert.Contains(files, f => f.EndsWith("model.onnx", StringComparison.Ordinal));
+		Assert.Equal
+		(
+			"onnx-zl-stream",
+			await File.ReadAllTextAsync(files.First(f => f.EndsWith("model.onnx", StringComparison.Ordinal)))
+		);
+	}
+
+	[Fact]
+	public async Task ExtractAsync_StreamGz_DecompressesSingleFile()
+	{
+		var extractDir = Path.Combine(_artifactRoot, "stream-gz-out");
+		var archiveBytes = CreateGZipBytes("stream-gz-content"u8.ToArray());
+		using var stream = new MemoryStream(archiveBytes, writable: false);
+
+		var files = await ArchiveExtractor.ExtractAsync
+		(
+			stream,
+			ArchiveExtractor.ArchiveFormat.Gz,
+			extractDir
+		);
+
+		Assert.Single(files);
+		Assert.Equal("decompressed", Path.GetFileName(files[0]));
+		Assert.Equal("stream-gz-content", await File.ReadAllTextAsync(files[0]));
+	}
+
+	[Fact]
+	public async Task ExtractAsync_StreamBr_DecompressesSingleFile()
+	{
+		var extractDir = Path.Combine(_artifactRoot, "stream-br-out");
+		var archiveBytes = CreateBrotliBytes("stream-br-content"u8.ToArray());
+		using var stream = new MemoryStream(archiveBytes, writable: false);
+
+		var files = await ArchiveExtractor.ExtractAsync
+		(
+			stream,
+			ArchiveExtractor.ArchiveFormat.Br,
+			extractDir
+		);
+
+		Assert.Single(files);
+		Assert.Equal("decompressed", Path.GetFileName(files[0]));
+		Assert.Equal("stream-br-content", await File.ReadAllTextAsync(files[0]));
+	}
+
+	[Fact]
+	public async Task ExtractAsync_StreamZl_DecompressesSingleFile()
+	{
+		var extractDir = Path.Combine(_artifactRoot, "stream-zl-out");
+		var archiveBytes = CreateZLibBytes("stream-zl-content"u8.ToArray());
+		using var stream = new MemoryStream(archiveBytes, writable: false);
+
+		var files = await ArchiveExtractor.ExtractAsync
+		(
+			stream,
+			ArchiveExtractor.ArchiveFormat.Zl,
+			extractDir
+		);
+
+		Assert.Single(files);
+		Assert.Equal("decompressed", Path.GetFileName(files[0]));
+		Assert.Equal("stream-zl-content", await File.ReadAllTextAsync(files[0]));
+	}
+
+	[Fact]
 	public async Task ExtractAsync_StreamZip_ThrowsNotSupported()
 	{
 		using var stream = new MemoryStream();
@@ -317,6 +482,24 @@ public sealed class ArchiveExtractorTests : IDisposable
 		);
 
 		Assert.Equal("ZIP requires a seekable stream. Use the file-based overload.", exception.Message);
+	}
+
+	[Fact]
+	public async Task ExtractAsync_StreamUnknown_ThrowsNotSupported()
+	{
+		using var stream = new MemoryStream();
+
+		var exception = await Assert.ThrowsAsync<NotSupportedException>
+		(
+			() => ArchiveExtractor.ExtractAsync
+			(
+				stream,
+				ArchiveExtractor.ArchiveFormat.Unknown,
+				Path.Combine(_artifactRoot, "unknown-stream-out")
+			)
+		);
+
+		Assert.Equal("Unsupported archive format: Unknown", exception.Message);
 	}
 
 	// ── Error cases ──────────────────────────────────────────────────
@@ -355,6 +538,17 @@ public sealed class ArchiveExtractorTests : IDisposable
 		);
 	}
 
+	[Theory]
+	[InlineData("")]
+	[InlineData(" \t ")]
+	public async Task ExtractAsync_WhitespacePath_ThrowsArgumentException(string archivePath)
+	{
+		await Assert.ThrowsAsync<ArgumentException>
+		(
+			() => ArchiveExtractor.ExtractAsync(archivePath, Path.Combine(_artifactRoot, "out"))
+		);
+	}
+
 	[Fact]
 	public async Task ExtractAsync_EmptyDestDir_Throws()
 	{
@@ -375,6 +569,7 @@ public sealed class ArchiveExtractorTests : IDisposable
 	[InlineData("normal/path/file.txt", "normal/path/file.txt")]
 	[InlineData("./relative/file.txt", "relative/file.txt")]
 	[InlineData("..\\..\\windows\\system32\\evil.dll", "windows/system32/evil.dll")]
+	[InlineData("//../safe\\mixed/../path\\file.txt", "safe/mixed/path/file.txt")]
 	public void SanitizeTarEntryName_PreventsTraversal(string input, string expected)
 	{
 		var result = ArchiveExtractor.SanitizeTarEntryName(input);
@@ -383,6 +578,97 @@ public sealed class ArchiveExtractorTests : IDisposable
 	}
 
 	// ── Magic byte detection ─────────────────────────────────────────
+
+	[Fact]
+	public void DetectByMagicBytes_ZipMagicWithUnknownExtension_ReturnsZip()
+	{
+		var path = Path.Combine(_artifactRoot, "disguised.bin");
+		CreateTestZip(path, ("model.onnx", "data"));
+
+		var format = InvokeDetectByMagicBytes(path);
+
+		Assert.Equal(ArchiveExtractor.ArchiveFormat.Zip, format);
+	}
+
+	[Fact]
+	public async Task DetectByMagicBytes_GzipMagicWithTarContent_ReturnsTarGz()
+	{
+		var path = Path.Combine(_artifactRoot, "archive.bin");
+		var archiveBytes = await CreateTarGzBytesAsync(("model.onnx", "data"u8.ToArray()));
+		await File.WriteAllBytesAsync(path, archiveBytes);
+
+		var format = InvokeDetectByMagicBytes(path);
+
+		Assert.Equal(ArchiveExtractor.ArchiveFormat.TarGz, format);
+	}
+
+	[Fact]
+	public async Task DetectByMagicBytes_GzipMagicWithoutTarContent_ReturnsGz()
+	{
+		var path = Path.Combine(_artifactRoot, "single.bin");
+		await File.WriteAllBytesAsync(path, CreateGZipBytes("data"u8.ToArray()));
+
+		var format = InvokeDetectByMagicBytes(path);
+
+		Assert.Equal(ArchiveExtractor.ArchiveFormat.Gz, format);
+	}
+
+	[Fact]
+	public async Task DetectByMagicBytes_ZLibHeaderWithTarContent_ReturnsTarZl()
+	{
+		var path = Path.Combine(_artifactRoot, "archive.z");
+		var archiveBytes = await CreateTarZLibBytesAsync(("model.onnx", "data"u8.ToArray()));
+		await File.WriteAllBytesAsync(path, archiveBytes);
+
+		var format = InvokeDetectByMagicBytes(path);
+
+		Assert.Equal(ArchiveExtractor.ArchiveFormat.TarZl, format);
+	}
+
+	[Fact]
+	public async Task DetectByMagicBytes_ZLibHeaderWithSingleFileContent_ReturnsZl()
+	{
+		var path = Path.Combine(_artifactRoot, "single.z");
+		await File.WriteAllBytesAsync(path, CreateZLibBytes("data"u8.ToArray()));
+
+		var format = InvokeDetectByMagicBytes(path);
+
+		Assert.Equal(ArchiveExtractor.ArchiveFormat.Zl, format);
+	}
+
+	[Fact]
+	public async Task DetectByMagicBytes_TarHeaderAtOffset257_ReturnsTar()
+	{
+		var path = Path.Combine(_artifactRoot, "archive.dat");
+		var archiveBytes = await CreateTarBytesAsync(("model.onnx", "data"u8.ToArray()));
+		await File.WriteAllBytesAsync(path, archiveBytes);
+
+		var format = InvokeDetectByMagicBytes(path);
+
+		Assert.Equal(ArchiveExtractor.ArchiveFormat.Tar, format);
+	}
+
+	[Fact]
+	public async Task DetectByMagicBytes_FileShorterThanTwoBytes_ReturnsUnknown()
+	{
+		var path = Path.Combine(_artifactRoot, "short.bin");
+		await File.WriteAllBytesAsync(path, [0x1F]);
+
+		var format = InvokeDetectByMagicBytes(path);
+
+		Assert.Equal(ArchiveExtractor.ArchiveFormat.Unknown, format);
+	}
+
+	[Fact]
+	public async Task DetectByMagicBytes_CorruptGzip_ReturnsGz()
+	{
+		var path = Path.Combine(_artifactRoot, "corrupt.bin");
+		await File.WriteAllBytesAsync(path, [0x1F, 0x8B, 0x00, 0x00]);
+
+		var format = InvokeDetectByMagicBytes(path);
+
+		Assert.Equal(ArchiveExtractor.ArchiveFormat.Gz, format);
+	}
 
 	[Fact]
 	public async Task ExtractAsync_DetectsZipByMagicBytes_WhenExtensionIsWrong()
@@ -397,6 +683,20 @@ public sealed class ArchiveExtractorTests : IDisposable
 		var files = await ArchiveExtractor.ExtractAsync(renamedPath, extractDir);
 		Assert.Single(files);
 		Assert.EndsWith("model.onnx", files[0], StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public async Task ExtractAsync_UnknownFormatWithoutMagicBytes_ThrowsNotSupported()
+	{
+		var path = Path.Combine(_artifactRoot, "unknown.bin");
+		await File.WriteAllTextAsync(path, "plain text");
+
+		var exception = await Assert.ThrowsAsync<NotSupportedException>
+		(
+			() => ArchiveExtractor.ExtractAsync(path, Path.Combine(_artifactRoot, "unknown-out"))
+		);
+
+		Assert.Contains("unknown.bin", exception.Message, StringComparison.Ordinal);
 	}
 
 	[Fact]
@@ -416,6 +716,106 @@ public sealed class ArchiveExtractorTests : IDisposable
 
 		Assert.Equal(2, files.Length);
 		Assert.All(files, f => Assert.Contains("models", f, StringComparison.Ordinal));
+	}
+
+	[Fact]
+	public async Task ExtractAsync_Tar_SkipsEntriesWithEmptySanitizedName()
+	{
+		var tarPath = Path.Combine(_artifactRoot, "empty-name.tar");
+		var extractDir = Path.Combine(_artifactRoot, "empty-name-out");
+
+		await CreateTestTarAsync
+		(
+			tarPath,
+			("../", "skip-me"u8.ToArray()),
+			("safe/model.onnx", "onnx"u8.ToArray())
+		);
+
+		var files = await ArchiveExtractor.ExtractAsync(tarPath, extractDir);
+
+		Assert.Single(files);
+		Assert.EndsWith(Path.Combine("safe", "model.onnx"), files[0], StringComparison.Ordinal);
+	}
+
+	// ── Single-file naming ───────────────────────────────────────────
+
+	[Theory]
+	[InlineData("")]
+	[InlineData("   ")]
+	public void GetSingleFileOutputName_BlankOrWhitespace_ReturnsDecompressed(string archivePath)
+	{
+		var outputName = InvokePrivateStatic<string>
+		(
+			typeof(ArchiveExtractor),
+			"GetSingleFileOutputName",
+			archivePath
+		);
+
+		Assert.Equal("decompressed", outputName);
+	}
+
+	[Fact]
+	public async Task ExtractSingleFileAsync_WhitespaceOutputName_UsesDecompressedFallback()
+	{
+		var extractDir = Path.Combine(_artifactRoot, "single-file-fallback");
+		Directory.CreateDirectory(extractDir);
+		using var stream = new MemoryStream("fallback-content"u8.ToArray(), writable: false);
+
+		var files = await InvokePrivateStaticAsync<string[]>
+		(
+			typeof(ArchiveExtractor),
+			"ExtractSingleFileAsync",
+			" \t ",
+			stream,
+			extractDir,
+			CancellationToken.None
+		);
+
+		Assert.Single(files);
+		Assert.Equal("decompressed", Path.GetFileName(files[0]));
+		Assert.Equal("fallback-content", await File.ReadAllTextAsync(files[0]));
+	}
+
+	// ── ZLib header heuristics ───────────────────────────────────────
+
+	[Fact]
+	public void IsLikelyZLibHeader_LessThanTwoBytes_ReturnsFalse()
+	{
+		Assert.False(InvokeIsLikelyZLibHeader([0x78], 1));
+	}
+
+	[Fact]
+	public void IsLikelyZLibHeader_StartsWith0x78AndModuloMatch_ReturnsTrue()
+	{
+		Assert.True(InvokeIsLikelyZLibHeader([0x78, 0x20], 2));
+	}
+
+	[Fact]
+	public void IsLikelyZLibHeader_StartsWith0x78AndFailsChecks_ReturnsFalse()
+	{
+		Assert.False(InvokeIsLikelyZLibHeader([0x78, 0x02], 2));
+	}
+
+	[Fact]
+	public async Task DetectByMagicBytes_ZLibModuloHeaderWithoutCommonFlag_ReturnsZl()
+	{
+		var path = Path.Combine(_artifactRoot, "modulo.z");
+		await File.WriteAllBytesAsync(path, [0x78, 0x20, 0x03, 0x00]);
+
+		var format = InvokeDetectByMagicBytes(path);
+
+		Assert.Equal(ArchiveExtractor.ArchiveFormat.Zl, format);
+	}
+
+	[Fact]
+	public async Task DetectByMagicBytes_ZLibLikePrefixFailingChecks_ReturnsUnknown()
+	{
+		var path = Path.Combine(_artifactRoot, "not-zlib.z");
+		await File.WriteAllBytesAsync(path, [0x78, 0x02, 0x03, 0x04]);
+
+		var format = InvokeDetectByMagicBytes(path);
+
+		Assert.Equal(ArchiveExtractor.ArchiveFormat.Unknown, format);
 	}
 
 	// ── Helpers ──────────────────────────────────────────────────────
@@ -497,6 +897,16 @@ public sealed class ArchiveExtractorTests : IDisposable
 		zl.Write(content);
 	}
 
+	private static async Task CreateTestTarZLibAsync(string path, params (string Name, byte[] Content)[] entries)
+	{
+		var tarBytes = await CreateTarBytesAsync(entries).ConfigureAwait(false);
+		var fs = File.Create(path);
+		await using var fsDispose = fs.ConfigureAwait(false);
+		var zl = new ZLibStream(fs, CompressionLevel.Fastest);
+		await using var zlDispose = zl.ConfigureAwait(false);
+		await zl.WriteAsync(tarBytes).ConfigureAwait(false);
+	}
+
 	private static async Task CreateTestTarBrAsync(string path, params (string Name, byte[] Content)[] entries)
 	{
 		var tarBytes = await CreateTarBytesAsync(entries).ConfigureAwait(false);
@@ -505,6 +915,39 @@ public sealed class ArchiveExtractorTests : IDisposable
 		var br = new BrotliStream(fs, CompressionLevel.Fastest);
 		await using var brDispose = br.ConfigureAwait(false);
 		await br.WriteAsync(tarBytes).ConfigureAwait(false);
+	}
+
+	private static byte[] CreateGZipBytes(byte[] content)
+	{
+		using var ms = new MemoryStream();
+		using (var gz = new GZipStream(ms, CompressionLevel.SmallestSize, leaveOpen: true))
+		{
+			gz.Write(content);
+		}
+
+		return ms.ToArray();
+	}
+
+	private static byte[] CreateBrotliBytes(byte[] content)
+	{
+		using var ms = new MemoryStream();
+		using (var br = new BrotliStream(ms, CompressionLevel.SmallestSize, leaveOpen: true))
+		{
+			br.Write(content);
+		}
+
+		return ms.ToArray();
+	}
+
+	private static byte[] CreateZLibBytes(byte[] content)
+	{
+		using var ms = new MemoryStream();
+		using (var zl = new ZLibStream(ms, CompressionLevel.SmallestSize, leaveOpen: true))
+		{
+			zl.Write(content);
+		}
+
+		return ms.ToArray();
 	}
 
 	private static async Task<byte[]> CreateTarGzBytesAsync(params (string Name, byte[] Content)[] entries)
@@ -526,6 +969,18 @@ public sealed class ArchiveExtractorTests : IDisposable
 		return ms.ToArray();
 	}
 
+	private static async Task<byte[]> CreateTarBrBytesAsync(params (string Name, byte[] Content)[] entries)
+	{
+		var tarBytes = await CreateTarBytesAsync(entries).ConfigureAwait(false);
+		return CreateBrotliBytes(tarBytes);
+	}
+
+	private static async Task<byte[]> CreateTarZLibBytesAsync(params (string Name, byte[] Content)[] entries)
+	{
+		var tarBytes = await CreateTarBytesAsync(entries).ConfigureAwait(false);
+		return CreateZLibBytes(tarBytes);
+	}
+
 	private static async Task<byte[]> CreateTarBytesAsync(params (string Name, byte[] Content)[] entries)
 	{
 		using var ms = new MemoryStream();
@@ -542,4 +997,45 @@ public sealed class ArchiveExtractorTests : IDisposable
 
 		return ms.ToArray();
 	}
+
+	private static ArchiveExtractor.ArchiveFormat InvokeDetectByMagicBytes(string path)
+	{
+		return InvokePrivateStatic<ArchiveExtractor.ArchiveFormat>
+		(
+			typeof(ArchiveExtractor),
+			"DetectByMagicBytes",
+			path
+		);
+	}
+
+	private static bool InvokeIsLikelyZLibHeader(ReadOnlySpan<byte> header, int bytesRead)
+	{
+		var method = typeof(ArchiveExtractor).GetMethod("IsLikelyZLibHeader", BindingFlags.NonPublic | BindingFlags.Static);
+		Assert.NotNull(method);
+
+		var del = method!.CreateDelegate<IsLikelyZLibHeaderDelegate>();
+		return del(header, bytesRead);
+	}
+
+	private static T InvokePrivateStatic<T>(Type type, string methodName, params object?[] args)
+	{
+		var method = type.GetMethod(methodName, BindingFlags.NonPublic | BindingFlags.Static);
+		Assert.NotNull(method);
+
+		var result = method!.Invoke(null, args);
+		Assert.NotNull(result);
+		return Assert.IsType<T>(result);
+	}
+
+	private static async Task<T> InvokePrivateStaticAsync<T>(Type type, string methodName, params object?[] args)
+	{
+		var method = type.GetMethod(methodName, BindingFlags.NonPublic | BindingFlags.Static);
+		Assert.NotNull(method);
+
+		var result = method!.Invoke(null, args);
+		var task = Assert.IsAssignableFrom<Task<T>>(result);
+		return await task.ConfigureAwait(false);
+	}
+
+	private delegate bool IsLikelyZLibHeaderDelegate(ReadOnlySpan<byte> header, int bytesRead);
 }
