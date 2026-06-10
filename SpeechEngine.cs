@@ -102,11 +102,21 @@ internal static partial class SpeechEngine
 			$"Applying RVC voice conversion with {accel} ({rvcDisplayName})..."
 		).ConfigureAwait(false);
 
-		wavBytes = await RvcEngine.ConvertAsync(wavBytes, rvcModelPath, request.RvcPitchShift, cancellationToken).ConfigureAwait(false);
-
 		var displayName = $"{sourceVoiceName} → {rvcDisplayName}";
 
-		// Step 3: Output the converted audio
+		// Step 3: Output the converted audio.
+		// When targeting the default device (no --output, no --device), stream each converted
+		// segment to the default device as it is produced so playback starts before the whole
+		// clip finishes converting. RVC still needs the full source clip up front (f0/feature
+		// extraction span the whole signal), so only the converted output streams, not the source.
+		if (request.OutputPath is null && string.IsNullOrWhiteSpace(request.DeviceQuery))
+		{
+			await StreamRvcToDefaultDeviceAsync(wavBytes, rvcModelPath, request.RvcPitchShift, cancellationToken).ConfigureAwait(false);
+			return $"Spoke with {displayName}.";
+		}
+
+		wavBytes = await RvcEngine.ConvertAsync(wavBytes, rvcModelPath, request.RvcPitchShift, null, null, cancellationToken).ConfigureAwait(false);
+
 		if (request.OutputPath is null)
 		{
 			await AudioOutput.PlayToDeviceAsync(wavBytes, request.DeviceQuery).ConfigureAwait(false);
@@ -138,38 +148,51 @@ internal static partial class SpeechEngine
 	}
 
 	/// <summary>
-	/// Synthesizes text using a legacy (SAPI/WinRT) voice and returns raw WAV bytes.
+	/// Synthesizes a legacy (SAPI) voice to raw WAV bytes using direct SAPI COM.
+	/// </summary>
+	/// <remarks>
+	/// Drives the classic SAPI5 <c>ISpVoice</c> engine via raw COM rather than the WinRT
+	/// <c>Windows.Media.SpeechSynthesis</c> API. WinRT depends on Media Foundation, which is
+	/// absent on Windows "N"/"KN" editions without the Media Feature Pack; classic SAPI does not.
+	/// Raw COM (no <c>System.Speech</c>, no <c>[ComImport]</c>) keeps this NativeAOT-compatible.
+	/// </remarks>
+	/// <param name="request">The synthesis request.</param>
+	/// <param name="voice">The voice.</param>
+	/// <returns>A task that yields the synthesized audio bytes.</returns>
+	[ExcludeFromCodeCoverage]
+	private static Task<byte[]> SynthesizeLegacyStreamAsync(SynthesisRequest request, InstalledVoice voice)
+	{
+		var (text, isXml) = BuildLegacyInput(request);
+
+		// SAPI COM is fully synchronous; run off the calling thread.
+		return Task.Run(() => SapiEngine.Synthesize(voice.VoicePath, text, isXml));
+	}
+
+	/// <summary>
+	/// Builds the text/SSML payload for a legacy (SAPI) voice, wrapping in SSML only when needed
+	/// (explicit SSML input or a requested speaking rate).
+	/// </summary>
+	/// <param name="request">The synthesis request.</param>
+	/// <returns>The payload text and whether it is XML/SSML.</returns>
+	private static (string Text, bool IsXml) BuildLegacyInput(SynthesisRequest request)
+	{
+		var hasProsody = !string.IsNullOrWhiteSpace(request.Rate);
+		var useSsml = request.TreatInputAsSsml || hasProsody;
+
+		return useSsml
+			? (request.TreatInputAsSsml
+				? EnsureSsmlWrapped(request.Text)
+				: BuildLegacySsml(request.Text, request.Rate, null), true)
+			: (request.Text, false);
+	}
+
+	/// <summary>
+	/// Synthesizes text using a legacy (SAPI) voice and returns raw WAV bytes.
 	/// </summary>
 	[ExcludeFromCodeCoverage]
 	private static async Task<byte[]> SynthesizeLegacyToWavAsync(SynthesisRequest request, InstalledVoice voice)
 	{
-		using var synth = new Windows.Media.SpeechSynthesis.SpeechSynthesizer();
-
-		var winrtVoice = Windows.Media.SpeechSynthesis.SpeechSynthesizer.AllVoices
-			.FirstOrDefault(v => string.Equals(v.Id, voice.VoicePath, StringComparison.OrdinalIgnoreCase));
-
-		if (winrtVoice is not null)
-		{
-			synth.Voice = winrtVoice;
-		}
-
-		var hasProsody = !string.IsNullOrWhiteSpace(request.Rate);
-		var useSsml = request.TreatInputAsSsml || hasProsody;
-
-		Windows.Media.SpeechSynthesis.SpeechSynthesisStream stream;
-		if (useSsml)
-		{
-			var ssml = request.TreatInputAsSsml
-				? EnsureSsmlWrapped(request.Text)
-				: BuildLegacySsml(request.Text, request.Rate, null);
-			stream = await synth.SynthesizeSsmlToStreamAsync(ssml);
-		}
-		else
-		{
-			stream = await synth.SynthesizeTextToStreamAsync(request.Text);
-		}
-
-		return await ReadStreamAsync(stream).ConfigureAwait(false);
+		return await SynthesizeLegacyStreamAsync(request, voice).ConfigureAwait(false);
 	}
 
 	/// <summary>
@@ -211,39 +234,22 @@ internal static partial class SpeechEngine
 	[ExcludeFromCodeCoverage]
 	private static async Task<string> SynthesizeLegacyAsync(SynthesisRequest request, InstalledVoice voice)
 	{
-		using var synth = new Windows.Media.SpeechSynthesis.SpeechSynthesizer();
-
-		var winrtVoice = Windows.Media.SpeechSynthesis.SpeechSynthesizer.AllVoices
-			.FirstOrDefault(v => string.Equals(v.Id, voice.VoicePath, StringComparison.OrdinalIgnoreCase));
-
-		if (winrtVoice is not null)
-		{
-			synth.Voice = winrtVoice;
-		}
-
-		var hasProsody = !string.IsNullOrWhiteSpace(request.Rate);
-
-		// Use SSML when explicitly requested OR when rate prosody is needed
-		// (pitch is applied via WAV header rewrite -- legacy voices ignore <prosody pitch>)
-		var useSsml = request.TreatInputAsSsml || hasProsody;
-
-		Windows.Media.SpeechSynthesis.SpeechSynthesisStream stream;
-		if (useSsml)
-		{
-			var ssml = request.TreatInputAsSsml
-				? EnsureSsmlWrapped(request.Text)
-				: BuildLegacySsml(request.Text, request.Rate, null);
-			stream = await synth.SynthesizeSsmlToStreamAsync(ssml);
-		}
-		else
-		{
-			stream = await synth.SynthesizeTextToStreamAsync(request.Text);
-		}
-
-		var audioBytes = await ReadStreamAsync(stream).ConfigureAwait(false);
-
-		// Legacy voices ignore SSML pitch, so apply via WAV header rewrite
+		// Legacy voices ignore SSML pitch, so it is applied via a post-synthesis WAV header rewrite.
 		var pitchShift = PitchToPiperShift(request.Pitch);
+
+		// Default case (no file, default device, no pitch post-processing): speak straight to the
+		// default audio device via ISpVoice, streaming the audio as SAPI generates it (no buffer).
+		if (request.OutputPath is null
+			&& string.IsNullOrWhiteSpace(request.DeviceQuery)
+			&& pitchShift is null)
+		{
+			var (text, isXml) = BuildLegacyInput(request);
+			await Task.Run(() => SapiEngine.Speak(voice.VoicePath, text, isXml)).ConfigureAwait(false);
+			return $"Spoke with {voice.Name} (sapi).";
+		}
+
+		var audioBytes = await SynthesizeLegacyStreamAsync(request, voice).ConfigureAwait(false);
+
 		if (pitchShift is not null)
 		{
 			ApplyWavPitch(audioBytes, pitchShift.Value);
@@ -313,6 +319,16 @@ internal static partial class SpeechEngine
 			lengthScale = (lengthScale ?? 1.0) * compensation;
 		}
 
+		// Default case (no file, default device, no pitch post-processing): stream PCM straight to
+		// the default device as Piper generates it, so playback starts before synthesis finishes.
+		if (request.OutputPath is null
+			&& string.IsNullOrWhiteSpace(request.DeviceQuery)
+			&& pitchShift is null)
+		{
+			await StreamPiperToDefaultDeviceAsync(text, modelPath, lengthScale, cancellationToken).ConfigureAwait(false);
+			return $"Spoke with {displayName}.";
+		}
+
 		var wavBytes = await PiperEngine.SynthesizeToWavAsync(text, modelPath, lengthScale, cancellationToken).ConfigureAwait(false);
 
 		// Apply pitch by rewriting the WAV header sample rate
@@ -355,6 +371,78 @@ internal static partial class SpeechEngine
 	}
 
 	/// <summary>
+	/// Streams Piper-generated PCM to the default audio device as it is produced, using a FIFO
+	/// playback sink so speech begins before synthesis completes.
+	/// </summary>
+	/// <param name="text">The plain text to speak.</param>
+	/// <param name="modelPath">The Piper ONNX model path.</param>
+	/// <param name="lengthScale">The optional length scale (speaking rate).</param>
+	/// <param name="cancellationToken">The cancellation token.</param>
+	/// <returns>A task that represents the asynchronous operation.</returns>
+	[ExcludeFromCodeCoverage]
+	private static async Task StreamPiperToDefaultDeviceAsync
+	(
+		string text,
+		string modelPath,
+		double? lengthScale,
+		CancellationToken cancellationToken
+	)
+	{
+		WaveOut.StreamingPlayer? player = null;
+
+		try
+		{
+			await PiperEngine.SynthesizeStreamingAsync
+			(
+				text,
+				modelPath,
+				lengthScale,
+				sampleRate => player = new WaveOut.StreamingPlayer(sampleRate, 1, 16, null),
+				samples => player!.Write(samples),
+				cancellationToken
+			).ConfigureAwait(false);
+		}
+		finally
+		{
+			player?.Dispose();
+		}
+	}
+
+	/// <summary>
+	/// Applies RVC voice conversion and streams each converted segment to the default device as
+	/// it is produced, so playback starts before the whole clip finishes converting. RVC requires
+	/// the full source clip up front, so only the converted output streams, not the source.
+	/// </summary>
+	[ExcludeFromCodeCoverage]
+	private static async Task StreamRvcToDefaultDeviceAsync
+	(
+		byte[] sourceWavBytes,
+		string rvcModelPath,
+		float pitchShiftSemitones,
+		CancellationToken cancellationToken
+	)
+	{
+		WaveOut.StreamingPlayer? player = null;
+
+		try
+		{
+			await RvcEngine.ConvertAsync
+			(
+				sourceWavBytes,
+				rvcModelPath,
+				pitchShiftSemitones,
+				sampleRate => player = new WaveOut.StreamingPlayer(sampleRate, 1, 16, null),
+				segment => player!.Write(segment),
+				cancellationToken
+			).ConfigureAwait(false);
+		}
+		finally
+		{
+			player?.Dispose();
+		}
+	}
+
+	/// <summary>
 	/// Synthesizes text using a neural (embedded) voice with direct output routing.
 	/// </summary>
 	[ExcludeFromCodeCoverage]
@@ -386,20 +474,6 @@ internal static partial class SpeechEngine
 	/// <returns>The generated regex.</returns>
 	[GeneratedRegex(@"<[^>]+>")]
 	private static partial Regex StripTagsRegex();
-
-	/// <summary>
-	/// Reads the Stream.
-	/// </summary>
-	/// <param name="stream">The stream.</param>
-	/// <returns>A task that represents the asynchronous operation.</returns>
-	[ExcludeFromCodeCoverage]
-	private static async Task<byte[]> ReadStreamAsync(Windows.Media.SpeechSynthesis.SpeechSynthesisStream stream)
-	{
-		using var ms = new MemoryStream();
-		var inputStream = stream.AsStreamForRead();
-		await inputStream.CopyToAsync(ms).ConfigureAwait(false);
-		return ms.ToArray();
-	}
 
 	/// <summary>
 	/// Speaks the To Device.

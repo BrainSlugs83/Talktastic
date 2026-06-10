@@ -713,6 +713,30 @@ static partial class PiperEngine
 	}
 
 	/// <summary>
+	/// Synthesizes text with a Piper ONNX model and streams float sample blocks as they are
+	/// generated. <paramref name="onStart"/> is invoked once with the sample rate;
+	/// <paramref name="onChunk"/> is invoked for each generated block of float samples.
+	/// </summary>
+	[ExcludeFromCodeCoverage]
+	public static Task SynthesizeStreamingAsync
+	(
+		string text,
+		string modelPath,
+		double? lengthScale,
+		Action<int> onStart,
+		Action<float[]> onChunk,
+		CancellationToken cancellationToken
+	)
+	{
+		cancellationToken.ThrowIfCancellationRequested();
+		return Task.Run
+		(
+			() => SherpaEngine.SynthesizeStreaming(text, modelPath, lengthScale, onStart, onChunk),
+			cancellationToken
+		);
+	}
+
+	/// <summary>
 	/// Returns a friendly display name for a Piper voice model.
 	/// </summary>
 	public static string GetDisplayName(string modelName)

@@ -1,6 +1,7 @@
+using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
-using System.Globalization;
 using System.Runtime.InteropServices;
+using System.Text;
 using Microsoft.CognitiveServices.Speech;
 using Microsoft.CognitiveServices.Speech.Audio;
 using Windows.Devices.Enumeration;
@@ -17,25 +18,140 @@ namespace Talktastic;
 internal static class AudioOutput
 {
 	/// <summary>
+	/// Whether Media Foundation is available on this machine. It is absent on Windows "N"/"KN"
+	/// editions without the Media Feature Pack, which breaks the WinRT media playback APIs.
+	/// </summary>
+	private static readonly bool MediaFoundationAvailable =
+		File.Exists(Path.Combine(Environment.SystemDirectory, "mfplat.dll"));
+
+	/// <summary>
+	/// Enumerates the system audio render (output) devices.
+	/// One source, used for both listing and selection.
+	/// </summary>
+	/// <returns>The render device information.</returns>
+	[ExcludeFromCodeCoverage]
+	private static DeviceInformation[] EnumerateRenderDevices()
+	{
+		var selector = MediaDevice.GetAudioRenderSelector();
+		return DeviceInformation.FindAllAsync(selector).GetAwaiter().GetResult().ToArray();
+	}
+
+	/// <summary>
 	/// Gets the available speakers.
 	/// </summary>
 	/// <returns>The available speakers.</returns>
+	[ExcludeFromCodeCoverage]
 	public static IReadOnlyList<AudioDeviceInfo> GetSpeakers()
 	{
-		var selector = MediaDevice.GetAudioRenderSelector();
-		var devices = DeviceInformation.FindAllAsync(selector).GetAwaiter().GetResult();
-
-		return devices
+		return EnumerateRenderDevices()
 			.Select
 			(
 				static device => new AudioDeviceInfo
 				(
 					Id: device.Id,
-					FriendlyName: device.Name
+					FriendlyName: NormalizeDeviceName(device.Name)
 				)
 			)
 			.OrderBy(static device => device.FriendlyName, StringComparer.OrdinalIgnoreCase)
 			.ToArray();
+	}
+
+	/// <summary>
+	/// Resolves a device query against a list of candidates by friendly name.
+	/// </summary>
+	/// <remarks>
+	/// The single matching algorithm shared by every output backend (WinRT and winmm): an exact
+	/// (whitespace-normalized, case-insensitive) name match wins; otherwise a unique substring
+	/// match is used; zero or multiple substring matches are reported as errors. An optional
+	/// secondary key (e.g. a device id) is matched verbatim. Mirrors the voice resolver's
+	/// exact-then-substring semantics so device selection behaves consistently everywhere.
+	/// </remarks>
+	/// <typeparam name="T">The candidate device type.</typeparam>
+	/// <param name="devices">The candidate devices.</param>
+	/// <param name="nameSelector">Selects the friendly name to match and display.</param>
+	/// <param name="keySelector">Selects an optional secondary key (matched verbatim), or <c>null</c>.</param>
+	/// <param name="query">The device query.</param>
+	/// <returns>The single matching device.</returns>
+	internal static T ResolveDevice<T>
+	(
+		IReadOnlyList<T> devices,
+		Func<T, string> nameSelector,
+		Func<T, string?>? keySelector,
+		string query
+	)
+	{
+		var normalizedQuery = NormalizeDeviceName(query);
+
+		bool MatchesKey(T device) =>
+			keySelector?.Invoke(device) is { } key &&
+			(key.EqualsIgnoreCase(query) || key.ContainsIgnoreCase(query));
+
+		var exact = devices
+			.Where(device => NormalizeDeviceName(nameSelector(device)).EqualsIgnoreCase(normalizedQuery)
+				|| (keySelector?.Invoke(device)?.EqualsIgnoreCase(query) ?? false))
+			.ToArray();
+
+		if (exact.Length > 0)
+		{
+			return exact[0];
+		}
+
+		var partials = devices
+			.Where(device => NormalizeDeviceName(nameSelector(device)).ContainsIgnoreCase(normalizedQuery)
+				|| MatchesKey(device))
+			.ToArray();
+
+		return partials.Length switch
+		{
+			1 => partials[0],
+			0 => throw new InvalidOperationException($"No speaker matched '{query}'."),
+			_ => throw new InvalidOperationException
+			(
+				$"Speaker '{query}' is ambiguous. Matches: " +
+				string.Join(", ", partials.Select(device => NormalizeDeviceName(nameSelector(device))))
+			),
+		};
+	}
+
+	/// <summary>
+	/// Normalizes a device friendly name for display and matching.
+	/// </summary>
+	/// <remarks>
+	/// Some drivers (notably AMD HDMI/DisplayPort audio) bake control characters and fixed-width
+	/// EDID padding into the endpoint name stored in the registry, e.g. <c>"1 - H32T13       "</c>.
+	/// This strips control characters and collapses every run of whitespace to a single space,
+	/// then trims the ends, so names render cleanly and match consistently.
+	/// </remarks>
+	/// <param name="name">The raw device name.</param>
+	/// <returns>The normalized device name.</returns>
+	internal static string NormalizeDeviceName(string? name)
+	{
+		if (string.IsNullOrEmpty(name))
+		{
+			return string.Empty;
+		}
+
+		var builder = new StringBuilder(name.Length);
+		var pendingSpace = false;
+
+		foreach (var ch in name)
+		{
+			if (char.IsWhiteSpace(ch) || char.IsControl(ch))
+			{
+				pendingSpace = true;
+				continue;
+			}
+
+			if (pendingSpace && builder.Length > 0)
+			{
+				builder.Append(' ');
+			}
+
+			pendingSpace = false;
+			builder.Append(ch);
+		}
+
+		return builder.ToString();
 	}
 
 	/// <summary>
@@ -47,6 +163,16 @@ internal static class AudioOutput
 	[ExcludeFromCodeCoverage]
 	public static async Task PlayToDeviceAsync(byte[] wavData, string? deviceQuery)
 	{
+		// Windows N/KN editions without the Media Feature Pack lack Media Foundation, so the
+		// WinRT MediaPlayer path below cannot load (ERROR_MOD_NOT_FOUND). Fall back to the
+		// classic winmm waveOut API, which has no Media Foundation dependency. The WinRT path is
+		// preferred everywhere else because it streams immediately without buffering the whole clip.
+		if (!MediaFoundationAvailable)
+		{
+			await Task.Run(() => WaveOut.Play(wavData, deviceQuery)).ConfigureAwait(false);
+			return;
+		}
+
 		using var memStream = new Windows.Storage.Streams.InMemoryRandomAccessStream();
 		using (var writer = new Windows.Storage.Streams.DataWriter(memStream))
 		{
@@ -60,7 +186,7 @@ internal static class AudioOutput
 
 		if (!string.IsNullOrWhiteSpace(deviceQuery))
 		{
-			var device = await ResolveWinRTDeviceAsync(deviceQuery).ConfigureAwait(false);
+			var device = ResolveWinRTDevice(deviceQuery);
 			player.AudioDevice = device;
 		}
 
@@ -244,49 +370,14 @@ internal static class AudioOutput
 	}
 
 	/// <summary>
-	/// Resolves a WinRT audio device.
+	/// Resolves a WinRT audio device by friendly name or id.
 	/// </summary>
 	/// <param name="deviceQuery">The device query.</param>
-	/// <returns>A task that represents the asynchronous operation.</returns>
+	/// <returns>The matching device.</returns>
 	[ExcludeFromCodeCoverage]
-	private static async Task<DeviceInformation> ResolveWinRTDeviceAsync(string deviceQuery)
+	private static DeviceInformation ResolveWinRTDevice(string deviceQuery)
 	{
-		var selector = MediaDevice.GetAudioRenderSelector();
-		var devices = await DeviceInformation.FindAllAsync(selector);
-		var culture = CultureInfo.InvariantCulture;
-
-		// Exact match first
-		var exact = devices.FirstOrDefault
-		(
-			device =>
-				culture.CompareInfo.Compare(device.Name, deviceQuery, CompareOptions.IgnoreCase) == 0 ||
-				culture.CompareInfo.Compare(device.Id, deviceQuery, CompareOptions.IgnoreCase) == 0
-		);
-
-		if (exact is not null)
-		{
-			return exact;
-		}
-
-		// Substring match
-		var partials = devices
-			.Where
-			(
-				device =>
-					culture.CompareInfo.IndexOf(device.Name, deviceQuery, CompareOptions.IgnoreCase) >= 0 ||
-					culture.CompareInfo.IndexOf(device.Id, deviceQuery, CompareOptions.IgnoreCase) >= 0
-			)
-			.ToArray();
-
-		return partials.Length switch
-		{
-			1 => partials[0],
-			0 => throw new InvalidOperationException($"No speaker matched '{deviceQuery}'."),
-			_ => throw new InvalidOperationException
-			(
-				$"Speaker '{deviceQuery}' is ambiguous. Matches: {string.Join(", ", partials.Select(static x => x.Name))}"
-			),
-		};
+		return ResolveDevice(EnumerateRenderDevices(), static d => d.Name, static d => d.Id, deviceQuery);
 	}
 
 	/// <summary>
@@ -337,6 +428,450 @@ internal static class AudioOutput
 		return waveBytes[44..];
 	}
 }
+
+/// <summary>
+/// AOT-safe audio playback via the classic winmm <c>waveOut</c> API, used as a fallback on
+/// Windows N/KN editions that lack Media Foundation (and therefore the WinRT media APIs).
+/// Plays 16-bit PCM RIFF/WAVE data and supports output-device selection by name. win-x64 only.
+/// </summary>
+#pragma warning disable CA5392 // winmm.dll is a known System32 library; default search path is fine.
+internal static partial class WaveOut
+{
+	private const uint MmsyserrNoerror = 0;
+	private const uint WaveMapper = 0xFFFFFFFF;
+	private const uint CallbackNull = 0;
+	private const int WhdrDone = 0x00000001;
+
+	// WAVEHDR field offsets (x64). lpData(8) | dwBufferLength(4) | dwBytesRecorded(4) | dwUser(8) | dwFlags(4)...
+	private const int WaveHdrSize = 48;
+	private const int WaveHdrBufferLengthOffset = 8;
+	private const int WaveHdrFlagsOffset = 24;
+
+	// WAVEOUTCAPSW: wMid(2) wPid(2) vDriverVersion(4) szPname[32 wchar = 64] ...
+	private const int WaveOutCapsSize = 84;
+	private const int WaveOutCapsNameOffset = 8;
+
+	/// <summary>
+	/// Plays 16-bit PCM RIFF/WAVE data to the named device (or the default device when
+	/// <paramref name="deviceQuery"/> is null/empty), blocking until playback completes.
+	/// </summary>
+	/// <param name="wavData">The RIFF/WAVE audio.</param>
+	/// <param name="deviceQuery">An optional output-device name (exact or substring match).</param>
+	[ExcludeFromCodeCoverage]
+	public static void Play(byte[] wavData, string? deviceQuery)
+	{
+		var (sampleRate, channels, bitsPerSample, dataOffset, dataLength) = ParseWav(wavData);
+		var deviceId = ResolveDeviceId(deviceQuery);
+
+		var blockAlign = (ushort)(channels * (bitsPerSample / 8));
+		var format = new WaveFormatEx
+		{
+			wFormatTag = 1, // WAVE_FORMAT_PCM
+			nChannels = channels,
+			nSamplesPerSec = (uint)sampleRate,
+			nAvgBytesPerSec = (uint)(sampleRate * blockAlign),
+			nBlockAlign = blockAlign,
+			wBitsPerSample = bitsPerSample,
+			cbSize = 0,
+		};
+
+		Check(waveOutOpen(out var hwo, deviceId, ref format, 0, 0, CallbackNull), nameof(waveOutOpen));
+
+		var pcm = Marshal.AllocHGlobal(dataLength);
+		var header = Marshal.AllocHGlobal(WaveHdrSize);
+		try
+		{
+			Marshal.Copy(new byte[WaveHdrSize], 0, header, WaveHdrSize); // zero-fill the WAVEHDR
+			Marshal.Copy(wavData, dataOffset, pcm, dataLength);
+			Marshal.WriteIntPtr(header, 0, pcm);
+			Marshal.WriteInt32(header, WaveHdrBufferLengthOffset, dataLength);
+
+			Check(waveOutPrepareHeader(hwo, header, WaveHdrSize), nameof(waveOutPrepareHeader));
+			Check(waveOutWrite(hwo, header, WaveHdrSize), nameof(waveOutWrite));
+
+			while ((Marshal.ReadInt32(header, WaveHdrFlagsOffset) & WhdrDone) == 0)
+			{
+				Thread.Sleep(10);
+			}
+
+			_ = waveOutUnprepareHeader(hwo, header, WaveHdrSize);
+		}
+		finally
+		{
+			_ = waveOutClose(hwo);
+			Marshal.FreeHGlobal(header);
+			Marshal.FreeHGlobal(pcm);
+		}
+	}
+
+	/// <summary>
+	/// Resolves a device name to a winmm device id using the shared device matcher.
+	/// </summary>
+	[ExcludeFromCodeCoverage]
+	private static uint ResolveDeviceId(string? deviceQuery)
+	{
+		if (string.IsNullOrWhiteSpace(deviceQuery))
+		{
+			return WaveMapper;
+		}
+
+		var devices = EnumerateDevices();
+		return AudioOutput.ResolveDevice(devices, static d => d.Name, null, deviceQuery).Id;
+	}
+
+	/// <summary>
+	/// Enumerates the winmm waveOut output devices as (id, name) pairs.
+	/// </summary>
+	[ExcludeFromCodeCoverage]
+	private static List<(uint Id, string Name)> EnumerateDevices()
+	{
+		var count = waveOutGetNumDevs();
+		var devices = new List<(uint Id, string Name)>();
+		var caps = Marshal.AllocHGlobal(WaveOutCapsSize);
+		try
+		{
+			for (uint i = 0; i < count; i++)
+			{
+				if (waveOutGetDevCaps(i, caps, WaveOutCapsSize) != MmsyserrNoerror)
+				{
+					continue;
+				}
+
+				var name = Marshal.PtrToStringUni(caps + WaveOutCapsNameOffset) ?? string.Empty;
+				devices.Add((i, name));
+			}
+		}
+		finally
+		{
+			Marshal.FreeHGlobal(caps);
+		}
+
+		return devices;
+	}
+
+	/// <summary>
+	/// Extracts the PCM format and data range from a RIFF/WAVE buffer.
+	/// </summary>
+	[ExcludeFromCodeCoverage]
+	private static (int SampleRate, ushort Channels, ushort BitsPerSample, int DataOffset, int DataLength) ParseWav(byte[] wav)
+	{
+		if (wav.Length < 12
+			|| !wav.AsSpan(0, 4).SequenceEqual("RIFF"u8)
+			|| !wav.AsSpan(8, 4).SequenceEqual("WAVE"u8))
+		{
+			throw new InvalidOperationException("Expected RIFF/WAVE data but got a different payload.");
+		}
+
+		int sampleRate = 0;
+		ushort channels = 0;
+		ushort bitsPerSample = 0;
+		int dataOffset = -1;
+		int dataLength = 0;
+
+		var pos = 12;
+		while (pos + 8 <= wav.Length)
+		{
+			var chunkId = wav.AsSpan(pos, 4);
+			var chunkSize = BitConverter.ToInt32(wav, pos + 4);
+			var body = pos + 8;
+
+			if (chunkId.SequenceEqual("fmt "u8) && body + 16 <= wav.Length)
+			{
+				channels = BitConverter.ToUInt16(wav, body + 2);
+				sampleRate = BitConverter.ToInt32(wav, body + 4);
+				bitsPerSample = BitConverter.ToUInt16(wav, body + 14);
+			}
+			else if (chunkId.SequenceEqual("data"u8))
+			{
+				dataOffset = body;
+				dataLength = Math.Min(chunkSize, wav.Length - body);
+			}
+
+			if (chunkSize < 0)
+			{
+				break;
+			}
+
+			pos = body + chunkSize + (chunkSize & 1); // chunks are word-aligned
+		}
+
+		if (dataOffset < 0 || dataLength <= 0 || sampleRate == 0 || channels == 0 || bitsPerSample == 0)
+		{
+			throw new InvalidOperationException("RIFF/WAVE payload was missing a valid fmt or data chunk.");
+		}
+
+		return (sampleRate, channels, bitsPerSample, dataOffset, dataLength);
+	}
+
+	[ExcludeFromCodeCoverage]
+	private static void Check(uint result, string function)
+	{
+		if (result != MmsyserrNoerror)
+		{
+			throw new InvalidOperationException($"{function} failed with winmm error {result}.");
+		}
+	}
+
+	[StructLayout(LayoutKind.Sequential, Pack = 1)]
+	private struct WaveFormatEx
+	{
+		public ushort wFormatTag;
+		public ushort nChannels;
+		public uint nSamplesPerSec;
+		public uint nAvgBytesPerSec;
+		public ushort nBlockAlign;
+		public ushort wBitsPerSample;
+		public ushort cbSize;
+	}
+
+	[LibraryImport("winmm.dll")]
+	private static partial uint waveOutOpen(out nint phwo, uint uDeviceID, ref WaveFormatEx pwfx, nint dwCallback, nint dwInstance, uint fdwOpen);
+
+	[LibraryImport("winmm.dll")]
+	private static partial uint waveOutPrepareHeader(nint hwo, nint pwh, uint cbwh);
+
+	[LibraryImport("winmm.dll")]
+	private static partial uint waveOutWrite(nint hwo, nint pwh, uint cbwh);
+
+	[LibraryImport("winmm.dll")]
+	private static partial uint waveOutUnprepareHeader(nint hwo, nint pwh, uint cbwh);
+
+	[LibraryImport("winmm.dll")]
+	private static partial uint waveOutClose(nint hwo);
+
+	[LibraryImport("winmm.dll")]
+	private static partial uint waveOutGetNumDevs();
+
+	[LibraryImport("winmm.dll", EntryPoint = "waveOutGetDevCapsW")]
+	private static partial uint waveOutGetDevCaps(nuint uDeviceID, nint pwoc, uint cbwoc);
+
+	/// <summary>
+	/// Streams 16-bit PCM to an output device as audio is produced. A single producer pushes float
+	/// samples via <see cref="Write"/> into a bounded FIFO; a dedicated reader thread drains the
+	/// FIFO, converts to PCM, and feeds the device in ~<see cref="ChunkSeconds"/> buffers, keeping
+	/// the device fed ahead of the drain. <see cref="Dispose"/> completes the FIFO, waits for
+	/// playback to finish, and closes the device.
+	/// </summary>
+	[ExcludeFromCodeCoverage]
+	internal sealed class StreamingPlayer : IDisposable
+	{
+		// Cap of queued-but-unfinished waveOut buffers, bounding driver-side latency.
+		private const int MaxInFlight = 16;
+
+		// Number of float buffers the producer may queue ahead of the reader before it blocks.
+		private const int FifoCapacity = 8;
+
+		// Target size of each waveOut buffer, in seconds of audio. Oversized single buffers can be
+		// garbled or played at the wrong rate by some drivers, so the reader splits its output into
+		// frame-aligned buffers of about this duration.
+		private const double ChunkSeconds = 2.0;
+
+		private readonly nint _hwo;
+		private readonly int _chunkBytes;
+		private readonly BlockingCollection<float[]> _fifo = new(FifoCapacity);
+		private readonly Queue<(nint Header, nint Data)> _inFlight = new();
+		private readonly Thread _reader;
+		private Exception? _readerError;
+		private bool _disposed;
+
+		private static readonly System.Diagnostics.Stopwatch _sw = System.Diagnostics.Stopwatch.StartNew();
+		private static void D(string m)
+		{
+			if (Diagnostics.Verbose)
+			{
+				Console.Error.WriteLine(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"[strm {_sw.ElapsedMilliseconds,7}ms] {m}"));
+			}
+		}
+
+		/// <summary>
+		/// Opens the named device (or the default device when <paramref name="deviceQuery"/> is
+		/// null/empty) and starts the background reader that feeds it.
+		/// </summary>
+		public StreamingPlayer(int sampleRate, ushort channels, ushort bitsPerSample, string? deviceQuery)
+		{
+			var deviceId = ResolveDeviceId(deviceQuery);
+			var blockAlign = (ushort)(channels * (bitsPerSample / 8));
+
+			// Frame-aligned chunk of roughly ChunkSeconds of audio (blockAlign divides byteRate).
+			var byteRate = sampleRate * blockAlign;
+			_chunkBytes = Math.Max(blockAlign, (int)(byteRate * ChunkSeconds));
+
+			var format = new WaveFormatEx
+			{
+				wFormatTag = 1, // WAVE_FORMAT_PCM
+				nChannels = channels,
+				nSamplesPerSec = (uint)sampleRate,
+				nAvgBytesPerSec = (uint)byteRate,
+				nBlockAlign = blockAlign,
+				wBitsPerSample = bitsPerSample,
+				cbSize = 0,
+			};
+
+			Check(waveOutOpen(out _hwo, deviceId, ref format, 0, 0, CallbackNull), nameof(waveOutOpen));
+
+			_reader = new Thread(ReadLoop) { IsBackground = true, Name = "StreamingPlayer.Reader" };
+			_reader.Start();
+		}
+
+		/// <summary>
+		/// Pushes a block of float samples (-1.0..1.0) into the FIFO, blocking while the FIFO is
+		/// full so the producer cannot outrun playback without bound. Takes ownership of the array.
+		/// </summary>
+		public void Write(float[] samples)
+		{
+			ObjectDisposedException.ThrowIf(_disposed, this);
+
+			if (samples is null || samples.Length == 0)
+			{
+				return;
+			}
+
+			try
+			{
+				_fifo.Add(samples);
+			}
+			catch (InvalidOperationException) when (_readerError is not null)
+			{
+				throw new InvalidOperationException("Streaming playback failed.", _readerError);
+			}
+		}
+
+		/// <summary>
+		/// Reader thread: drains the FIFO, converts each block to PCM, and submits it to the device
+		/// in frame-aligned chunks; once the FIFO is complete, waits for all audio to finish.
+		/// </summary>
+		[SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The reader thread must capture any synthesis or device fault and surface it to the producer thread.")]
+		private void ReadLoop()
+		{
+			try
+			{
+				var blocks = 0;
+				var chunks = 0;
+				long bytes = 0;
+				foreach (var samples in _fifo.GetConsumingEnumerable())
+				{
+					var pcm = AudioDsp.FloatToPcm16(samples);
+					blocks++;
+					bytes += pcm.Length;
+					for (var offset = 0; offset < pcm.Length; offset += _chunkBytes)
+					{
+						var count = Math.Min(_chunkBytes, pcm.Length - offset);
+						QueueBuffer(pcm, offset, count);
+						chunks++;
+					}
+				}
+
+				D($"fifo drained: blocks={blocks} chunks={chunks} bytes={bytes} chunkBytes={_chunkBytes}; waiting for {_inFlight.Count} in-flight");
+				while (_inFlight.Count > 0)
+				{
+					WaitForOldest();
+				}
+
+				D("playback complete");
+			}
+			catch (Exception ex)
+			{
+				_readerError = ex;
+				D($"reader FAULT: {ex.GetType().Name}: {ex.Message}");
+
+				// Unblock any producer waiting on a full FIFO so it observes the failure.
+				_fifo.CompleteAdding();
+			}
+		}
+
+		/// <summary>
+		/// Copies a single sub-buffer into unmanaged memory and submits it to the device, blocking
+		/// only while the in-flight pool is full.
+		/// </summary>
+		private void QueueBuffer(byte[] pcm, int offset, int count)
+		{
+			ReclaimCompleted();
+
+			while (_inFlight.Count >= MaxInFlight)
+			{
+				WaitForOldest();
+			}
+
+			var header = Marshal.AllocHGlobal(WaveHdrSize);
+			var data = Marshal.AllocHGlobal(count);
+			Marshal.Copy(new byte[WaveHdrSize], 0, header, WaveHdrSize); // zero-fill the WAVEHDR
+			Marshal.Copy(pcm, offset, data, count);
+			Marshal.WriteIntPtr(header, 0, data);
+			Marshal.WriteInt32(header, WaveHdrBufferLengthOffset, count);
+
+			Check(waveOutPrepareHeader(_hwo, header, WaveHdrSize), nameof(waveOutPrepareHeader));
+			Check(waveOutWrite(_hwo, header, WaveHdrSize), nameof(waveOutWrite));
+			_inFlight.Enqueue((header, data));
+		}
+
+		/// <summary>
+		/// Signals end-of-stream, waits for the reader to drain and playback to finish, then closes
+		/// the device. Rethrows any error the reader encountered.
+		/// </summary>
+		public void Dispose()
+		{
+			if (_disposed)
+			{
+				return;
+			}
+
+			_disposed = true;
+
+			if (!_fifo.IsAddingCompleted)
+			{
+				_fifo.CompleteAdding();
+			}
+
+			_reader.Join();
+			var closeResult = waveOutClose(_hwo);
+			D($"disposed: waveOutClose={closeResult}");
+			_fifo.Dispose();
+			GC.SuppressFinalize(this);
+
+			if (_readerError is not null)
+			{
+				throw new InvalidOperationException("Streaming playback failed.", _readerError);
+			}
+		}
+
+		/// <summary>
+		/// Frees any buffers at the front of the queue that have finished playing.
+		/// </summary>
+		private void ReclaimCompleted()
+		{
+			while (_inFlight.Count > 0
+				&& (Marshal.ReadInt32(_inFlight.Peek().Header, WaveHdrFlagsOffset) & WhdrDone) != 0)
+			{
+				Free(_inFlight.Dequeue());
+			}
+		}
+
+		/// <summary>
+		/// Blocks until the oldest in-flight buffer finishes playing, then frees it.
+		/// </summary>
+		private void WaitForOldest()
+		{
+			var oldest = _inFlight.Peek();
+			while ((Marshal.ReadInt32(oldest.Header, WaveHdrFlagsOffset) & WhdrDone) == 0)
+			{
+				Thread.Sleep(5);
+			}
+
+			Free(_inFlight.Dequeue());
+		}
+
+		/// <summary>
+		/// Unprepares and frees a single buffer's WAVEHDR and PCM allocation.
+		/// </summary>
+		private void Free((nint Header, nint Data) buffer)
+		{
+			_ = waveOutUnprepareHeader(_hwo, buffer.Header, WaveHdrSize);
+			Marshal.FreeHGlobal(buffer.Header);
+			Marshal.FreeHGlobal(buffer.Data);
+		}
+	}
+}
+#pragma warning restore CA5392
 
 /// <summary>
 /// Represents an audio output device.

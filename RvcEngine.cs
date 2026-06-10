@@ -560,6 +560,14 @@ static partial class RvcEngine
 	/// <param name="wavBytes">The source WAV bytes.</param>
 	/// <param name="rvcModelPath">The RVC model path.</param>
 	/// <param name="pitchShiftSemitones">The pitch shift in semitones.</param>
+	/// <param name="onStart">
+	/// Optional callback invoked once with the converted output sample rate before the first
+	/// segment is produced. Used to open a streaming sink for incremental playback.
+	/// </param>
+	/// <param name="onSegment">
+	/// Optional callback invoked with each converted segment (in order) as it is produced,
+	/// enabling playback to begin before the whole clip finishes converting.
+	/// </param>
 	/// <param name="ct">The cancellation token.</param>
 	/// <returns>The converted WAV bytes.</returns>
 	public static async Task<byte[]> ConvertAsync
@@ -567,6 +575,8 @@ static partial class RvcEngine
 		byte[] wavBytes,
 		string rvcModelPath,
 		float pitchShiftSemitones,
+		Action<int>? onStart,
+		Action<float[]>? onSegment,
 		CancellationToken ct
 	)
 	{
@@ -678,30 +688,56 @@ static partial class RvcEngine
 			var (pitchf, pitch) = await f0Task.ConfigureAwait(false);
 			var segmentFeatures = await allFeaturesTask.ConfigureAwait(false);
 			var convertedSegments = new List<float[]>(segmentSlices.Length);
+			onStart?.Invoke(targetSampleRate);
+			long tFirstSegment = -1;
 			for (var i = 0; i < segmentSlices.Length; i++)
 			{
 				ct.ThrowIfCancellationRequested();
 
 				var slice = segmentSlices[i];
 				var (pitchStart, pitchEnd) = ClampPitchRange(slice, pitch, pitchf);
-				convertedSegments.Add
+				var segment = RunRvcInference
 				(
-					RunRvcInference
-					(
-						rvcSession!,
-						segmentFeatures[i],
-						pitch[pitchStart..pitchEnd],
-						pitchf[pitchStart..pitchEnd],
-						slice.Audio,
-						targetSampleRate,
-						ct
-					)
+					rvcSession!,
+					segmentFeatures[i],
+					pitch[pitchStart..pitchEnd],
+					pitchf[pitchStart..pitchEnd],
+					slice.Audio,
+					targetSampleRate,
+					ct
 				);
+
+				convertedSegments.Add(segment);
+				if (tFirstSegment < 0)
+				{
+					tFirstSegment = sw.ElapsedMilliseconds;
+				}
+
+				onSegment?.Invoke(segment);
 			}
 			var tInfer = sw.ElapsedMilliseconds;
 
 			var finalSamples = Concatenate(convertedSegments);
 			var result = AudioDsp.EncodeWav(finalSamples, targetSampleRate);
+
+			Diagnostics.Log
+			(
+				string.Create
+				(
+					CultureInfo.InvariantCulture,
+					$"[rvc] output: samples={finalSamples.Length} rms={AudioDsp.Rms(finalSamples):F4} "
+					+ $"zcr={AudioDsp.ZeroCrossingRate(finalSamples, targetSampleRate):F0}/s gpu={!DisableGpu}"
+				)
+			);
+
+			if (!DisableGpu && AudioDsp.IsDegenerateRumble(finalSamples, targetSampleRate))
+			{
+				await Console.Error.WriteLineAsync
+				(
+					"warning: RVC output looks corrupt (low-frequency rumble), which can happen when "
+					+ "DirectML fails on a memory-constrained GPU. Re-run with --no-gpu for reliable CPU conversion."
+				).ConfigureAwait(false);
+			}
 
 			if (ShowPerf)
 			{
@@ -709,6 +745,7 @@ static partial class RvcEngine
 				(
 					$"[perf] prep={tPrep}ms load={tLoad - tPrep}ms "
 					+ $"f0+vec={tFeatures - tLoad}ms infer={tInfer - tFeatures}ms "
+					+ $"segments={segmentSlices.Length} firstAudio={tFirstSegment}ms "
 					+ $"total={sw.ElapsedMilliseconds}ms"
 				).ConfigureAwait(false);
 			}
@@ -1625,25 +1662,19 @@ static partial class RvcEngine
 		var (noiseData, noiseDims) = CreateNoiseArray(pLen);
 
 		{
-			using var phoneOrt = OrtValue.CreateTensorValueFromMemory(phoneData, phoneDims);
-			using var pitchfOrt = OrtValue.CreateTensorValueFromMemory(pitchfData, new long[] { 1, pLen });
-			using var noiseOrt = OrtValue.CreateTensorValueFromMemory(noiseData, noiseDims);
-
-			var inputs = new Dictionary<string, OrtValue>
-			{
-				[rvcSession.InputNames[0]] = phoneOrt,
-				[rvcSession.InputNames[1]] = OrtValue.CreateTensorValueFromMemory(lengthData, new long[] { 1 }),
-				[rvcSession.InputNames[2]] = OrtValue.CreateTensorValueFromMemory(pitchData, new long[] { 1, pLen }),
-				[rvcSession.InputNames[3]] = pitchfOrt,
-				[rvcSession.InputNames[4]] = OrtValue.CreateTensorValueFromMemory(speakerData, new long[] { 1 }),
-				[rvcSession.InputNames[5]] = noiseOrt,
-			};
+			using var inputs = new DisposableValueMap<OrtValue>();
+			inputs.Add(rvcSession.InputNames[0], OrtValue.CreateTensorValueFromMemory(phoneData, phoneDims));
+			inputs.Add(rvcSession.InputNames[1], OrtValue.CreateTensorValueFromMemory(lengthData, new long[] { 1 }));
+			inputs.Add(rvcSession.InputNames[2], OrtValue.CreateTensorValueFromMemory(pitchData, new long[] { 1, pLen }));
+			inputs.Add(rvcSession.InputNames[3], OrtValue.CreateTensorValueFromMemory(pitchfData, new long[] { 1, pLen }));
+			inputs.Add(rvcSession.InputNames[4], OrtValue.CreateTensorValueFromMemory(speakerData, new long[] { 1 }));
+			inputs.Add(rvcSession.InputNames[5], OrtValue.CreateTensorValueFromMemory(noiseData, noiseDims));
 
 			using var runOptions = new RunOptions();
 			using var results = rvcSession.Run
 			(
 				runOptions,
-				inputs,
+				inputs.Items,
 				rvcSession.OutputNames
 			);
 

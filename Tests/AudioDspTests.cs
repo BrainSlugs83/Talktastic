@@ -335,6 +335,125 @@ public sealed class AudioDspTests
 	}
 
 	[Fact]
+	public void FloatToPcm16_EmptyInput_ReturnsEmptyBuffer()
+	{
+		var pcm = AudioDsp.FloatToPcm16(ReadOnlySpan<float>.Empty);
+
+		Assert.Empty(pcm);
+	}
+
+	[Fact]
+	public void FloatToPcm16_ConvertsKnownSamples_PositiveAndNegative()
+	{
+		var pcm = AudioDsp.FloatToPcm16([0.0f, 0.5f, -0.5f, 1.0f, -1.0f]);
+
+		Assert.Equal(10, pcm.Length);
+		Assert.Equal((short)0, BinaryPrimitives.ReadInt16LittleEndian(pcm.AsSpan(0, 2)));
+		Assert.Equal((short)16384, BinaryPrimitives.ReadInt16LittleEndian(pcm.AsSpan(2, 2)));
+		Assert.Equal((short)-16384, BinaryPrimitives.ReadInt16LittleEndian(pcm.AsSpan(4, 2)));
+		Assert.Equal(short.MaxValue, BinaryPrimitives.ReadInt16LittleEndian(pcm.AsSpan(6, 2)));
+		Assert.Equal(short.MinValue, BinaryPrimitives.ReadInt16LittleEndian(pcm.AsSpan(8, 2)));
+	}
+
+	[Fact]
+	public void FloatToPcm16_ClampsSamplesOutsideUnitRange()
+	{
+		var pcm = AudioDsp.FloatToPcm16([2.0f, -2.0f]);
+
+		Assert.Equal(short.MaxValue, BinaryPrimitives.ReadInt16LittleEndian(pcm.AsSpan(0, 2)));
+		Assert.Equal(short.MinValue, BinaryPrimitives.ReadInt16LittleEndian(pcm.AsSpan(2, 2)));
+	}
+
+	[Fact]
+	public void FloatToPcm16_MatchesEncodeWavPayload()
+	{
+		var samples = new float[] { -1.0f, -0.25f, 0.0f, 0.333f, 0.75f, 1.0f };
+
+		var pcm = AudioDsp.FloatToPcm16(samples);
+		var wav = AudioDsp.EncodeWav(samples, 16000);
+
+		Assert.Equal(wav.AsSpan(44).ToArray(), pcm);
+	}
+
+	[Fact]
+	public void Rms_EmptyInput_ReturnsZero()
+	{
+		Assert.Equal(0.0, AudioDsp.Rms(ReadOnlySpan<float>.Empty));
+	}
+
+	[Fact]
+	public void Rms_ConstantSignal_ReturnsMagnitude()
+	{
+		Assert.Equal(0.5, AudioDsp.Rms([0.5f, -0.5f, 0.5f, -0.5f]), 5);
+	}
+
+	[Fact]
+	public void ZeroCrossingRate_FullScaleAlternating_ApproachesNyquist()
+	{
+		var samples = new float[1000];
+		for (var i = 0; i < samples.Length; i++)
+		{
+			samples[i] = (i % 2 == 0) ? 1.0f : -1.0f;
+		}
+
+		// Alternating every sample crosses once per sample = ~sampleRate crossings/second.
+		Assert.Equal(48000.0, AudioDsp.ZeroCrossingRate(samples, 48000), 0);
+	}
+
+	[Fact]
+	public void ZeroCrossingRate_SineMatchesTwiceFrequency()
+	{
+		var samples = MakeSine(frequency: 300, sampleRate: 48000, seconds: 1.0, amplitude: 0.5f);
+
+		// A sine of f Hz crosses zero 2*f times per second.
+		Assert.InRange(AudioDsp.ZeroCrossingRate(samples, 48000), 595.0, 605.0);
+	}
+
+	[Fact]
+	public void IsDegenerateRumble_LowFrequencyDrone_IsFlagged()
+	{
+		var rumble = MakeSine(frequency: 300, sampleRate: 48000, seconds: 1.0, amplitude: 0.5f);
+
+		Assert.True(AudioDsp.IsDegenerateRumble(rumble, 48000));
+	}
+
+	[Fact]
+	public void IsDegenerateRumble_SpeechLikeHighFrequency_IsNotFlagged()
+	{
+		var speech = MakeSine(frequency: 2500, sampleRate: 48000, seconds: 1.0, amplitude: 0.5f);
+
+		Assert.False(AudioDsp.IsDegenerateRumble(speech, 48000));
+	}
+
+	[Fact]
+	public void IsDegenerateRumble_Silence_IsNotFlagged()
+	{
+		var silence = new float[48000];
+
+		Assert.False(AudioDsp.IsDegenerateRumble(silence, 48000));
+	}
+
+	[Fact]
+	public void IsDegenerateRumble_TooShortClip_IsNotFlagged()
+	{
+		var shortRumble = MakeSine(frequency: 300, sampleRate: 48000, seconds: 0.2, amplitude: 0.5f);
+
+		Assert.False(AudioDsp.IsDegenerateRumble(shortRumble, 48000));
+	}
+
+	private static float[] MakeSine(double frequency, int sampleRate, double seconds, float amplitude)
+	{
+		var count = (int)(sampleRate * seconds);
+		var samples = new float[count];
+		for (var i = 0; i < count; i++)
+		{
+			samples[i] = amplitude * (float)Math.Sin(2.0 * Math.PI * frequency * i / sampleRate);
+		}
+
+		return samples;
+	}
+
+	[Fact]
 	public void ButterworthHighPass_ZeroSignal_ReturnsZeroSignal()
 	{
 		var samples = new float[64];

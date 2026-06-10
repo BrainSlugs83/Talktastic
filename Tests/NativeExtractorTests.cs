@@ -1,9 +1,23 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Text.Json;
 
 namespace Talktastic.Tests;
 
+// NativeExtractorTests mutates process-global state (current directory, PATH, and
+// static NativeExtractor fields). xUnit runs collections in parallel within a single
+// process, so that global state would leak into other test classes -- e.g. a parallel
+// test's file I/O resolving against this class's hijacked current directory, which then
+// blocks the recursive artifact cleanup in Dispose with "being used by another process".
+// Disabling parallelization keeps this class from running alongside any other collection.
+[CollectionDefinition("ProcessGlobalState", DisableParallelization = true)]
+[SuppressMessage("Design", "CA1515:Consider making public types internal", Justification = "xUnit collection definition markers must be public to be discovered.")]
+public sealed class ProcessGlobalStateDefinition
+{
+}
+
+[Collection("ProcessGlobalState")]
 public sealed class NativeExtractorTests : IDisposable
 {
 	private const string HelloMd5 = "5D41402ABC4B2A76B9719D911017C592";
@@ -46,7 +60,34 @@ public sealed class NativeExtractorTests : IDisposable
 
 		if (Directory.Exists(_artifactRoot))
 		{
-			Directory.Delete(_artifactRoot, recursive: true);
+			TryDeleteDirectory(_artifactRoot);
+		}
+	}
+
+	private static void TryDeleteDirectory(string path)
+	{
+		// A transient handle (e.g. from a thread-pool worker still unwinding) can briefly
+		// keep the directory in use; retry a few times before giving up. Cleanup failures
+		// must never fail the test.
+		for (var attempt = 0; attempt < 5; attempt++)
+		{
+			try
+			{
+				if (Directory.Exists(path))
+				{
+					Directory.Delete(path, recursive: true);
+				}
+
+				return;
+			}
+			catch (IOException)
+			{
+				Thread.Sleep(50);
+			}
+			catch (UnauthorizedAccessException)
+			{
+				Thread.Sleep(50);
+			}
 		}
 	}
 

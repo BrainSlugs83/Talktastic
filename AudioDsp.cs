@@ -308,7 +308,111 @@ internal static class AudioDsp
 		"data"u8.CopyTo(span[36..]);
 		BinaryPrimitives.WriteInt32LittleEndian(span[40..], dataSize);
 
-		var payload = span[44..];
+		FloatToPcm16(samples, span[44..]);
+
+		return wavBytes;
+	}
+
+	/// <summary>
+	/// Computes the root-mean-square amplitude of the samples.
+	/// </summary>
+	/// <param name="samples">The input samples.</param>
+	/// <returns>The RMS amplitude, or 0 for an empty span.</returns>
+	internal static double Rms(ReadOnlySpan<float> samples)
+	{
+		if (samples.Length == 0)
+		{
+			return 0.0;
+		}
+
+		var sum = 0.0;
+		foreach (var s in samples)
+		{
+			sum += (double)s * s;
+		}
+
+		return Math.Sqrt(sum / samples.Length);
+	}
+
+	/// <summary>
+	/// Computes the zero-crossing rate of the samples, in crossings per second. This is a cheap
+	/// spectral-tilt proxy: real speech crosses zero far more often than a low-frequency drone.
+	/// </summary>
+	/// <param name="samples">The input samples.</param>
+	/// <param name="sampleRate">The sample rate in Hz.</param>
+	/// <returns>The zero-crossing rate in crossings per second.</returns>
+	internal static double ZeroCrossingRate(ReadOnlySpan<float> samples, int sampleRate)
+	{
+		if (samples.Length < 2 || sampleRate <= 0)
+		{
+			return 0.0;
+		}
+
+		long crossings = 0;
+		for (var i = 1; i < samples.Length; i++)
+		{
+			if ((samples[i - 1] < 0f) != (samples[i] < 0f))
+			{
+				crossings++;
+			}
+		}
+
+		return crossings * (double)sampleRate / (samples.Length - 1);
+	}
+
+	// Real RVC speech (David/homer) runs a zero-crossing rate of roughly 2000-3500/s thanks to
+	// fricatives and sibilants; corrupt DirectML output collapses into a ~300 Hz drone (~600/s).
+	private const double RumbleMaxZeroCrossingRate = 900.0;
+	private const double RumbleMinRms = 0.02;
+	private const double RumbleMinSeconds = 0.5;
+
+	/// <summary>
+	/// Detects the degenerate low-frequency "rumble" that intermittent DirectML inference failures
+	/// produce on memory-constrained GPUs: audible energy with a zero-crossing rate far below real
+	/// speech. Silence and short clips are never flagged.
+	/// </summary>
+	/// <param name="samples">The produced audio samples.</param>
+	/// <param name="sampleRate">The sample rate in Hz.</param>
+	/// <returns><c>true</c> if the audio looks like corrupt rumble; otherwise <c>false</c>.</returns>
+	internal static bool IsDegenerateRumble(ReadOnlySpan<float> samples, int sampleRate)
+	{
+		if (sampleRate <= 0 || samples.Length < sampleRate * RumbleMinSeconds)
+		{
+			return false;
+		}
+
+		if (Rms(samples) < RumbleMinRms)
+		{
+			return false;
+		}
+
+		return ZeroCrossingRate(samples, sampleRate) < RumbleMaxZeroCrossingRate;
+	}
+
+	/// <summary>
+	/// Converts normalized float samples (-1.0..1.0) to little-endian 16-bit PCM bytes.
+	/// </summary>
+	/// <param name="samples">The input samples.</param>
+	/// <returns>The 16-bit PCM byte buffer (two bytes per sample).</returns>
+	internal static byte[] FloatToPcm16(ReadOnlySpan<float> samples)
+	{
+		var bytes = new byte[checked(samples.Length * 2)];
+		FloatToPcm16(samples, bytes);
+		return bytes;
+	}
+
+	/// <summary>
+	/// Converts normalized float samples (-1.0..1.0) to little-endian 16-bit PCM, writing into
+	/// <paramref name="destination"/> (which must be at least <c>samples.Length * 2</c> bytes).
+	/// </summary>
+	/// <param name="samples">The input samples.</param>
+	/// <param name="destination">The destination span for the PCM bytes.</param>
+	internal static void FloatToPcm16
+	(
+		ReadOnlySpan<float> samples,
+		Span<byte> destination
+	)
+	{
 		for (var index = 0; index < samples.Length; index++)
 		{
 			var sample = Math.Clamp(samples[index], -1.0f, 1.0f);
@@ -319,10 +423,8 @@ internal static class AudioDsp
 				_ => (short)Math.Round(sample * short.MaxValue, MidpointRounding.AwayFromZero),
 			};
 
-			BinaryPrimitives.WriteInt16LittleEndian(payload.Slice(index * 2, 2), pcm);
+			BinaryPrimitives.WriteInt16LittleEndian(destination.Slice(index * 2, 2), pcm);
 		}
-
-		return wavBytes;
 	}
 
 	/// <summary>

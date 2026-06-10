@@ -1,5 +1,7 @@
+using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
 using System.IO.Compression;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 
@@ -29,6 +31,53 @@ internal static class SherpaEngine
 		double? lengthScale
 	)
 	{
+		using var tts = CreateTts(modelPath, lengthScale);
+		var audio = tts.Generate(text, speed: 1.0f, speakerId: 0);
+
+		return BuildWav(audio.Samples, tts.SampleRate);
+	}
+
+	/// <summary>
+	/// Synthesizes text with a Piper ONNX model and delivers float sample blocks as they are
+	/// generated. <paramref name="onStart"/> is invoked once with the model's sample rate before the
+	/// first chunk; <paramref name="onChunk"/> is invoked for each generated block of float samples.
+	/// </summary>
+	[ExcludeFromCodeCoverage]
+	public static void SynthesizeStreaming
+	(
+		string text,
+		string modelPath,
+		double? lengthScale,
+		Action<int> onStart,
+		Action<float[]> onChunk
+	)
+	{
+		using var tts = CreateTts(modelPath, lengthScale);
+		onStart(tts.SampleRate);
+
+		// sherpa invokes this synchronously per generated segment with a pointer to n float samples.
+		var callback = new OfflineTtsCallback((samples, n) =>
+		{
+			if (n > 0)
+			{
+				var floats = new float[n];
+				Marshal.Copy(samples, floats, 0, n);
+				onChunk(floats);
+			}
+
+			return 1; // non-zero = continue generating
+		});
+
+		_ = tts.GenerateWithCallback(text, speed: 1.0f, speakerId: 0, callback);
+		GC.KeepAlive(callback);
+	}
+
+	/// <summary>
+	/// Builds a configured sherpa-onnx <see cref="OfflineTts"/> for the given Piper ONNX model.
+	/// </summary>
+	[ExcludeFromCodeCoverage]
+	private static OfflineTts CreateTts(string modelPath, double? lengthScale)
+	{
 		NativeExtractor.EnsureAvailable(DllGroup.OnnxRuntime);
 
 		var tokensPath = EnsureTokensFile(modelPath);
@@ -47,11 +96,7 @@ internal static class SherpaEngine
 		config.Model.Debug = 0;
 		config.Model.Provider = "cpu";
 
-		using var tts = new OfflineTts(config);
-
-		var audio = tts.Generate(text, speed: 1.0f, speakerId: 0);
-
-		return BuildWav(audio.Samples, tts.SampleRate);
+		return new OfflineTts(config);
 	}
 
 	/// <summary>
@@ -388,15 +433,25 @@ internal static class SherpaEngine
 		// data chunk
 		writer.Write("data"u8);
 		writer.Write(dataSize);
-
-		// Convert float samples to 16-bit PCM
-		foreach (var sample in samples)
-		{
-			var clamped = Math.Clamp(sample, -1.0f, 1.0f);
-			var pcm = (short)(clamped * 32767);
-			writer.Write(pcm);
-		}
+		writer.Write(FloatToPcm16(samples));
 
 		return ms.ToArray();
+	}
+
+	/// <summary>
+	/// Converts normalized float PCM samples to little-endian 16-bit PCM bytes.
+	/// </summary>
+	internal static byte[] FloatToPcm16(ReadOnlySpan<float> samples)
+	{
+		var bytes = new byte[samples.Length * 2];
+		var span = bytes.AsSpan();
+
+		for (var i = 0; i < samples.Length; i++)
+		{
+			var clamped = Math.Clamp(samples[i], -1.0f, 1.0f);
+			BinaryPrimitives.WriteInt16LittleEndian(span[(i * 2)..], (short)(clamped * 32767));
+		}
+
+		return bytes;
 	}
 }

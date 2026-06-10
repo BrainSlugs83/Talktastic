@@ -280,6 +280,35 @@ public sealed class SherpaEngineTests : IDisposable
 	}
 
 	[Fact]
+	public void FloatToPcm16_EmptySamples_ReturnsEmptyArray()
+	{
+		var bytes = SherpaEngine.FloatToPcm16([]);
+
+		Assert.Empty(bytes);
+	}
+
+	[Fact]
+	public void FloatToPcm16_KnownSamples_ProducesLittleEndian16BitPcm()
+	{
+		var bytes = SherpaEngine.FloatToPcm16([0.0f, 1.0f, -1.0f, 0.5f]);
+
+		Assert.Equal(8, bytes.Length); // 4 samples * 2 bytes
+		Assert.Equal((short)0, BinaryPrimitives.ReadInt16LittleEndian(bytes.AsSpan(0)));
+		Assert.Equal(short.MaxValue, BinaryPrimitives.ReadInt16LittleEndian(bytes.AsSpan(2)));
+		Assert.Equal((short)-32767, BinaryPrimitives.ReadInt16LittleEndian(bytes.AsSpan(4)));
+		Assert.Equal((short)(0.5f * 32767), BinaryPrimitives.ReadInt16LittleEndian(bytes.AsSpan(6)));
+	}
+
+	[Fact]
+	public void FloatToPcm16_OutOfRangeSamples_AreClamped()
+	{
+		var bytes = SherpaEngine.FloatToPcm16([-2.0f, 2.0f]);
+
+		Assert.Equal((short)-32767, BinaryPrimitives.ReadInt16LittleEndian(bytes.AsSpan(0)));
+		Assert.Equal(short.MaxValue, BinaryPrimitives.ReadInt16LittleEndian(bytes.AsSpan(2)));
+	}
+
+	[Fact]
 	public void EnsureTokensFile_ExistingTokensFile_ReturnsExistingPath()
 	{
 		var modelPath = CreateModelFile("existing", [0x08]);

@@ -7,16 +7,17 @@ Standalone Windows TTS CLI that speaks with neural, SAPI, and Piper voices -- wi
 
 ## Features
 
-- **Neural voices** -- Windows Embedded Speech SDK neural voices with full SSML support
-- **SAPI / legacy voices** -- classic Windows voices via WinRT
-- **Piper voices** -- download and run open-source ONNX TTS models in-process (via sherpa-onnx)
-- **RVC voice conversion** -- `.onnx` and `.pth` models with FAISS index support, DirectML GPU acceleration
-- **Multiple output formats** -- play to any audio device, or write `.wav`, `.mp3`, `.ogg` (Opus)
-- **Multiple input formats** -- import `.wav`, `.mp3`, or `.ogg` for RVC-only processing
-- **Zero dependencies** -- NativeAOT single-file binary with embedded native DLLs, extracted and cached at runtime
-- **Fuzzy matching** -- voice names are case-insensitive partial matches; type prefixes like `neural:`, `sapi:`, `piper:` narrow the search
-- **Model management** -- `--list`, `--rename-voice`, `--rename-rvc`, `--remove-voice`, `--remove-rvc`
-- **SSML** -- `--ssml` flag, `--help-ssml` for examples, `--rate`/`--pitch` shortcuts
+- **Neural voices** -- Windows Embedded Speech SDK neural voices with full SSML support.
+- **SAPI / legacy voices** -- classic Windows voices (David, Mark, Zira, etc.) via the classic SAPI5 engine (`ISpVoice`).
+- **Piper voices** -- download and run open-source ONNX TTS models in-process (via sherpa-onnx).
+- **RVC voice conversion** -- `.onnx` and `.pth` models with FAISS index support and DirectML GPU acceleration.
+- **Multiple output formats** -- play to any audio device, or write `.wav`, `.mp3`, `.ogg` (Opus).
+- **Multiple input formats** -- import `.wav`, `.mp3`, or `.ogg` files for RVC-only processing.
+- **Zero dependencies** -- NativeAOT single-file binary with embedded native DLLs, extracted and cached at runtime.
+- **Fuzzy matching** -- voice names are case-insensitive partial matches; type prefixes like `neural:`, `sapi:`, `piper:` narrow the search.
+- **Model management** -- `--list`, `--rename-voice`, `--rename-rvc`, `--remove-voice`, `--remove-rvc`.
+- **SSML** -- `--ssml` flag for neural voices, `--help-ssml` for examples.
+- **Global pitch / rate** -- `--pitch`/`--rate` to modify the rate and pitch of the generated speech.
 
 ## Usage
 
@@ -33,17 +34,17 @@ say "Piper voices can be downloaded by URL!" -v "https://huggingface.co/rhasspy/
 # Once a Piper voice is installed, you can use it by name.
 say "Once a Piper voice is installed, you can use it by name!" -v "Amy"
 
-# Silently download and install a Piper voice (no text = no speech).
+# Silently download and install a Piper voice (also works with --rvc voice conversion packs!).
 say -v "https://huggingface.co/rhasspy/piper-voices/tree/v1.0.0/en/en_US/ryan/high"
 
 # Use type prefixes to disambiguate voices with the same name.
 say "This is how you disambiguate between two voices with the same name." -v "piper:Ryan"
 
-# Apply RVC voice conversion on top of any TTS voice.
-say "D'oh! This is Piper Ryan's voice, converted to sound like Homer Simpson." -v "piper:Ryan" --rvc "Homer"
+# RVC voice conversion models can be downloaded by URL too.
+say "RVC models can also be downloaded by URL." --rvc "https://huggingface.co/0x3e9/Darth_Vader_RVC"
 
-# RVC models can be downloaded by URL too.
-say "RVC models can also be downloaded by URL." --rvc "https://huggingface.co/Sunwest/Homer_Simpson_300"
+# Apply RVC voice conversion on top of any TTS voice.
+say "This is Piper Alan's voice, converted to sound like Darth Vader." -v "https://huggingface.co/rhasspy/piper-voices/tree/v1.0.0/en/en_GB/alan/medium" --rvc "Vader"
 
 # Read from stdin.
 echo "You can also pipe text in from stdin!" | say "-"
@@ -59,7 +60,7 @@ Export to `.wav`, `.mp3`, or `.ogg` -- the extension picks the encoder:
 ```powershell
 say "This will be saved as a WAV file." -o hello.wav
 say "You can export to MP3 as well!" -v "Microsoft Aria" -o hello.mp3
-say "And OGG Opus, if you fancy." -v "Alan" -o hello.ogg
+say "And OGG Opus, if you fancy." -v "Amy" -o hello.ogg
 ```
 
 Import `.wav`, `.mp3`, or `.ogg` files to run through RVC without doing TTS:
@@ -83,7 +84,7 @@ say --in podcast.mp3 --rvc "Homer" -o converted.wav
 # SSML for fine-grained speech control
 say --ssml "<prosody rate='slow' pitch='-10%'>SSML lets you control rate, pitch, and emphasis.</prosody>"
 
-# Rate and pitch shortcuts (neural and SAPI voices)
+# Rate and pitch shortcuts
 say "Rate and pitch can also be set with shorthand flags." -v "Microsoft Aria" --rate fast --pitch high
 
 # RVC pitch shifting (semitones: +12 = octave up, -12 = octave down)
@@ -119,8 +120,14 @@ say --remove-rvc "Homer Simpson"
 | Voice type | Backing technology | Discovery source | Notes |
 |---|---|---|---|
 | Neural | Microsoft Embedded Speech SDK (Windows 11) | Installed `MicrosoftWindows.Voice.*` packages | Full SSML support; output format comes from `--format`. Requires Windows 11 neural voice packages. |
-| SAPI / Legacy | WinRT `SpeechSynthesizer` (Windows 10+) | `SpeechSynthesizer.AllVoices` | Classic Windows voices (David, Mark, Zira, etc.). Limited SSML support -- most prosody tags are ignored. |
+| SAPI / Legacy | Classic SAPI5 (`ISpVoice` via direct COM) | WinRT `SpeechSynthesizer.AllVoices` | Classic Windows voices (David, Mark, Zira, etc.). Limited SSML support -- most prosody tags are ignored. Uses classic SAPI5 for synthesis, so it works on Windows N/KN editions without the Media Feature Pack. |
 | Piper | Open-source neural TTS via local ONNX models | `.piper-tts\voices` cache | Downloaded on demand from any URL and synthesized in-process via sherpa-onnx. Supports global rate and pitch controls. |
+
+> **Windows N / KN editions:** These editions ship without Media Foundation (until the [Media Feature Pack](https://support.microsoft.com/topic/media-feature-pack-list-for-windows-n-editions-c1c6fffa-d052-8338-7a79-a4bb980a700a) is installed). Talktastic detects this and automatically routes audio playback through the classic `winmm waveOut` API instead of the WinRT media player, so device playback (including `--device` selection) works on N out of the box. Legacy/SAPI synthesis drives the classic SAPI5 `ISpVoice` engine via direct COM, which likewise has no Media Foundation dependency. When Media Foundation is present, the faster WinRT playback path is used.
+
+> **Streaming playback:** When you do not pass `--device`, audio plays on the default output device and **streams as it is synthesized**, so speech starts before synthesis finishes -- neural voices via the Embedded Speech SDK, SAPI voices via `ISpVoice` rendering straight to the device, and Piper voices via a `winmm waveOut` FIFO fed from sherpa-onnx as each chunk is generated. RVC voice conversion (`--rvc`) also streams to the default device, playing each converted segment through the same FIFO as it is produced; note RVC still synthesizes the full source clip first (its pitch and feature extraction span the whole signal), so only the converted output streams, not the source. Selecting a specific `--device`, writing to a file (`--output`), or applying `--pitch` (for SAPI/Piper/neural voices) uses the buffered path instead. No temporary files are written -- all intermediate audio stays in memory.
+
+> **RVC low-frequency "rumble" on constrained GPUs:** On memory-constrained DirectML GPUs (small embedded/integrated parts), long RVC conversions can intermittently produce a degenerate low-frequency drone instead of speech -- a soft inference corruption that leaves no Windows TDR/display-reset event. Talktastic detects this on the produced audio and prints a warning recommending a retry. CPU conversion (`--no-gpu`) is fully reliable; use it if you hit the rumble. Add `--verbose` to see the per-conversion zero-crossing/RMS diagnostics behind the detector.
 
 ## CLI Reference
 
@@ -158,6 +165,7 @@ say [<text>] [options]
 | `-Q, --super-quiet` | Suppress stdout and stderr. |
 | `--no-gpu` | Disable DirectML, fall back to CPU. |
 | `--perf` | Emit timing data. |
+| `--verbose` | Write detailed streaming/RVC diagnostics to stderr. |
 | `-h, --help` | Show help. |
 | `--version` | Show version. |
 
@@ -227,7 +235,7 @@ graph TD
 
     subgraph TTS["TTS engines"]
         N["Neural<br/>Embedded Speech SDK"]
-        S["SAPI / WinRT legacy"]
+        S["SAPI legacy<br/>ISpVoice via COM"]
         P["Piper ONNX"]
         SH["sherpa-onnx runtime"]
         P --> SH

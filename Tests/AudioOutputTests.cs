@@ -219,6 +219,108 @@ public sealed class AudioOutputTests : IDisposable
 		return bytes;
 	}
 
+	[Theory]
+	[InlineData("1 - H32T13       ", "1 - H32T13")]
+	[InlineData("H32T13        (AMD High Definition Audio Device)", "H32T13 (AMD High Definition Audio Device)")]
+	[InlineData("  Speakers (Yeti Nano)  ", "Speakers (Yeti Nano)")]
+	[InlineData("Speakers\r\n(High Definition Audio Device)", "Speakers (High Definition Audio Device)")]
+	[InlineData("Tab\tSeparated\tName", "Tab Separated Name")]
+	[InlineData("", "")]
+	[InlineData(null, "")]
+	public void NormalizeDeviceName_CollapsesWhitespaceAndStripsControlChars(string? input, string expected)
+	{
+		Assert.Equal(expected, AudioOutput.NormalizeDeviceName(input));
+	}
+
+	[Fact]
+	public void ResolveDevice_ExactNameMatch_IgnoresPaddingAndCase()
+	{
+		var devices = new (string Name, string? Id)[]
+		{
+			("1 - H32T13       ", "id-1"),
+			("Speakers (Yeti Nano)", "id-2"),
+		};
+
+		var match = AudioOutput.ResolveDevice(devices, static d => d.Name, static d => d.Id, "1 - h32t13");
+
+		Assert.Equal("id-1", match.Id);
+	}
+
+	[Fact]
+	public void ResolveDevice_UniqueSubstring_ReturnsMatch()
+	{
+		var devices = new (string Name, string? Id)[]
+		{
+			("1 - H32T13 (AMD High Definition Audio Device)", "id-1"),
+			("Speakers (Yeti Nano)", "id-2"),
+		};
+
+		var match = AudioOutput.ResolveDevice(devices, static d => d.Name, static d => d.Id, "Yeti");
+
+		Assert.Equal("id-2", match.Id);
+	}
+
+	[Fact]
+	public void ResolveDevice_ExactNameWins_OverSubstringAmbiguity()
+	{
+		var devices = new (string Name, string? Id)[]
+		{
+			("H32T13", "id-1"),
+			("H32T13 Extended", "id-2"),
+		};
+
+		var match = AudioOutput.ResolveDevice(devices, static d => d.Name, static d => d.Id, "H32T13");
+
+		Assert.Equal("id-1", match.Id);
+	}
+
+	[Fact]
+	public void ResolveDevice_MatchesSecondaryKeyVerbatim()
+	{
+		var devices = new (string Name, string? Id)[]
+		{
+			("Speakers", "{0.0.0.00000000}.{abc}"),
+			("Headphones", "{0.0.0.00000000}.{def}"),
+		};
+
+		var match = AudioOutput.ResolveDevice(devices, static d => d.Name, static d => d.Id, "{0.0.0.00000000}.{def}");
+
+		Assert.Equal("Headphones", match.Name);
+	}
+
+	[Fact]
+	public void ResolveDevice_NoMatch_ThrowsInvalidOperationException()
+	{
+		var devices = new (string Name, string? Id)[] { ("Speakers (Yeti Nano)", "id-1") };
+
+		var exception = Assert.Throws<InvalidOperationException>
+		(
+			() => AudioOutput.ResolveDevice(devices, static d => d.Name, static d => d.Id, "Bose")
+		);
+
+		Assert.Contains("No speaker matched 'Bose'", exception.Message, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void ResolveDevice_AmbiguousSubstring_ThrowsWithNormalizedNames()
+	{
+		var devices = new (string Name, string? Id)[]
+		{
+			("1 - H32T13       (AMD High Definition Audio Device)", "id-1"),
+			("2 - H32T13 (AMD High Definition Audio Device)", "id-2"),
+		};
+
+		var exception = Assert.Throws<InvalidOperationException>
+		(
+			() => AudioOutput.ResolveDevice(devices, static d => d.Name, static d => d.Id, "H32T13")
+		);
+
+		Assert.Contains("ambiguous", exception.Message, StringComparison.Ordinal);
+		Assert.Contains("1 - H32T13 (AMD High Definition Audio Device)", exception.Message, StringComparison.Ordinal);
+		Assert.Contains("2 - H32T13 (AMD High Definition Audio Device)", exception.Message, StringComparison.Ordinal);
+		Assert.DoesNotContain("  ", exception.Message, StringComparison.Ordinal);
+	}
+
 	private static bool ContainsUtf8(byte[] bytes, string value)
 	{
 		return bytes.AsSpan().IndexOf(Encoding.UTF8.GetBytes(value)) >= 0;

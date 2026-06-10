@@ -143,6 +143,11 @@ var perfOption = new Option<bool>("--perf")
 	Description = "Show detailed RVC pipeline timing information",
 };
 
+var verboseOption = new Option<bool>("--verbose")
+{
+	Description = "Write detailed diagnostic instrumentation to stderr (streaming + RVC)",
+};
+
 var rootCommand = new RootCommand($"Talktastic v{version} - standalone Windows TTS CLI")
 {
 	textArgument,
@@ -170,6 +175,7 @@ var rootCommand = new RootCommand($"Talktastic v{version} - standalone Windows T
 	superQuietOption,
 	noGpuOption,
 	perfOption,
+	verboseOption,
 };
 
 rootCommand.SetAction
@@ -207,10 +213,16 @@ rootCommand.SetAction
 			var superQuiet = parseResult.GetValue(superQuietOption);
 			var noGpu = parseResult.GetValue(noGpuOption);
 			var perf = parseResult.GetValue(perfOption);
+			var verbose = parseResult.GetValue(verboseOption);
 
 			if (noGpu)
 			{
 				RvcEngine.DisableGpu = true;
+			}
+
+			if (verbose)
+			{
+				Diagnostics.Verbose = true;
 			}
 
 			if (perf)
@@ -470,7 +482,7 @@ Notes:
 				var inputWav = AudioDsp.ReadAudioFileToWav(inputFile);
 				var convertedWav = await RvcEngine.ConvertAsync
 				(
-					inputWav, resolvedRvcOnly.Path, rvcPitch, cancellationToken
+					inputWav, resolvedRvcOnly.Path, rvcPitch, null, null, cancellationToken
 				).ConfigureAwait(false);
 
 				if (quiet || superQuiet)

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 
 namespace Talktastic.Tests;
 
@@ -101,5 +102,108 @@ public class CliIntegrationTests
 		// Should not crash -- exit 0 or show help
 		Assert.True(exitCode == 0 || stdout.Contains("Talktastic", StringComparison.Ordinal) || stderr.Contains("Talktastic", StringComparison.Ordinal),
 			$"Expected help or clean exit, got exit code {exitCode}");
+	}
+
+	private static async Task<string?> GetFirstSapiVoiceAsync()
+	{
+		var (exitCode, stdout, _) = await RunSayAsync("--list-voices").ConfigureAwait(false);
+		if (exitCode != 0)
+		{
+			return null;
+		}
+
+		foreach (var line in stdout.Split('\n'))
+		{
+			var marker = line.IndexOf("[sapi]", StringComparison.Ordinal);
+			if (marker > 0)
+			{
+				return line[..marker].Trim();
+			}
+		}
+
+		return null;
+	}
+
+	[Fact]
+	public async Task LegacyVoice_SynthesizesValidWavFile()
+	{
+		// Positive: validates the Windows N fix -- legacy SAPI voices must
+		// synthesize via direct COM (no Media Foundation) into a valid RIFF/WAVE file.
+		var voice = await GetFirstSapiVoiceAsync();
+		if (voice is null)
+		{
+			// No SAPI voices installed on this machine -- nothing to validate.
+			return;
+		}
+
+		var wavPath = Path.Combine(Path.GetTempPath(), $"talktastic_sapi_{Guid.NewGuid():N}.wav");
+		try
+		{
+			var (exitCode, stdout, stderr) = await RunSayAsync
+			(
+				"Integration test.", "-v", voice, "-o", wavPath
+			);
+
+			Assert.Equal(0, exitCode);
+			Assert.DoesNotContain("Unhandled exception", stdout + stderr, StringComparison.Ordinal);
+			Assert.True(File.Exists(wavPath), $"WAV not written to {wavPath}");
+
+			var bytes = await File.ReadAllBytesAsync(wavPath);
+			Assert.True(bytes.Length > 44, $"WAV too small ({bytes.Length} bytes)");
+			Assert.Equal("RIFF", Encoding.ASCII.GetString(bytes, 0, 4));
+			Assert.Equal("WAVE", Encoding.ASCII.GetString(bytes, 8, 4));
+		}
+		finally
+		{
+			if (File.Exists(wavPath))
+			{
+				File.Delete(wavPath);
+			}
+		}
+	}
+
+	[Fact]
+	public async Task UnknownVoice_ReportsErrorWithoutCrashing()
+	{
+		// Negative: an unknown voice must produce a clean error, not an unhandled exception.
+		var wavPath = Path.Combine(Path.GetTempPath(), $"talktastic_novoice_{Guid.NewGuid():N}.wav");
+		try
+		{
+			var (exitCode, stdout, stderr) = await RunSayAsync
+			(
+				"hello", "-v", "ZZZNoSuchVoiceXYZ", "-o", wavPath
+			);
+
+			Assert.NotEqual(0, exitCode);
+			Assert.DoesNotContain("Unhandled exception", stdout + stderr, StringComparison.Ordinal);
+			Assert.Contains("No voice matched", stdout + stderr, StringComparison.Ordinal);
+		}
+		finally
+		{
+			if (File.Exists(wavPath))
+			{
+				File.Delete(wavPath);
+			}
+		}
+	}
+
+	[Fact]
+	public async Task UnknownDevice_ReportsErrorWithoutCrashing()
+	{
+		// Negative: an unknown output device must produce a clean error, not an unhandled exception.
+		var voice = await GetFirstSapiVoiceAsync();
+		if (voice is null)
+		{
+			return;
+		}
+
+		var (exitCode, stdout, stderr) = await RunSayAsync
+		(
+			"hello", "-v", voice, "-d", "ZZZNoSuchDeviceXYZ"
+		);
+
+		Assert.NotEqual(0, exitCode);
+		Assert.DoesNotContain("Unhandled exception", stdout + stderr, StringComparison.Ordinal);
+		Assert.Contains("No speaker matched", stdout + stderr, StringComparison.Ordinal);
 	}
 }
