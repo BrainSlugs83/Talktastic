@@ -1,5 +1,4 @@
 using System.Diagnostics.CodeAnalysis;
-using System.IO.Compression;
 using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -104,6 +103,37 @@ static partial class ModelDownloader
 	}
 
 	/// <summary>
+	/// Downloads an archive, extracts it using ArchiveExtractor, and returns the path to the primary model file.
+	/// Supports all BCL archive formats: .zip, .tar, .tar.gz/.tgz, .gz.
+	/// </summary>
+	[ExcludeFromCodeCoverage]
+	public static async Task<(string ModelPath, string ModelName)> DownloadAndExtractAsync
+	(
+		HttpClient http,
+		string url,
+		string destDir,
+		string? preferredName,
+		CancellationToken cancellationToken
+	)
+	{
+		Directory.CreateDirectory(destDir);
+		var tempArchive = Path.Combine(destDir, $"download-{Guid.NewGuid():N}{GetArchiveExtension(url)}");
+
+		var urlFileName = Path.GetFileNameWithoutExtension(new Uri(url).AbsolutePath);
+		var hintName = Uri.UnescapeDataString(urlFileName ?? string.Empty);
+
+		try
+		{
+			await DownloadFileAsync(http, url, tempArchive, cancellationToken).ConfigureAwait(false);
+			return await ExtractArchiveAsync(tempArchive, destDir, hintName, preferredName, cancellationToken).ConfigureAwait(false);
+		}
+		finally
+		{
+			try { File.Delete(tempArchive); } catch (IOException) { }
+		}
+	}
+
+	/// <summary>
 	/// Downloads a zip archive, extracts it, and returns the path to the first .onnx file found.
 	/// The .onnx file is moved to <paramref name="destDir"/> and the temp zip is cleaned up.
 	/// </summary>
@@ -115,23 +145,80 @@ static partial class ModelDownloader
 		string destDir,
 		string? preferredName,
 		CancellationToken cancellationToken
+	) =>
+		await DownloadAndExtractAsync(http, url, destDir, preferredName, cancellationToken).ConfigureAwait(false);
+
+	/// <summary>
+	/// Extracts a local archive into a named subdirectory of destDir.
+	/// All files from the archive (.pth, .onnx, .index, .json, etc.) live together.
+	/// Returns the path to the first .onnx or .pth found and the model name.
+	/// </summary>
+	[ExcludeFromCodeCoverage]
+	public static async Task<(string ModelPath, string ModelName)> ExtractArchiveAsync
+	(
+		string archivePath,
+		string destDir,
+		string? hintName = null,
+		string? preferredName = null,
+		CancellationToken cancellationToken = default
 	)
 	{
 		Directory.CreateDirectory(destDir);
-		var tempZip = Path.Combine(destDir, $"download-{Guid.NewGuid():N}.zip");
-
-		// Derive a hint name from the URL's filename (e.g. "BartSimpson_e230_s7360")
-		var urlFileName = Path.GetFileNameWithoutExtension(new Uri(url).AbsolutePath);
-		var hintName = Uri.UnescapeDataString(urlFileName ?? string.Empty);
+		var tempExtract = Path.Combine(destDir, $"extract-{Guid.NewGuid():N}");
+		var fallbackName = !string.IsNullOrWhiteSpace(hintName)
+			? hintName
+			: Path.GetFileNameWithoutExtension(archivePath);
 
 		try
 		{
-			await DownloadFileAsync(http, url, tempZip, cancellationToken).ConfigureAwait(false);
-			return await ExtractZipAsync(tempZip, destDir, hintName, preferredName, cancellationToken).ConfigureAwait(false);
+			Directory.CreateDirectory(tempExtract);
+			await ArchiveExtractor.ExtractAsync(archivePath, tempExtract, cancellationToken).ConfigureAwait(false);
+
+			// Find the primary model file
+			var modelFile = Directory.GetFiles(tempExtract, "*.onnx", SearchOption.AllDirectories).FirstOrDefault()
+				?? Directory.GetFiles(tempExtract, "*.pth", SearchOption.AllDirectories).FirstOrDefault()
+				?? throw new InvalidOperationException
+				(
+					$"No .onnx or .pth model file found in archive: {Path.GetFileName(archivePath)}"
+				);
+
+			var modelName = ResolveModelName(modelFile, fallbackName, preferredName);
+			var modelDir = Path.Combine(destDir, modelName);
+
+			if (Directory.Exists(modelDir))
+			{
+				Directory.Delete(modelDir, recursive: true);
+			}
+
+			var sourceDir = Path.GetDirectoryName(modelFile)!;
+			Directory.Move(sourceDir, modelDir);
+
+			// Rescue companion files from elsewhere in the archive tree
+			if (Directory.Exists(tempExtract))
+			{
+				foreach (var pattern in new[] { "*.pth", "*.onnx", "*.index", "*.json" })
+				{
+					foreach (var file in Directory.GetFiles(tempExtract, pattern, SearchOption.AllDirectories))
+					{
+						var destFile = Path.Combine(modelDir, Path.GetFileName(file));
+						if (!File.Exists(destFile))
+						{
+							File.Copy(file, destFile);
+						}
+					}
+				}
+			}
+
+			var ext = Path.GetExtension(modelFile);
+			var finalPath = Directory.GetFiles(modelDir, $"*{ext}", SearchOption.TopDirectoryOnly)
+				.First();
+
+			return (finalPath, modelName);
 		}
 		finally
 		{
-			try { File.Delete(tempZip); } catch (IOException) { }
+			try { if (Directory.Exists(tempExtract)) Directory.Delete(tempExtract, recursive: true); }
+			catch (IOException) { }
 		}
 	}
 
@@ -148,71 +235,49 @@ static partial class ModelDownloader
 		string? hintName = null,
 		string? preferredName = null,
 		CancellationToken cancellationToken = default
-	)
+	) =>
+		await ExtractArchiveAsync(zipPath, destDir, hintName, preferredName, cancellationToken).ConfigureAwait(false);
+
+	/// <summary>
+	/// Finds ONNX config companion URLs in a HuggingFace API JSON listing.
+	/// Checks for "{name}.onnx.json" first, then "config.json".
+	/// </summary>
+	private static string[]? FindOnnxConfigCompanions(string json, string onnxPath, string baseResolve)
 	{
-		Directory.CreateDirectory(destDir);
-		var tempExtract = Path.Combine(destDir, $"extract-{Guid.NewGuid():N}");
-		var fallbackName = !string.IsNullOrWhiteSpace(hintName)
-			? hintName
-			: Path.GetFileNameWithoutExtension(zipPath);
-
-		try
+		var companions = new List<string>();
+		var configJsonPath = onnxPath + ".json";
+		if (json.Contains(configJsonPath, StringComparison.OrdinalIgnoreCase))
 		{
-			Directory.CreateDirectory(tempExtract);
-			await ZipFile.ExtractToDirectoryAsync(zipPath, tempExtract, overwriteFiles: true, cancellationToken).ConfigureAwait(false);
-
-			// Find the primary model file
-			var modelFile = Directory.GetFiles(tempExtract, "*.onnx", SearchOption.AllDirectories).FirstOrDefault()
-				?? Directory.GetFiles(tempExtract, "*.pth", SearchOption.AllDirectories).FirstOrDefault()
-				?? throw new InvalidOperationException
-				(
-					$"No .onnx or .pth model file found in zip archive: {Path.GetFileName(zipPath)}"
-				);
-
-			var modelName = ResolveModelName(modelFile, fallbackName, preferredName);
-			var modelDir = Path.Combine(destDir, modelName);
-
-			// If the model dir already exists, nuke it for a clean re-download
-			if (Directory.Exists(modelDir))
-			{
-				Directory.Delete(modelDir, recursive: true);
-			}
-
-			// Move the directory containing the model file into place
-			var sourceDir = Path.GetDirectoryName(modelFile)!;
-			Directory.Move(sourceDir, modelDir);
-
-			// Rescue any .pth, .index, and .json files from elsewhere
-			// in the zip tree. Many RVC zips scatter files across sibling
-			// directories (e.g. weights/ vs logs/). Copy everything
-			// worth keeping -- models may be taken down later.
-			if (Directory.Exists(tempExtract))
-			{
-				foreach (var pattern in new[] { "*.pth", "*.index", "*.json" })
-				{
-					foreach (var file in Directory.GetFiles(tempExtract, pattern, SearchOption.AllDirectories))
-					{
-						var destFile = Path.Combine(modelDir, Path.GetFileName(file));
-						if (!File.Exists(destFile))
-						{
-							File.Copy(file, destFile);
-						}
-					}
-				}
-			}
-
-			// Find the model file in its new home
-			var ext = Path.GetExtension(modelFile);
-			var finalPath = Directory.GetFiles(modelDir, $"*{ext}", SearchOption.TopDirectoryOnly)
-				.First();
-
-			return (finalPath, modelName);
+			companions.Add($"{baseResolve}/{configJsonPath}");
 		}
-		finally
+		else
 		{
-			try { if (Directory.Exists(tempExtract)) Directory.Delete(tempExtract, recursive: true); }
-			catch (IOException) { }
+			var cfgPath = FindPathInJson(json, HfConfigJsonPathPattern(), null);
+			if (cfgPath is not null)
+				companions.Add($"{baseResolve}/{cfgPath}");
 		}
+
+		return companions.Count > 0 ? [.. companions] : null;
+	}
+
+	/// <summary>
+	/// Gets a suitable file extension for a URL to use as temp file name.
+	/// </summary>
+	internal static string GetArchiveExtensionPublic(string url) => GetArchiveExtension(url);
+
+	private static string GetArchiveExtension(string url)
+	{
+		// Strip query/fragment
+		var clean = url;
+		var q = clean.IndexOf('?', StringComparison.Ordinal);
+		if (q >= 0) clean = clean[..q];
+		var f = clean.IndexOf('#', StringComparison.Ordinal);
+		if (f >= 0) clean = clean[..f];
+
+		if (clean.EndsWith(".tar.gz", StringComparison.OrdinalIgnoreCase)) return ".tar.gz";
+		if (clean.EndsWith(".tgz", StringComparison.OrdinalIgnoreCase)) return ".tgz";
+		var ext = Path.GetExtension(clean);
+		return string.IsNullOrEmpty(ext) ? ".zip" : ext;
 	}
 
 	/// <summary>
@@ -806,7 +871,7 @@ static partial class ModelDownloader
 			var resolved = await ResolveModelUrlAsync(http, extractedHref, cancellationToken).ConfigureAwait(false);
 			var shortName = ExtractVoiceModelsShortNameFromHtml(html);
 			var chosenName = ChooseVoiceModelsName(resolved.ModelName, shortName);
-			return (resolved.FileUrl, chosenName, resolved.IsZip, resolved.CompanionUrls);
+			return (resolved.FileUrl, chosenName, resolved.IsArchive, resolved.CompanionUrls);
 		}
 		catch (ArgumentException ex) when (ex.Message.StartsWith("Unsupported URL pattern:", StringComparison.Ordinal))
 		{
@@ -966,8 +1031,8 @@ static partial class ModelDownloader
 					: IsUsableName(fileName)
 						? fileName
 						: DeriveModelNameFromRepo(repo, resolvedSubPath);
-				var isZip = filePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase);
-				return (fileUrl, CleanModelName(name)!, isZip, null);
+				var isArchive = ArchiveExtractor.IsArchive(filePath);
+				return (fileUrl, CleanModelName(name)!, isArchive, null);
 			}
 		}
 
@@ -1005,7 +1070,9 @@ static partial class ModelDownloader
 				: onnxFilename.Equals("model", StringComparison.OrdinalIgnoreCase)
 					? DeriveModelNameFromRepo(repo, subPath)
 					: onnxFilename;
-			return (fileUrl, CleanModelName(modelName)!, false, null);
+
+			var companions = FindOnnxConfigCompanions(json, onnxPath, baseResolve);
+			return (fileUrl, CleanModelName(modelName)!, false, companions);
 		}
 
 		// Fall back to .zip files
@@ -1082,16 +1149,16 @@ static partial class ModelDownloader
 			if (filename.EndsWith(".onnx", StringComparison.OrdinalIgnoreCase))
 			{
 				var name = filename[..^".onnx".Length];
-				return (uri.ToString(), CleanModelName(name)!, false, null);
+				return (uri.ToString(), CleanModelName(name)!, false, [uri + ".json"]);
 			}
 			if (filename.EndsWith(".pth", StringComparison.OrdinalIgnoreCase))
 			{
 				var name = filename[..^".pth".Length];
 				return (uri.ToString(), CleanModelName(name)!, false, null);
 			}
-			if (filename.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+			if (ArchiveExtractor.IsArchive(filename))
 			{
-				var name = filename[..^".zip".Length];
+				var name = DeriveNameFromDirectUrl(uri);
 				return (uri.ToString(), CleanModelName(name)!, true, null);
 			}
 		}
@@ -1115,7 +1182,7 @@ static partial class ModelDownloader
 		if (onnxUrl is not null)
 		{
 			var onnxFilename = Path.GetFileName(new Uri(onnxUrl).LocalPath);
-			return (onnxUrl, CleanModelName(onnxFilename[..^".onnx".Length])!, false, null);
+			return (onnxUrl, CleanModelName(onnxFilename[..^".onnx".Length])!, false, [onnxUrl + ".json"]);
 		}
 
 		// Fall back to .zip assets
@@ -1159,19 +1226,29 @@ static partial class ModelDownloader
 	/// The returned FileUrl may be .onnx or .zip -- caller should check <see cref="IsZipUrl"/>.
 	/// </summary>
 	[ExcludeFromCodeCoverage]
-	public static async Task<(string FileUrl, string ModelName, bool IsZip, string[]? CompanionUrls)> ResolveModelUrlAsync
+	public static async Task<(string FileUrl, string ModelName, bool IsArchive, string[]? CompanionUrls)> ResolveModelUrlAsync
 	(
 		HttpClient http,
 		string url,
 		CancellationToken cancellationToken
 	)
 	{
-		// Direct .onnx file URL
+		// Direct .onnx file URL -- also derive .onnx.json config as companion
 		if (url.EndsWith(".onnx", StringComparison.OrdinalIgnoreCase))
 		{
 			var uri = new Uri(url);
 			var modelName = DeriveNameFromDirectUrl(uri);
-			return (url, modelName, false, null);
+			return (url, modelName, false, [url + ".json"]);
+		}
+
+		// Direct .onnx.json config URL -- derive .onnx model URL
+		if (url.EndsWith(".onnx.json", StringComparison.OrdinalIgnoreCase))
+		{
+			var onnxUrl = url[..^".json".Length];
+			var uri = new Uri(url);
+			var fileName = Path.GetFileName(uri.LocalPath);
+			var modelName = fileName[..^".onnx.json".Length];
+			return (onnxUrl, modelName, false, [url]);
 		}
 
 		// Direct .pth file URL
@@ -1182,8 +1259,8 @@ static partial class ModelDownloader
 			return (url, modelName, false, null);
 		}
 
-		// Direct .zip file URL
-		if (url.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+		// Direct archive URL (any supported format)
+		if (ArchiveExtractor.IsArchive(url))
 		{
 			var uri = new Uri(url);
 			var modelName = DeriveNameFromDirectUrl(uri);
@@ -1223,8 +1300,15 @@ static partial class ModelDownloader
 	}
 
 	/// <summary>
+	/// Returns true if a URL points to a supported archive format.
+	/// </summary>
+	public static bool IsArchiveUrl(string url) =>
+		ArchiveExtractor.IsArchive(url);
+
+	/// <summary>
 	/// Returns true if a URL points to a .zip archive.
 	/// </summary>
+	[Obsolete("Use IsArchiveUrl or ArchiveExtractor.IsArchive instead.")]
 	public static bool IsZipUrl(string url) =>
 		url.EndsWith(".zip", StringComparison.OrdinalIgnoreCase);
 

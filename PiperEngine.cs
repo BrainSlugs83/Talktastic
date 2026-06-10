@@ -1,6 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Diagnostics;
-using System.IO.Compression;
 using System.Text.RegularExpressions;
 
 namespace Talktastic;
@@ -153,61 +152,116 @@ static partial class PiperEngine
 		using var http = new HttpClient();
 		http.DefaultRequestHeaders.Add("User-Agent", "Talktastic");
 
-		// ZIP URL -- download, extract, find .onnx + .onnx.json
-		if (IsUrlVoice(voiceQuery) && voiceQuery.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+		// Archive URL -- download, extract, find .onnx + .onnx.json
+		if (IsUrlVoice(voiceQuery) && ArchiveExtractor.IsArchive(voiceQuery))
 		{
-			return await DownloadAndExtractZipVoiceAsync
+			return await DownloadAndExtractArchiveVoiceAsync
 			(
 				http, voiceQuery, voicesDir, piperDir, cancellationToken
 			).ConfigureAwait(false);
 		}
 
 		// Resolve the voice query to concrete download URLs + config URL
-		var resolved = IsUrlVoice(voiceQuery)
-			? await ResolveUrlVoiceAsync(http, voiceQuery, cancellationToken).ConfigureAwait(false)
-			: ResolvePiperShorthand(voiceQuery);
-
-		var modelPath = Path.Combine(voicesDir, $"{resolved.ModelName}.onnx");
-		var configPath = modelPath + ".json";
-
-		var existing = EnumerateCachedVoices(voicesDir)
-			.FirstOrDefault(v => v.Name.Equals(resolved.ModelName, StringComparison.OrdinalIgnoreCase));
-
-		if (existing.OnnxPath is not null)
+		if (IsUrlVoice(voiceQuery))
 		{
-			// Already downloaded but wasn't in the URL map (piper: shorthand, or URL map lost)
-			if (IsUrlVoice(voiceQuery))
-				WriteUrlMapEntry(piperDir, voiceQuery, resolved.ModelName);
+			var resolved = await ModelDownloader.ResolveModelUrlAsync(http, voiceQuery, cancellationToken).ConfigureAwait(false);
 
-			return existing.OnnxPath;
+			// If the resolved URL is an archive, download + extract
+			if (resolved.IsArchive)
+			{
+				return await DownloadAndExtractArchiveVoiceAsync
+				(
+					http, resolved.FileUrl, voicesDir, piperDir, cancellationToken
+				).ConfigureAwait(false);
+			}
+
+			var modelPath = Path.Combine(voicesDir, $"{resolved.ModelName}.onnx");
+			var configPath = modelPath + ".json";
+
+			var existing = EnumerateCachedVoices(voicesDir)
+				.FirstOrDefault(v => v.Name.Equals(resolved.ModelName, StringComparison.OrdinalIgnoreCase));
+
+			if (existing.OnnxPath is not null)
+			{
+				WriteUrlMapEntry(piperDir, voiceQuery, resolved.ModelName);
+				return existing.OnnxPath;
+			}
+
+			await Console.Error.WriteLineAsync
+			(
+				$"Downloading Piper voice '{resolved.ModelName}'..."
+			).ConfigureAwait(false);
+
+			await DownloadFileAsync(http, resolved.FileUrl, modelPath, cancellationToken).ConfigureAwait(false);
+
+			// Download companion files (typically .onnx.json config)
+			if (resolved.CompanionUrls is not null)
+			{
+				foreach (var companionUrl in resolved.CompanionUrls)
+				{
+					var companionName = Uri.UnescapeDataString
+					(
+						Path.GetFileName(new Uri(companionUrl).LocalPath)
+					);
+					var companionPath = Path.Combine(voicesDir, companionName);
+					if (!File.Exists(companionPath))
+					{
+						try
+						{
+							await DownloadFileAsync(http, companionUrl, companionPath, cancellationToken).ConfigureAwait(false);
+						}
+						catch (HttpRequestException)
+						{
+							// Config file is optional -- some models don't have one
+						}
+					}
+				}
+			}
+
+			var sizeMb = new FileInfo(modelPath).Length / 1024 / 1024;
+			await Console.Error.WriteLineAsync
+			(
+				$"Downloaded {resolved.ModelName} ({sizeMb} MB)."
+			).ConfigureAwait(false);
+
+			WriteUrlMapEntry(piperDir, voiceQuery, resolved.ModelName);
+			return modelPath;
 		}
 
+		// Piper shorthand (piper:en_US-ryan-high)
+		var shorthand = ResolvePiperShorthand(voiceQuery);
+
+		var shorthandModelPath = Path.Combine(voicesDir, $"{shorthand.ModelName}.onnx");
+		var shorthandConfigPath = shorthandModelPath + ".json";
+
+		var existingShorthand = EnumerateCachedVoices(voicesDir)
+			.FirstOrDefault(v => v.Name.Equals(shorthand.ModelName, StringComparison.OrdinalIgnoreCase));
+
+		if (existingShorthand.OnnxPath is not null)
+			return existingShorthand.OnnxPath;
+
 		await Console.Error.WriteLineAsync
 		(
-			$"Downloading Piper voice '{resolved.ModelName}'..."
+			$"Downloading Piper voice '{shorthand.ModelName}'..."
 		).ConfigureAwait(false);
 
-		await DownloadFileAsync(http, resolved.OnnxUrl, modelPath, cancellationToken).ConfigureAwait(false);
-		await DownloadFileAsync(http, resolved.ConfigUrl, configPath, cancellationToken).ConfigureAwait(false);
+		await DownloadFileAsync(http, shorthand.OnnxUrl, shorthandModelPath, cancellationToken).ConfigureAwait(false);
+		await DownloadFileAsync(http, shorthand.ConfigUrl, shorthandConfigPath, cancellationToken).ConfigureAwait(false);
 
-		var sizeMb = new FileInfo(modelPath).Length / 1024 / 1024;
+		var shorthandSizeMb = new FileInfo(shorthandModelPath).Length / 1024 / 1024;
 		await Console.Error.WriteLineAsync
 		(
-			$"Downloaded {resolved.ModelName} ({sizeMb} MB)."
+			$"Downloaded {shorthand.ModelName} ({shorthandSizeMb} MB)."
 		).ConfigureAwait(false);
 
-		// Register the URL → model name mapping
-		if (IsUrlVoice(voiceQuery))
-			WriteUrlMapEntry(piperDir, voiceQuery, resolved.ModelName);
-
-		return modelPath;
+		return shorthandModelPath;
 	}
 
 	[ExcludeFromCodeCoverage]
-	private static async Task<string> DownloadAndExtractZipVoiceAsync
+	private static async Task<string> DownloadAndExtractArchiveVoiceAsync
 	(
 		HttpClient http,
-		string zipUrl,
+		string archiveUrl,
 		string voicesDir,
 		string piperDir,
 		CancellationToken cancellationToken
@@ -215,25 +269,25 @@ static partial class PiperEngine
 	{
 		await Console.Error.WriteLineAsync
 		(
-			$"Downloading and extracting Piper voice from ZIP..."
+			$"Downloading and extracting Piper voice from archive..."
 		).ConfigureAwait(false);
 
-		var tempZip = Path.Combine(voicesDir, $"download-{Guid.NewGuid():N}.zip");
+		var tempArchive = Path.Combine(voicesDir, $"download-{Guid.NewGuid():N}{ModelDownloader.GetArchiveExtensionPublic(archiveUrl)}");
 		var tempExtract = Path.Combine(voicesDir, $"extract-{Guid.NewGuid():N}");
 
 		try
 		{
-			await DownloadFileAsync(http, zipUrl, tempZip, cancellationToken).ConfigureAwait(false);
+			await DownloadFileAsync(http, archiveUrl, tempArchive, cancellationToken).ConfigureAwait(false);
 
 			Directory.CreateDirectory(tempExtract);
-			await ZipFile.ExtractToDirectoryAsync(tempZip, tempExtract, overwriteFiles: true, cancellationToken).ConfigureAwait(false);
+			await ArchiveExtractor.ExtractAsync(tempArchive, tempExtract, cancellationToken).ConfigureAwait(false);
 
 			var onnxFiles = Directory.GetFiles(tempExtract, "*.onnx", SearchOption.AllDirectories);
 			if (onnxFiles.Length == 0)
 			{
 				throw new InvalidOperationException
 				(
-					$"No .onnx model file found in zip archive from {zipUrl}"
+					$"No .onnx model file found in archive from {archiveUrl}"
 				);
 			}
 
@@ -252,7 +306,6 @@ static partial class PiperEngine
 				File.Move(configFiles[0], finalConfigPath, overwrite: true);
 			}
 
-			// Also check for JSON with same base name
 			var jsonCandidate = Path.ChangeExtension(sourceOnnx, ".onnx.json");
 			if (File.Exists(jsonCandidate))
 			{
@@ -265,12 +318,12 @@ static partial class PiperEngine
 				$"Extracted {modelName} ({sizeMb} MB)."
 			).ConfigureAwait(false);
 
-			WriteUrlMapEntry(piperDir, zipUrl, modelName);
+			WriteUrlMapEntry(piperDir, archiveUrl, modelName);
 			return finalOnnxPath;
 		}
 		finally
 		{
-			try { File.Delete(tempZip); } catch (IOException) { }
+			try { File.Delete(tempArchive); } catch (IOException) { }
 			try { if (Directory.Exists(tempExtract)) Directory.Delete(tempExtract, recursive: true); }
 			catch (IOException) { }
 		}

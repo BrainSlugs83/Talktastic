@@ -670,17 +670,21 @@ public sealed class ModelDownloaderTests : IDisposable
 	[Theory]
 	[InlineData("https://example.com/model.zip")]
 	[InlineData("https://example.com/model.ZIP")]
-	public void IsZipUrl_ReturnsTrue_ForZipUrls(string url)
+	[InlineData("https://example.com/model.tar.gz")]
+	[InlineData("https://example.com/model.tgz")]
+	[InlineData("https://example.com/model.tar")]
+	[InlineData("https://example.com/model.gz")]
+	public void IsArchiveUrl_ReturnsTrue_ForArchiveUrls(string url)
 	{
-		Assert.True(ModelDownloader.IsZipUrl(url));
+		Assert.True(ModelDownloader.IsArchiveUrl(url));
 	}
 
 	[Theory]
 	[InlineData("https://example.com/model.onnx")]
 	[InlineData("https://example.com/model.pth")]
-	public void IsZipUrl_ReturnsFalse_ForNonZipUrls(string url)
+	public void IsArchiveUrl_ReturnsFalse_ForNonArchiveUrls(string url)
 	{
-		Assert.False(ModelDownloader.IsZipUrl(url));
+		Assert.False(ModelDownloader.IsArchiveUrl(url));
 	}
 
 	// ── Zip extraction tests ──────────────────────────────────────────

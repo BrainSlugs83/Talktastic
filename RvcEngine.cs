@@ -190,9 +190,9 @@ static partial class RvcEngine
 		{
 			var fullPath = Path.GetFullPath(rvcQuery);
 
-			if (fullPath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+			if (ArchiveExtractor.IsArchive(fullPath))
 			{
-				var extracted = await ExtractLocalZipAsync(fullPath, ct).ConfigureAwait(false);
+				var extracted = await ExtractLocalArchiveAsync(fullPath, ct).ConfigureAwait(false);
 				return (extracted, GetDisplayName(extracted));
 			}
 
@@ -227,14 +227,14 @@ static partial class RvcEngine
 			string downloadPath;
 			string modelName;
 
-			if (resolved.IsZip)
+			if (resolved.IsArchive)
 			{
 				await Console.Error.WriteLineAsync
 				(
 					$"Downloading and extracting RVC model '{resolved.ModelName}'..."
 				).ConfigureAwait(false);
 
-				var (modelPath, extractedName) = await ModelDownloader.DownloadAndExtractZipAsync
+				var (modelPath, extractedName) = await ModelDownloader.DownloadAndExtractAsync
 				(
 					Http, resolved.FileUrl, voicesDir, preferredName: resolved.ModelName, ct
 				).ConfigureAwait(false);
@@ -322,17 +322,17 @@ static partial class RvcEngine
 	/// <summary>
 	/// Extracts a local RVC model archive into the cache.
 	/// </summary>
-	/// <param name="zipPath">The ZIP file path.</param>
+	/// <param name="archivePath">The archive file path.</param>
 	/// <param name="ct">The cancellation token.</param>
 	/// <returns>The extracted model path.</returns>
-	private static async Task<string> ExtractLocalZipAsync(string zipPath, CancellationToken ct)
+	private static async Task<string> ExtractLocalArchiveAsync(string archivePath, CancellationToken ct)
 	{
 		var rvcDir = EnsureRvcDirectory();
 		var voicesDir = Path.Combine(rvcDir, VoicesSubDir);
 		var urlMapPath = Path.Combine(rvcDir, UrlMapFileName);
 		Directory.CreateDirectory(voicesDir);
 
-		var cachedModelName = ModelDownloader.LookupUrlMap(urlMapPath, zipPath);
+		var cachedModelName = ModelDownloader.LookupUrlMap(urlMapPath, archivePath);
 		if (cachedModelName is not null)
 		{
 			var cachedPath = FindCachedModel(voicesDir, cachedModelName);
@@ -344,15 +344,15 @@ static partial class RvcEngine
 
 		await Console.Error.WriteLineAsync
 		(
-			$"Extracting RVC model from '{Path.GetFileName(zipPath)}'..."
+			$"Extracting RVC model from '{Path.GetFileName(archivePath)}'..."
 		).ConfigureAwait(false);
 
-		var (modelPath, extractedName) = await ModelDownloader.ExtractZipAsync
+		var (modelPath, extractedName) = await ModelDownloader.ExtractArchiveAsync
 		(
-				zipPath, voicesDir, cancellationToken: ct
+				archivePath, voicesDir, cancellationToken: ct
 		).ConfigureAwait(false);
 
-		ModelDownloader.WriteUrlMapEntry(urlMapPath, zipPath, extractedName);
+		ModelDownloader.WriteUrlMapEntry(urlMapPath, archivePath, extractedName);
 		return modelPath;
 	}
 
