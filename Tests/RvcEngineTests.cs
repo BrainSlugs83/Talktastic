@@ -41,7 +41,7 @@ public sealed class RvcEngineTests : IDisposable
 	{
 		Assert.True
 		(
-			HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}.onnx.gz"),
+			HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}.onnx.br"),
 			$"Required embedded skeleton resource missing for {srKey}. Rebuild with skeletons in native-resources/."
 		);
 
@@ -64,7 +64,7 @@ public sealed class RvcEngineTests : IDisposable
 	{
 		Assert.True
 		(
-			HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}_manifest.json.gz"),
+			HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}_manifest.json.br"),
 			$"Required embedded manifest resource missing for {srKey}. Rebuild with skeletons in native-resources/."
 		);
 
@@ -90,7 +90,7 @@ public sealed class RvcEngineTests : IDisposable
 	{
 		Assert.True
 		(
-			HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}.onnx.gz"),
+			HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}.onnx.br"),
 			$"Required embedded skeleton resource missing for {srKey}."
 		);
 
@@ -108,7 +108,7 @@ public sealed class RvcEngineTests : IDisposable
 	{
 		Assert.True
 		(
-			HasEmbeddedRvcResource("Talktastic.Rvc.skeleton_v2_32k.onnx.gz"),
+			HasEmbeddedRvcResource("Talktastic.Rvc.skeleton_v2_32k.onnx.br"),
 			"Required embedded 32k skeleton resource missing."
 		);
 
@@ -133,8 +133,8 @@ public sealed class RvcEngineTests : IDisposable
 	{
 		Assert.True
 		(
-			HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}.onnx.gz")
-			&& HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}_manifest.json.gz"),
+			HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}.onnx.br")
+			&& HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}_manifest.json.br"),
 			$"Required embedded skeleton/manifest resources missing for {srKey}."
 		);
 
@@ -161,8 +161,8 @@ public sealed class RvcEngineTests : IDisposable
 	{
 		Assert.True
 		(
-			HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}.onnx.gz")
-			&& HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}_manifest.json.gz"),
+			HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}.onnx.br")
+			&& HasEmbeddedRvcResource($"Talktastic.Rvc.skeleton_v2_{srKey}_manifest.json.br"),
 			$"Required embedded skeleton/manifest resources missing for {srKey}."
 		);
 
@@ -215,8 +215,8 @@ public sealed class RvcEngineTests : IDisposable
 
 		Assert.True
 		(
-			HasEmbeddedRvcResource("Talktastic.Rvc.skeleton_v2_32k.onnx.gz")
-			&& HasEmbeddedRvcResource("Talktastic.Rvc.skeleton_v2_32k_manifest.json.gz"),
+			HasEmbeddedRvcResource("Talktastic.Rvc.skeleton_v2_32k.onnx.br")
+			&& HasEmbeddedRvcResource("Talktastic.Rvc.skeleton_v2_32k_manifest.json.br"),
 			"Required embedded 32k skeleton/manifest resources missing."
 		);
 

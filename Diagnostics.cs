@@ -68,12 +68,13 @@ internal static class Diagnostics
 			return;
 		}
 
+		var elapsed = Settings.ElapsedTime;
 		LogPerf
 		(
 			string.Create
 			(
 				System.Globalization.CultureInfo.InvariantCulture,
-				$"[first-audio] source={source}"
+				$"[first-audio] {elapsed.TotalMilliseconds:F0}ms (source={source})"
 			)
 		);
 	}

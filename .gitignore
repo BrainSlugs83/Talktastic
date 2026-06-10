@@ -4,7 +4,7 @@ obj/
 
 ## Native resources (generated at build time from NuGet packages)
 native-resources/
-!native-resources/skeleton_v2_*.gz
+!native-resources/skeleton_v2_*.br
 !native-resources/espeak-ng-data.zip
 
 ## Publish stamp (build.ps1 sentinel)

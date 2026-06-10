@@ -105,11 +105,10 @@ public sealed class EmbeddedResourceTests
 	[InlineData("48k")]
 	public void RvcSkeleton_IsEmbedded(string srKey)
 	{
-		var resourceName = $"Talktastic.Rvc.skeleton_v2_{srKey}.onnx.gz";
+		var resourceName = $"Talktastic.Rvc.skeleton_v2_{srKey}.onnx.br";
 		AssertResourceExists(resourceName);
-		AssertIsValidGzip(resourceName);
 
-		var bytes = Decompress(resourceName);
+		var bytes = DecompressBrotli(resourceName);
 		Assert.True
 		(
 			bytes.Length > 1_000_000,
@@ -123,11 +122,10 @@ public sealed class EmbeddedResourceTests
 	[InlineData("48k")]
 	public void RvcSkeletonManifest_IsEmbedded(string srKey)
 	{
-		var resourceName = $"Talktastic.Rvc.skeleton_v2_{srKey}_manifest.json.gz";
+		var resourceName = $"Talktastic.Rvc.skeleton_v2_{srKey}_manifest.json.br";
 		AssertResourceExists(resourceName);
-		AssertIsValidGzip(resourceName);
 
-		var json = DecompressText(resourceName);
+		var json = DecompressBrotliText(resourceName);
 		var manifest = JsonSerializer.Deserialize
 		(
 			json,
@@ -146,8 +144,8 @@ public sealed class EmbeddedResourceTests
 	{
 		var allResources = TargetAssembly.GetManifestResourceNames();
 		var nativeDlls = allResources.Where(static r => r.StartsWith("Talktastic.Native.", StringComparison.Ordinal) && r.EndsWith(".dll.br", StringComparison.Ordinal)).ToArray();
-		var skeletons = allResources.Where(static r => r.StartsWith("Talktastic.Rvc.skeleton_v2_", StringComparison.Ordinal) && r.EndsWith(".onnx.gz", StringComparison.Ordinal)).ToArray();
-		var manifests = allResources.Where(static r => r.StartsWith("Talktastic.Rvc.skeleton_v2_", StringComparison.Ordinal) && r.EndsWith("_manifest.json.gz", StringComparison.Ordinal)).ToArray();
+		var skeletons = allResources.Where(static r => r.StartsWith("Talktastic.Rvc.skeleton_v2_", StringComparison.Ordinal) && r.EndsWith(".onnx.br", StringComparison.Ordinal)).ToArray();
+		var manifests = allResources.Where(static r => r.StartsWith("Talktastic.Rvc.skeleton_v2_", StringComparison.Ordinal) && r.EndsWith("_manifest.json.br", StringComparison.Ordinal)).ToArray();
 
 		Assert.True(nativeDlls.Length >= 8, $"Expected ≥8 native DLL resources, found {nativeDlls.Length}: [{string.Join(", ", nativeDlls)}]");
 		Assert.True(skeletons.Length >= 3, $"Expected ≥3 skeleton ONNX resources, found {skeletons.Length}: [{string.Join(", ", skeletons)}]");
@@ -174,25 +172,6 @@ public sealed class EmbeddedResourceTests
 		Assert.NotEmpty(bytes);
 	}
 
-	private static void AssertIsValidGzip(string resourceName)
-	{
-		using var stream = TargetAssembly.GetManifestResourceStream(resourceName)!;
-		var header = new byte[2];
-		var read = stream.Read(header, 0, 2);
-		Assert.Equal(2, read);
-		Assert.Equal(0x1F, header[0]);
-		Assert.Equal(0x8B, header[1]);
-	}
-
-	private static byte[] Decompress(string resourceName)
-	{
-		using var stream = TargetAssembly.GetManifestResourceStream(resourceName)!;
-		using var gzip = new GZipStream(stream, CompressionMode.Decompress);
-		using var ms = new MemoryStream();
-		gzip.CopyTo(ms);
-		return ms.ToArray();
-	}
-
 	private static byte[] DecompressBrotli(string resourceName)
 	{
 		using var stream = TargetAssembly.GetManifestResourceStream(resourceName)!;
@@ -202,11 +181,11 @@ public sealed class EmbeddedResourceTests
 		return ms.ToArray();
 	}
 
-	private static string DecompressText(string resourceName)
+	private static string DecompressBrotliText(string resourceName)
 	{
 		using var stream = TargetAssembly.GetManifestResourceStream(resourceName)!;
-		using var gzip = new GZipStream(stream, CompressionMode.Decompress);
-		using var reader = new StreamReader(gzip);
+		using var brotli = new BrotliStream(stream, CompressionMode.Decompress);
+		using var reader = new StreamReader(brotli);
 		return reader.ReadToEnd();
 	}
 }

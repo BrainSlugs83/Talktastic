@@ -97,8 +97,8 @@
         <WithCulture>false</WithCulture>
         <Visible>false</Visible>
       </EmbeddedResource>
-      <EmbeddedResource Remove="$(SpeechNativeResourceDirectory)\skeleton_v2_*.gz" />
-      <SkeletonResource Include="$(SpeechNativeResourceDirectory)\skeleton_v2_*.gz" />
+      <EmbeddedResource Remove="$(SpeechNativeResourceDirectory)\skeleton_v2_*.br" />
+      <SkeletonResource Include="$(SpeechNativeResourceDirectory)\skeleton_v2_*.br" />
       <EmbeddedResource Include="@(SkeletonResource)">
         <LogicalName>Talktastic.Rvc.%(SkeletonResource.Filename)%(SkeletonResource.Extension)</LogicalName>
         <Type>Non-Resx</Type>

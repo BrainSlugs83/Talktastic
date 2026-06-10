@@ -1053,7 +1053,7 @@ static partial class RvcEngine
 	/// <returns>The decompressed skeleton bytes.</returns>
 	internal static byte[] LoadEmbeddedSkeleton(string srKey)
 	{
-		var resourceName = $"Talktastic.Rvc.skeleton_v2_{srKey}.onnx.gz";
+		var resourceName = $"Talktastic.Rvc.skeleton_v2_{srKey}.onnx.br";
 		using var stream = typeof(RvcEngine).Assembly.GetManifestResourceStream(resourceName)
 			?? throw new InvalidOperationException
 			(
@@ -1061,12 +1061,12 @@ static partial class RvcEngine
 				+ $"No embedded skeleton template found."
 			);
 
-		using var gzip = new System.IO.Compression.GZipStream
+		using var brotli = new System.IO.Compression.BrotliStream
 		(
 			stream, System.IO.Compression.CompressionMode.Decompress
 		);
 		using var ms = new MemoryStream();
-		gzip.CopyTo(ms);
+		brotli.CopyTo(ms);
 		return ms.ToArray();
 	}
 
@@ -1077,7 +1077,7 @@ static partial class RvcEngine
 	/// <returns>The embedded manifest.</returns>
 	internal static SkeletonManifest LoadEmbeddedManifest(string srKey)
 	{
-		var resourceName = $"Talktastic.Rvc.skeleton_v2_{srKey}_manifest.json.gz";
+		var resourceName = $"Talktastic.Rvc.skeleton_v2_{srKey}_manifest.json.br";
 		using var stream = typeof(RvcEngine).Assembly.GetManifestResourceStream(resourceName)
 			?? throw new InvalidOperationException
 			(
@@ -1085,11 +1085,11 @@ static partial class RvcEngine
 				+ $"No embedded manifest found."
 			);
 
-		using var gzip = new System.IO.Compression.GZipStream
+		using var brotli = new System.IO.Compression.BrotliStream
 		(
 			stream, System.IO.Compression.CompressionMode.Decompress
 		);
-		using var reader = new StreamReader(gzip);
+		using var reader = new StreamReader(brotli);
 		var json = reader.ReadToEnd();
 
 		return JsonSerializer.Deserialize
