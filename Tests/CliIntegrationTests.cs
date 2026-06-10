@@ -207,4 +207,110 @@ public class CliIntegrationTests
 		Assert.DoesNotContain("Unhandled exception", stdout + stderr, StringComparison.Ordinal);
 		Assert.Contains("No speaker matched", stdout + stderr, StringComparison.Ordinal);
 	}
+
+	// ── FileDownloader / download error integration tests ────────────
+
+	[Fact]
+	public async Task InvalidPiperUrl_ReportsErrorWithoutCrashing()
+	{
+		// Negative: a Piper voice URL that 404s must produce a clean error message.
+		var (exitCode, _, stderr) = await RunSayAsync
+		(
+			"-v", "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/NONEXISTENT/medium/en_US-NONEXISTENT-medium.onnx"
+		);
+
+		var combined = stderr;
+		Assert.NotEqual(0, exitCode);
+		Assert.DoesNotContain("Unhandled exception", combined, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public async Task UnreachableHost_ReportsNetworkErrorWithoutCrashing()
+	{
+		// Negative: a completely unreachable host must surface a network error, not crash.
+		var (exitCode, stdout, stderr) = await RunSayAsync
+		(
+			"-v", "https://this-host-does-not-exist-zzz.example.invalid/voice.onnx"
+		);
+
+		var combined = stdout + stderr;
+		Assert.NotEqual(0, exitCode);
+		Assert.DoesNotContain("Unhandled exception", combined, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public async Task InvalidRvcUrl_ReportsErrorWithoutCrashing()
+	{
+		// Negative: an invalid RVC URL must produce a clean error, not crash.
+		var (exitCode, stdout, stderr) = await RunSayAsync
+		(
+			"--rvc", "https://this-host-does-not-exist-zzz.example.invalid/model.zip"
+		);
+
+		var combined = stdout + stderr;
+		Assert.NotEqual(0, exitCode);
+		Assert.DoesNotContain("Unhandled exception", combined, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public async Task VersionFlag_PrintsVersionString()
+	{
+		// Positive: --version should print a semver-like string and exit 0.
+		var (exitCode, stdout, _) = await RunSayAsync("--version");
+
+		Assert.Equal(0, exitCode);
+		Assert.Matches(@"^\d+\.\d+\.\d+", stdout.Trim());
+	}
+
+	[Fact]
+	public async Task ListVoices_IncludesPiperVoices()
+	{
+		// Positive: --list-voices should include at least one [piper] voice
+		// (Amy was downloaded by VoiceUrlOnly_DownloadsWithoutText).
+		var (exitCode, stdout, _) = await RunSayAsync("--list-voices");
+
+		Assert.Equal(0, exitCode);
+		Assert.Contains("[piper]", stdout, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public async Task ListVoices_IncludesNeuralVoices()
+	{
+		// Positive: --list-voices should include at least one [neural] voice.
+		var (exitCode, stdout, _) = await RunSayAsync("--list-voices");
+
+		Assert.Equal(0, exitCode);
+		Assert.Contains("[neural]", stdout, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public async Task PiperVoice_SynthesizesValidWavFile()
+	{
+		// Positive: cached Piper voice must synthesize valid WAV output.
+		// Amy was downloaded by VoiceUrlOnly_DownloadsWithoutText.
+		var wavPath = Path.Combine(Path.GetTempPath(), $"talktastic_piper_{Guid.NewGuid():N}.wav");
+		try
+		{
+			var (exitCode, stdout, stderr) = await RunSayAsync
+			(
+				"Integration test for Piper.", "-v", "amy", "-o", wavPath
+			);
+
+			Assert.Equal(0, exitCode);
+			Assert.DoesNotContain("Unhandled exception", stdout + stderr, StringComparison.Ordinal);
+			Assert.True(File.Exists(wavPath), $"WAV not written to {wavPath}");
+
+			var bytes = await File.ReadAllBytesAsync(wavPath);
+			Assert.True(bytes.Length > 44, $"WAV too small ({bytes.Length} bytes)");
+			Assert.Equal("RIFF", Encoding.ASCII.GetString(bytes, 0, 4));
+			Assert.Equal("WAVE", Encoding.ASCII.GetString(bytes, 8, 4));
+		}
+		finally
+		{
+			if (File.Exists(wavPath))
+			{
+				File.Delete(wavPath);
+			}
+		}
+	}
 }
