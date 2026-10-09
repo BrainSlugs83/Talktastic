@@ -21,37 +21,60 @@ Standalone Windows TTS CLI that speaks with neural, SAPI, and Piper voices -- wi
 
 ## Usage
 
-```powershell
-# Speak with the currently default Windows voice.
-say "Hello, from Talktastic!"
+🔊 **[Listen to all of these on the samples page](https://brainslugs83.github.io/Talktastic/)** -- or click any ▶ Play link below.
 
-# Use a Windows 11 neural voice (make sure to install it first; e.g via "say --add-voices"!)
-say "This is Microsoft Ryan, a Windows 11 neural voice." -v "Microsoft Ryan"
-
-# Download and use an Open Source Piper voice by URL (cached automatically).
-say "Piper voices can be downloaded by URL!" -v "https://huggingface.co/rhasspy/piper-voices/tree/v1.0.0/en/en_US/amy/medium"
-
-# Once a Piper voice is installed, you can use it by name.
-say "Once a Piper voice is installed, you can use it by name!" -v "Amy"
-
-# Silently download and install a Piper voice (also works with --rvc voice conversion packs!).
-say -v "https://huggingface.co/rhasspy/piper-voices/tree/v1.0.0/en/en_US/ryan/high"
-
-# Use type prefixes to disambiguate voices with the same name.
-say "This is how you disambiguate between two voices with the same name." -v "piper:Ryan"
-
-# RVC voice conversion models can be downloaded by URL too.
-say "RVC models can also be downloaded by URL." --rvc "https://huggingface.co/0x3e9/Darth_Vader_RVC"
-
-# Apply RVC voice conversion on top of any TTS voice.
-say "This is Piper Alan's voice, converted to sound like Darth Vader." -v "https://huggingface.co/rhasspy/piper-voices/tree/v1.0.0/en/en_GB/alan/medium" --rvc "Vader"
-
-# Read from stdin.
-echo "You can also pipe text in from stdin!" | say "-"
-
-# List everything -- voices, RVC models, audio devices.
-say --list
-```
+<table>
+<tr><th>Example</th><th colspan="2">Sample</th></tr>
+<tr>
+<td>Speak with the currently default Windows voice.<br><code>say &quot;Hello, from Talktastic!&quot;</code></td>
+<td colspan="2" align="center"><a href="https://brainslugs83.github.io/Talktastic/01-default-voice.mp3">▶ Play</a></td>
+</tr>
+<tr>
+<td>Use a Windows 11 neural voice (make sure to install it first; e.g via <code>say --add-voices</code>!)<br><code>say &quot;This is Microsoft Ryan, a Windows 11 neural voice.&quot; -v &quot;Microsoft Ryan&quot;</code></td>
+<td colspan="2" align="center"><a href="https://brainslugs83.github.io/Talktastic/02-neural-ryan.mp3">▶ Play</a></td>
+</tr>
+<tr>
+<td>Download and use an Open Source Piper voice by URL (cached automatically).<br><code>say &quot;Piper voices can be downloaded by URL!&quot; -v &quot;https://huggingface.co/rhasspy/piper-voices/tree/v1.0.0/en/en_US/amy/medium&quot;</code></td>
+<td colspan="2" align="center"><a href="https://brainslugs83.github.io/Talktastic/03-piper-url.mp3">▶ Play</a></td>
+</tr>
+<tr>
+<td>Once a Piper voice is installed, you can use it by name.<br><code>say &quot;Once a Piper voice is installed, you can use it by name!&quot; -v &quot;Amy&quot;</code></td>
+<td colspan="2" align="center"><a href="https://brainslugs83.github.io/Talktastic/04-piper-by-name.mp3">▶ Play</a></td>
+</tr>
+<tr>
+<td>Silently download and install a Piper voice (also works with <code>--rvc</code> voice conversion packs!).<br><code>say -v &quot;https://huggingface.co/rhasspy/piper-voices/tree/v1.0.0/en/en_US/ryan/high&quot;</code></td>
+<td colspan="2" align="center"><em>(no audio)</em></td>
+</tr>
+<tr>
+<td>Use type prefixes to disambiguate voices with the same name.<br><code>say &quot;This is how you disambiguate between two voices with the same name.&quot; -v &quot;piper:Ryan&quot;</code></td>
+<td colspan="2" align="center"><a href="https://brainslugs83.github.io/Talktastic/05-piper-prefix.mp3">▶ Play</a></td>
+</tr>
+<tr>
+<td>RVC voice conversion models can be downloaded by URL too.<br><code>say &quot;RVC models can also be downloaded by URL.&quot; --rvc &quot;https://huggingface.co/0x3e9/Darth_Vader_RVC&quot;</code></td>
+<td colspan="2" align="center"><a href="https://brainslugs83.github.io/Talktastic/06-rvc-url.mp3">▶ Play</a></td>
+</tr>
+<tr>
+<td>Apply RVC voice conversion on top of any TTS voice.<br><code>say &quot;This is Piper Alan&#39;s voice, converted to sound like Darth Vader.&quot; -v &quot;https://huggingface.co/rhasspy/piper-voices/tree/v1.0.0/en/en_GB/alan/medium&quot; --rvc &quot;Vader&quot;</code></td>
+<td colspan="2" align="center"><a href="https://brainslugs83.github.io/Talktastic/07-piper-plus-rvc.mp3">▶ Play</a></td>
+</tr>
+<tr>
+<td>Read from stdin.<br><code>echo &quot;You can also pipe text in from stdin!&quot; | say &quot;-&quot;</code></td>
+<td colspan="2" align="center"><a href="https://brainslugs83.github.io/Talktastic/08-stdin.mp3">▶ Play</a></td>
+</tr>
+<tr>
+<td>List everything -- voices, RVC models, audio devices.<br><code>say --list</code></td>
+<td colspan="2" align="center"><em>(no audio)</em></td>
+</tr>
+<tr>
+<td rowspan="2">Convert an existing recording with an RVC model.<br><code>say -i before.wav -o after.wav --rvc &quot;https://huggingface.co/0x3e9/Darth_Vader_RVC&quot;</code></td>
+<th>Before</th>
+<th>After</th>
+</tr>
+<tr>
+<td align="center"><a href="https://brainslugs83.github.io/Talktastic/09-rvc-file-before.mp3">▶ Play</a></td>
+<td align="center"><a href="https://brainslugs83.github.io/Talktastic/09-rvc-file-after.mp3">▶ Play</a></td>
+</tr>
+</table>
 
 ## File I/O
 
