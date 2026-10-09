@@ -4,21 +4,117 @@
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title>Talktastic Samples</title>
+	<meta name="color-scheme" content="dark">
 	<style>
-		body { font-family: system-ui, sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+		:root {
+			--bg: #0b0d12;
+			--panel: #141821;
+			--panel-alt: #181d28;
+			--border: #262c3a;
+			--text: #e6e9ef;
+			--muted: #98a1b3;
+			--accent: #8b5cf6;
+			--accent-2: #22d3ee;
+			--code-bg: #0f1219;
+		}
+		* { box-sizing: border-box; }
+		body {
+			margin: 0;
+			font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+			color: var(--text);
+			background:
+				radial-gradient(900px 500px at 15% -10%, rgba(139, 92, 246, 0.18), transparent 60%),
+				radial-gradient(800px 500px at 100% 0%, rgba(34, 211, 238, 0.12), transparent 60%),
+				var(--bg);
+			background-attachment: fixed;
+			line-height: 1.55;
+		}
+		main { max-width: 1100px; margin: 0 auto; padding: 3.5rem 1.25rem 4rem; }
+		header { text-align: center; margin-bottom: 2.5rem; }
+		h1 {
+			margin: 0 0 0.5rem;
+			font-size: clamp(2.2rem, 5vw, 3.4rem);
+			letter-spacing: -0.02em;
+			background: linear-gradient(90deg, var(--accent), var(--accent-2));
+			-webkit-background-clip: text;
+			background-clip: text;
+			color: transparent;
+		}
+		header p { margin: 0 auto 1.75rem; max-width: 640px; color: var(--muted); }
+		a { color: var(--accent-2); }
+		.actions { display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap; }
+		.btn {
+			display: inline-block;
+			padding: 0.7rem 1.3rem;
+			border-radius: 999px;
+			font-weight: 600;
+			text-decoration: none;
+			transition: transform 0.15s ease, box-shadow 0.15s ease;
+		}
+		.btn:hover { transform: translateY(-1px); }
+		.btn-primary {
+			color: #fff;
+			background: linear-gradient(90deg, var(--accent), #6366f1);
+			box-shadow: 0 8px 24px rgba(139, 92, 246, 0.35);
+		}
+		.btn-primary:hover { box-shadow: 0 10px 30px rgba(139, 92, 246, 0.5); }
+		.btn-ghost { color: var(--text); border: 1px solid var(--border); background: rgba(255, 255, 255, 0.03); }
+		.table-wrap {
+			border: 1px solid var(--border);
+			border-radius: 14px;
+			overflow: hidden;
+			background: var(--panel);
+			box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
+		}
 		table { border-collapse: collapse; width: 100%; }
-		th, td { border: 1px solid #999; padding: 0.6rem; vertical-align: middle; }
-		td.example { width: 60%; }
-		td.example p { margin: 0 0 0.4rem; }
-		code { font-size: 0.9em; word-break: break-word; }
-		audio { width: 100%; min-width: 180px; }
-		.download { display: inline-block; margin: 0.5rem 0 1.5rem; font-size: 1.1rem; font-weight: bold; }
+		th, td { padding: 1rem 1.1rem; vertical-align: middle; border-bottom: 1px solid var(--border); }
+		td + td, th + th { border-left: 1px solid var(--border); }
+		thead th {
+			text-align: left;
+			font-size: 0.75rem;
+			text-transform: uppercase;
+			letter-spacing: 0.08em;
+			color: var(--muted);
+			background: var(--panel-alt);
+		}
+		tbody th { font-size: 0.85rem; color: var(--muted); font-weight: 600; background: var(--panel-alt); }
+		tbody tr:hover td { background: rgba(255, 255, 255, 0.02); }
+		tbody tr:last-child td { border-bottom: none; }
+		td.example { width: 58%; }
+		td.example p { margin: 0 0 0.5rem; font-weight: 500; }
+		code {
+			font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
+			font-size: 0.82em;
+			color: #c4b5fd;
+			word-break: break-word;
+		}
+		td.example code {
+			display: block;
+			padding: 0.55rem 0.75rem;
+			border-radius: 8px;
+			background: var(--code-bg);
+			border: 1px solid var(--border);
+		}
+		audio { width: 100%; min-width: 180px; height: 40px; }
+		footer { margin-top: 2rem; text-align: center; color: var(--muted); font-size: 0.85rem; }
+		@media (max-width: 720px) {
+			td.example { width: auto; }
+			th, td { padding: 0.75rem; }
+		}
 	</style>
 </head>
 <body>
-	<h1>Talktastic Samples</h1>
-	<p>Audio produced by the <a href="https://github.com/BrainSlugs83/Talktastic#usage">README usage examples</a>, each run with <code>-o</code> to save the output.</p>
-	<a class="download" href="https://github.com/BrainSlugs83/Talktastic/releases/latest">⬇ Download the latest say.exe</a>
+<main>
+	<header>
+		<h1>Talktastic</h1>
+		<p>A standalone Windows TTS CLI with neural, SAPI, and Piper voices plus RVC voice conversion. Every sample below was produced by one of the <a href="https://github.com/BrainSlugs83/Talktastic#usage">README usage examples</a>, run with <code>-o</code> to save the output.</p>
+		<div class="actions">
+			<a class="btn btn-primary" href="https://github.com/BrainSlugs83/Talktastic/releases/latest">⬇ Download the latest say.exe</a>
+			<a class="btn btn-ghost" href="https://github.com/BrainSlugs83/Talktastic">View on GitHub</a>
+		</div>
+	</header>
+
+	<div class="table-wrap">
 
 	<table>
 		<thead>
@@ -68,5 +164,9 @@
 			</tr>
 		</tbody>
 	</table>
+	</div>
+
+	<footer>Samples generated with <code>scripts/Generate-Samples.ps1</code>.</footer>
+</main>
 </body>
 </html>
