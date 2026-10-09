@@ -123,35 +123,35 @@
 		<tbody>
 			<tr>
 				<td class="example"><p>Speak with the currently default Windows voice.</p><code>say "Hello, from Talktastic!"</code></td>
-				<td colspan="2"><audio controls preload="none" src="01-default-voice.mp3"></audio></td>
+				<td colspan="2"><audio controls preload="metadata" src="01-default-voice.mp3"></audio></td>
 			</tr>
 			<tr>
 				<td class="example"><p>Use a Windows 11 neural voice.</p><code>say "This is Microsoft Ryan, a Windows 11 neural voice." -v "Microsoft Ryan"</code></td>
-				<td colspan="2"><audio controls preload="none" src="02-neural-ryan.mp3"></audio></td>
+				<td colspan="2"><audio controls preload="metadata" src="02-neural-ryan.mp3"></audio></td>
 			</tr>
 			<tr>
 				<td class="example"><p>Download and use an Open Source Piper voice by URL.</p><code>say "Piper voices can be downloaded by URL!" -v "https://huggingface.co/rhasspy/piper-voices/tree/v1.0.0/en/en_US/amy/medium"</code></td>
-				<td colspan="2"><audio controls preload="none" src="03-piper-url.mp3"></audio></td>
+				<td colspan="2"><audio controls preload="metadata" src="03-piper-url.mp3"></audio></td>
 			</tr>
 			<tr>
 				<td class="example"><p>Once a Piper voice is installed, you can use it by name.</p><code>say "Once a Piper voice is installed, you can use it by name!" -v "Amy"</code></td>
-				<td colspan="2"><audio controls preload="none" src="04-piper-by-name.mp3"></audio></td>
+				<td colspan="2"><audio controls preload="metadata" src="04-piper-by-name.mp3"></audio></td>
 			</tr>
 			<tr>
 				<td class="example"><p>Use type prefixes to disambiguate voices with the same name.</p><code>say "This is how you disambiguate between two voices with the same name." -v "piper:Ryan"</code></td>
-				<td colspan="2"><audio controls preload="none" src="05-piper-prefix.mp3"></audio></td>
+				<td colspan="2"><audio controls preload="metadata" src="05-piper-prefix.mp3"></audio></td>
 			</tr>
 			<tr>
 				<td class="example"><p>RVC voice conversion models can be downloaded by URL too.</p><code>say "RVC models can also be downloaded by URL." --rvc "https://huggingface.co/0x3e9/Darth_Vader_RVC"</code></td>
-				<td colspan="2"><audio controls preload="none" src="06-rvc-url.mp3"></audio></td>
+				<td colspan="2"><audio controls preload="metadata" src="06-rvc-url.mp3"></audio></td>
 			</tr>
 			<tr>
 				<td class="example"><p>Apply RVC voice conversion on top of any TTS voice.</p><code>say "This is Piper Alan's voice, converted to sound like Darth Vader." -v "https://huggingface.co/rhasspy/piper-voices/tree/v1.0.0/en/en_GB/alan/medium" --rvc "Vader"</code></td>
-				<td colspan="2"><audio controls preload="none" src="07-piper-plus-rvc.mp3"></audio></td>
+				<td colspan="2"><audio controls preload="metadata" src="07-piper-plus-rvc.mp3"></audio></td>
 			</tr>
 			<tr>
 				<td class="example"><p>Read from stdin.</p><code>echo "You can also pipe text in from stdin!" | say "-"</code></td>
-				<td colspan="2"><audio controls preload="none" src="08-stdin.mp3"></audio></td>
+				<td colspan="2"><audio controls preload="metadata" src="08-stdin.mp3"></audio></td>
 			</tr>
 			<tr>
 				<td class="example" rowspan="2"><p>Convert an existing recording with an RVC model.</p><code>say -i before.wav -o after.wav --rvc "https://huggingface.co/0x3e9/Darth_Vader_RVC"</code></td>
@@ -159,8 +159,8 @@
 				<th>After</th>
 			</tr>
 			<tr>
-				<td><audio controls preload="none" src="09-rvc-file-before.mp3"></audio></td>
-				<td><audio controls preload="none" src="09-rvc-file-after.mp3"></audio></td>
+				<td><audio controls preload="metadata" src="09-rvc-file-before.mp3"></audio></td>
+				<td><audio controls preload="metadata" src="09-rvc-file-after.mp3"></audio></td>
 			</tr>
 		</tbody>
 	</table>
@@ -168,5 +168,13 @@
 
 	<footer>Samples generated with <code>scripts/Generate-Samples.ps1</code>.</footer>
 </main>
-</body>
-</html>
+	<script>
+		document.addEventListener('play', e =>
+		{
+			for (const a of document.querySelectorAll('audio'))
+			{
+				if (a !== e.target) a.pause();
+			}
+		}, true);
+	</script>
+</body></html>
