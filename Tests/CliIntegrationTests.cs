@@ -59,6 +59,37 @@ public class CliIntegrationTests
 	}
 
 	[Fact]
+	public async Task RvcUrlWithInputFile_ConvertsInsteadOfOnlyCaching()
+	{
+		// --rvc <URL> with -i must process the input file, not take the download-only shortcut
+		var dir = Path.Combine(Path.GetTempPath(), $"talktastic-{Guid.NewGuid():N}");
+		Directory.CreateDirectory(dir);
+		try
+		{
+			var input = Path.Combine(dir, "before.wav");
+			var output = Path.Combine(dir, "after.wav");
+
+			var (genExit, _, genErr) = await RunSayAsync("-o", input, "Testing one two three.");
+			Assert.True(genExit == 0, $"Failed to generate input wav: {genErr}");
+
+			var (exitCode, _, stderr) = await RunSayAsync
+			(
+				"-i", input,
+				"-o", output,
+				"--rvc", "https://huggingface.co/Sunwest/Homer_Simpson_300"
+			);
+
+			Assert.True(exitCode == 0, $"Expected exit 0, got {exitCode}: {stderr}");
+			Assert.True(File.Exists(output), $"Output file was not written. stderr: {stderr}");
+			Assert.True(new FileInfo(output).Length > 44, "Output wav contains no audio data");
+		}
+		finally
+		{
+			Directory.Delete(dir, recursive: true);
+		}
+	}
+
+	[Fact]
 	public async Task VoiceUrlOnly_DownloadsWithoutText()
 	{
 		// -v with a Piper URL and NO text should download/cache and exit 0

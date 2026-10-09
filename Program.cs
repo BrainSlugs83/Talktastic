@@ -320,12 +320,13 @@ rootCommand.SetAction
 				return RenameRvcModel(renameRvc);
 			}
 
-			// --rvc with a URL but no text: just download/cache the model and exit
+			// --rvc with a URL but no text or input file: just download/cache the model and exit
 			if
 			(
 				!string.IsNullOrWhiteSpace(rvc)
 				&& ModelDownloader.IsUrl(rvc)
 				&& string.IsNullOrWhiteSpace(text)
+				&& string.IsNullOrWhiteSpace(inputFile)
 			)
 			{
 				var (modelPath, _) = await RvcEngine.ResolveRvcModelAsync(rvc, cancellationToken).ConfigureAwait(false);
